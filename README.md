@@ -1,4 +1,4 @@
-# ComfyUI-MatlowNodes
+# ComfyUI-MAINodes
 
 MatlowAI's MiniMax-H3 node collection — research nodes that graduated to
 production, in one pack. Public research: findings, measurements, and the
@@ -77,7 +77,7 @@ decoded frames into it and you can *watch* the oracle think.
 
 ```
 cd ComfyUI/custom_nodes
-git clone https://github.com/matlowai/ComfyUI-MatlowNodes
+git clone https://github.com/matlowai/ComfyUI-MAINodes
 ```
 
 Restart ComfyUI. Nodes appear under `latent/minimax/motion`,

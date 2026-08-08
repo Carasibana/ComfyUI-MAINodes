@@ -1,4 +1,4 @@
-"""ComfyUI-MatlowNodes — MatlowAI's MiniMax-H3 node collection.
+"""ComfyUI-MAINodes — MatlowAI's MiniMax-H3 node collection.
 
 Two families in one pack:
 - Contact-Sheet diffusion (five coordinated views from one reference) —
