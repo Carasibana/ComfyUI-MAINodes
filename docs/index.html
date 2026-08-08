@@ -46,7 +46,12 @@ are documented in TUNING.md.</p>
 <video controls loop playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/preview_ladder_grid.mp4"></video>
 <p class="cap">Every quality/speed rung from a one-minute turbo scout to the
-full pipeline. Times in the header, ws-normalized, 5 s 1024&#178; clip.</p>
+full pipeline. Times in the header, ws-normalized, 5 s 1024&#178; clip.
+The three paths to know: pipeline at inject 0.70 (~19 min incl. its
+baseline, the default), inject 0.50 (~15 min, sharper, closer motion
+tracking), and probe + expert turbo (~8.5 min, no full baseline). Start
+with a 2 to 3 second clip and scale up; cost follows the burst spans,
+not the runtime.</p>
 
 <h2 id="derope">Baseline vs regenerated, same seed, real time</h2>
 <video controls loop playsinline preload="metadata"

@@ -109,6 +109,10 @@ head and a turbo tail (H3 Expert Schedule). Cheapest of the set; no
 full-speed audio track to blend, and the saved preview is intentionally
 rough.
 
+There is also [`motion_pipeline_i50.json`](examples/motion_pipeline_i50.json),
+the same finals graph with the inject 0.50 preset selected, for people who
+prefer the sharper flavor without touching a dropdown.
+
 All of them generate or probe a baseline, read its oracle, regenerate,
 and recover, in one queue item. The oracle's length and the regeneration
 length are wired dynamically, so changing the clip duration needs no
@@ -137,6 +141,24 @@ other edits. Each node's info button documents its inputs.
 | H3 Trajectory Load | `step` | 5 | resume a banked run from any step with its remaining schedule; swap the model, LoRA, or guider and continue without recomputing the head |
 | H3 V2V Init | `freeze_threshold` | 0 (off) | background freeze, experimental and not recommended: it fixes background timing but degraded other artifacts in our playback tests. Kept as a knob for content where the trade goes the other way |
 | H3 Motion Composite | | | deprecated: post-hoc compositing made moving background objects pop at the mask boundary in playback |
+
+### What to expect, time-wise
+
+Measured on a 5 second 1024x1024 clip at about 11.5 s/step (RTX PRO 6000);
+scale to your card and clip:
+
+| path | time | what you get |
+|---|---|---|
+| pipeline, inject 0.70 (`motion_pipeline.json`) | ~19 min incl. its own baseline | the default finals: safest playback feel |
+| pipeline, inject 0.50 (`motion_pipeline_i50.json`) | ~15 min incl. baseline | sharper, tracks the source motion closer; try both |
+| probe + expert turbo (`motion_pipeline_probe_expert.json`) | ~8.5 min, no full baseline | the fast full de-rope; preview output is intentionally rough |
+
+Start with a short clip, 2 to 3 seconds, and scale up once you like what
+you see. Durations snap to the model's legal frame counts automatically
+(the closest ones are 1.6 s, 2.3 s, and 3.0 s at 24fps), a short clip
+keeps VRAM and wait times friendly, and how far you scale is really a
+question of how much fast action the clip contains: cost follows the
+burst spans, not the runtime.
 
 A tuning guide for all of this, written for humans and for AI assistants
 working on a user's behalf, is in [`TUNING.md`](TUNING.md).
