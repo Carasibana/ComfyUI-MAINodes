@@ -89,14 +89,15 @@ class H3JerkOracle:
         return {"required": {
             "samples": ("LATENT",),
             "length": ("INT", {"default": 124, "min": 5, "max": 3600, "step": 17}),
-            "preset": (["custom"] + list(cls.PRESETS), {"default": "balanced (default)",
-                       "tooltip": "any choice but 'custom' overrides the knobs below"}),
             "q": ("FLOAT", {"default": 0.75, "min": 0.5, "max": 0.99, "step": 0.01,
                             "tooltip": "jerk quantile that counts as hot; higher = tighter span, lower cost"}),
             "d_max": ("INT", {"default": 4, "min": 2, "max": 8,
                               "tooltip": "peak hold count on the hottest tokens; 4 = measured sweet spot"}),
             "ramp": ("BOOLEAN", {"default": True,
                                  "tooltip": "C1 ramp shoulders (1,2,..,d_max,..,2,1) instead of hard steps — keep ON"}),
+        }, "optional": {
+            "preset": (["custom"] + list(cls.PRESETS), {"default": "balanced (default)",
+                       "tooltip": "any choice but 'custom' overrides the knobs above"}),
         }}
 
     RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "STRING")
@@ -293,14 +294,15 @@ class H3InjectSchedule:
     def INPUT_TYPES(cls):
         return {"required": {
             "model": ("MODEL",),
-            "preset": (["custom"] + list(cls.PRESETS), {"default": "balanced 0.70 (default)",
-                       "tooltip": "any choice but 'custom' overrides the inject knob"}),
             "scheduler": (["simple", "normal", "beta", "sgm_uniform", "karras",
                            "exponential"], {"default": "simple"}),
             "total_steps": ("INT", {"default": 25, "min": 4, "max": 100}),
             "inject": ("FLOAT", {"default": 0.70, "min": 0.05, "max": 1.0,
                                  "step": 0.05,
                                  "tooltip": "0.5-0.8 recommended; lower keeps init artifacts, higher invents choreography"}),
+        }, "optional": {
+            "preset": (["custom"] + list(cls.PRESETS), {"default": "balanced 0.70 (default)",
+                       "tooltip": "any choice but 'custom' overrides the inject knob"}),
         }}
 
     RETURN_TYPES = ("SIGMAS",)
