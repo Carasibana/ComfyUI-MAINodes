@@ -578,6 +578,117 @@ class H3ExpertSchedule:
         return (s[:h + 1], s[h:])
 
 
+class _TrajBankSampler:
+    def __init__(self, inner, dump_dir, every_n):
+        self.inner = inner
+        self.dump_dir = dump_dir
+        self.every_n = max(1, every_n)
+
+    def max_denoise(self, model_wrap, sigmas):
+        return self.inner.max_denoise(model_wrap, sigmas)
+
+    def sample(self, model_wrap, sigmas, extra_args, callback, noise,
+               latent_image=None, denoise_mask=None, disable_pbar=False):
+        import os
+        os.makedirs(self.dump_dir, exist_ok=True)
+        torch.save(sigmas.detach().cpu(), os.path.join(self.dump_dir, "sigmas.pt"))
+
+        def parts(t):
+            if hasattr(t, "is_nested") and t.is_nested:
+                return list(t.tensors)
+            return [t]
+
+        def cb(i, denoised, x, total):
+            if i % self.every_n == 0 or i == total - 1:
+                comps = parts(x)
+                payload = {"step": i, "total_steps": total,
+                           "video": comps[0].detach().to(torch.float16).cpu()}
+                if len(comps) > 1:
+                    payload["audio"] = comps[1].detach().to(torch.float16).cpu()
+                torch.save(payload, os.path.join(self.dump_dir, f"x_step{i:03d}.pt"))
+            if callback is not None:
+                callback(i, denoised, x, total)
+
+        return self.inner.sample(model_wrap, sigmas, extra_args, cb, noise,
+                                 latent_image, denoise_mask, disable_pbar)
+
+
+class H3TrajectoryBank:
+    """SAMPLER wrapper that checkpoints the noisy latent at every step."""
+
+    DESCRIPTION = (
+        "Wraps a sampler and saves the trajectory latent (x_t, the noisy "
+        "state the sampler actually carries) after each step, plus the "
+        "sigma schedule. About 7 MB per step for a 5 s 1024 clip, so a "
+        "full 25-step run banks under 200 MB. Pair with H3 Trajectory "
+        "Load to branch from any step without recomputing the head: swap "
+        "the model, LoRA, guider, or remaining schedule and continue.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "sampler": ("SAMPLER",),
+            "dump_dir": ("STRING", {"default": "/tmp/h3_trajectory"}),
+            "every_n": ("INT", {"default": 1, "min": 1, "max": 25,
+                                "tooltip": "save every Nth step (last step always saved)"}),
+        }}
+
+    RETURN_TYPES = ("SAMPLER",)
+    FUNCTION = "wrap"
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    def wrap(self, sampler, dump_dir, every_n):
+        return (_TrajBankSampler(sampler, dump_dir, every_n),)
+
+
+class H3TrajectoryLoad:
+    """Resume a banked trajectory from any saved step."""
+
+    DESCRIPTION = (
+        "Loads a step checkpoint saved by H3 Trajectory Bank and the "
+        "matching remaining sigma schedule. Wire the LATENT into a "
+        "SamplerCustomAdvanced with DisableNoise and the SIGMAS output as "
+        "its schedule: sampling continues exactly where the banked run "
+        "stopped, under whatever model, LoRA, or guider you attach. "
+        "Changing anything downstream of the loaded step is the point.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "dump_dir": ("STRING", {"default": "/tmp/h3_trajectory"}),
+            "step": ("INT", {"default": 5, "min": 0, "max": 200,
+                             "tooltip": "resume after this saved step (0-based)"}),
+        }}
+
+    RETURN_TYPES = ("LATENT", "SIGMAS", "INT")
+    RETURN_NAMES = ("samples", "remaining_sigmas", "loaded_step")
+    FUNCTION = "load"
+    CATEGORY = "latent/minimax/motion"
+
+    @classmethod
+    def IS_CHANGED(cls, dump_dir, step):
+        import os
+        p = os.path.join(dump_dir, f"x_step{step:03d}.pt")
+        try:
+            return os.path.getmtime(p)
+        except OSError:
+            return float("nan")
+
+    def load(self, dump_dir, step):
+        import os
+
+        import comfy.nested_tensor
+        p = os.path.join(dump_dir, f"x_step{step:03d}.pt")
+        d = torch.load(p, weights_only=True)
+        sigmas = torch.load(os.path.join(dump_dir, "sigmas.pt"), weights_only=True)
+        video = d["video"].float()
+        if "audio" in d:
+            samples = comfy.nested_tensor.NestedTensor((video, d["audio"].float()))
+        else:
+            samples = video
+        return ({"samples": samples}, sigmas[step + 1:], int(step))
+
+
 TIMESMEAR_CLASS_MAPPINGS = {
     "H3JerkOracle": H3JerkOracle,
     "H3TimeSmear": H3TimeSmear,
@@ -588,6 +699,8 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3AudioRecover": H3AudioRecover,
     "H3ProbeSchedule": H3ProbeSchedule,
     "H3ExpertSchedule": H3ExpertSchedule,
+    "H3TrajectoryBank": H3TrajectoryBank,
+    "H3TrajectoryLoad": H3TrajectoryLoad,
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3JerkOracle": "H3 Jerk Oracle (profile / window / hold map)",
@@ -599,4 +712,6 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3AudioRecover": "H3 Audio Recover (hold-map atempo, pitch kept)",
     "H3ProbeSchedule": "H3 Probe Schedule (early-oracle head)",
     "H3ExpertSchedule": "H3 Expert Schedule (base head, turbo tail)",
+    "H3TrajectoryBank": "H3 Trajectory Bank (checkpoint every step)",
+    "H3TrajectoryLoad": "H3 Trajectory Load (branch from a step)",
 }
