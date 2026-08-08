@@ -104,6 +104,8 @@ other edits. Each node's info button documents its inputs.
 | H3 Jerk Heatmap | `alpha`, `strip_height` | 0.55, 96 | the oracle-watching overlay from the demo clip, as a node |
 | H3 Probe Schedule | `probe_steps` | 6 | run only the head of the baseline; the early x0 feeds the oracle and the init. Raise it if the init loses choreography |
 | H3 Expert Schedule | `base_head` | 2 | split the injected schedule: base-model head for structure, turbo tail for refinement (tail defaults to turbo's native 4 steps) |
+| H3 Trajectory Bank | `every_n` | 1 | wraps a sampler and checkpoints the trajectory latent each step (~7 MB per step for a 5 s clip) |
+| H3 Trajectory Load | `step` | 5 | resume a banked run from any step with its remaining schedule; swap the model, LoRA, or guider and continue without recomputing the head |
 
 A tuning guide for all of this, written for humans and for AI assistants
 working on a user's behalf, is in [`TUNING.md`](TUNING.md).
