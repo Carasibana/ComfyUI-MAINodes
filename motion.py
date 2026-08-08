@@ -75,7 +75,7 @@ class H3JerkOracle:
         "uniform 4x) and follows the clip's intended pacing/attention more "
         "closely — quiet spans keep their native beat contrast. Trade-off: it "
         "can artifact slightly more than uniform dilation if the hold plateau "
-        "dips inside a burst; if you see hiccups mid-burst, lower q or raise "
+        "dips inside a burst — the bridge knob (default 8) closes such valleys automatically per our measured production rule; if you still see hiccups mid-burst, lower q or raise "
         "d_max so the whole burst sits at the plateau.")
 
     PRESETS = {
@@ -98,6 +98,11 @@ class H3JerkOracle:
         }, "optional": {
             "preset": (["custom"] + list(cls.PRESETS), {"default": "balanced (default)",
                        "tooltip": "any choice but 'custom' overrides the knobs above"}),
+            "bridge": ("INT", {"default": 8, "min": 0, "max": 20,
+                       "tooltip": "bridge inter-peak valleys within a burst at d_max "
+                                  "(measured production rule: a plateau dip between peaks "
+                                  "of the same burst causes mid-burst artifacts). Max gap "
+                                  "in tokens to fill; 0 disables."}),
         }}
 
     RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "STRING")
@@ -105,7 +110,7 @@ class H3JerkOracle:
     FUNCTION = "read"
     CATEGORY = "latent/minimax/motion"
 
-    def read(self, samples, length, q, d_max, ramp, preset="custom"):
+    def read(self, samples, length, q, d_max, ramp, preset="custom", bridge=8):
         if preset in self.PRESETS:
             p = self.PRESETS[preset]
             q, d_max, ramp = p["q"], p["d_max"], p["ramp"]
@@ -115,6 +120,14 @@ class H3JerkOracle:
 
         thr = np.quantile(prof, q)
         tok_d = np.where(prof >= thr, d_max, 1).astype(int)
+        if bridge:
+            # production rule (measured): never let the plateau dip between
+            # peaks of the same burst — the dip is where mid-burst artifacts
+            # come back (4 of 5 in the v1 map). Fill short valleys at d_max.
+            hot = np.where(tok_d == d_max)[0]
+            for a, b in zip(hot[:-1], hot[1:]):
+                if 1 < b - a <= bridge:
+                    tok_d[a:b + 1] = d_max
         if ramp:
             for _ in range(d_max - 1):            # relax until |Δd| <= 1
                 left = np.concatenate([[1], tok_d[:-1]])
