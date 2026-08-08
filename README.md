@@ -71,12 +71,20 @@ schedule, 3 of 4 steps after injection). Point the LoRA loader at
 wherever you saved the conversion; community strength range is 0.65 to
 0.8, and v0.1 of that LoRA is a preview, so judge results accordingly.
 
-Our recommended split after using all three: scout with turbo, finish
-with base. Iterate prompts and seeds on a plain turbo generation to see
-what you will get globally, then run the keeper through the base
-pipeline. The turbo and probe graphs stay for people with different
-budgets, but if you are reaching for this pipeline at all, you probably
-want the best version of the clip, and that is the base graph.
+How we actually use this after trying every combination: **turbo is for
+getting your prompt right, the pipeline is for the keeper, and mixing
+them is a waste of time.** Iterate prompts and seeds on plain turbo
+generations to learn what you will get globally, then run the winner
+through the base pipeline. Putting the turbo LoRA inside the
+regeneration pass saves a few minutes on a clip you have already decided
+deserves the full treatment, and it costs quality on exactly that clip;
+we do not recommend it. The turbo-inside graphs remain for people with
+different budgets. One wrinkle that did earn its keep: starting the
+turbo PREVIEW on the base model for the first couple of steps before
+handing off to turbo (H3 Expert Schedule with inject 1.0) may buy
+preview fidelity cheaply; we are still testing it. A unified workflow
+with a preview/final toggle (H3 Mode Switch, lazy: only the chosen path
+executes) is the intended end state.
 
 A fourth graph,
 [`motion_pipeline_probe_expert.json`](examples/motion_pipeline_probe_expert.json),
