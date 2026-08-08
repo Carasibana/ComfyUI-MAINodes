@@ -187,8 +187,8 @@ class H3TimeSmear:
                                     "tooltip": "from H3JerkOracle — per-frame integer holds"}),
         }}
 
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("images", "hold_map_used")
+    RETURN_TYPES = ("IMAGE", "STRING", "INT")
+    RETURN_NAMES = ("images", "hold_map_used", "length")
     FUNCTION = "smear"
     CATEGORY = "image/minimax/motion"
 
@@ -203,7 +203,7 @@ class H3TimeSmear:
         holds[-1] += target - sum(holds)          # tail pad lives in the last hold
         idx = torch.tensor([i for i, h in enumerate(holds) for _ in range(h)])
         used = json.dumps({"holds": holds, "world_len": n})
-        return (images[idx], used)
+        return (images[idx], used, int(target))
 
 
 class H3ExactRecover:
@@ -251,26 +251,31 @@ class H3V2VInit:
         "expects, ready for partial-denoise injection. Audio starts empty and "
         "generates jointly with the video on the truncated schedule — "
         "causally synced foley, the preferred audio source for regenerated "
-        "content. 'length' must match the smeared frame count (17k+5).")
+        "content. length=0 (default) derives the frame count from the latent "
+        "itself; wire H3 Time Smear's length output or set it only to assert "
+        "a specific grid.")
 
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
             "samples": ("LATENT", {"tooltip": "video latent from VAEEncode of the smeared frames"}),
-            "length": ("INT", {"default": 294, "min": 5, "max": 3600, "step": 17,
-                               "tooltip": "pixel frame count of the smeared clip"}),
+        }, "optional": {
+            "length": ("INT", {"default": 0, "min": 0, "max": 3600,
+                               "tooltip": "0 = derive from the latent (recommended); nonzero asserts this exact 17k+5 length"}),
         }}
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "build"
     CATEGORY = "latent/minimax/motion"
 
-    def build(self, samples, length):
+    def build(self, samples, length=0):
         import comfy.nested_tensor
         from comfy_extras.nodes_minimax_h3 import temporal_shape
 
-        _, t_lat, audio_t = temporal_shape(length)
         video = _video_component(samples)
+        if not length:
+            length = (video.shape[2] - 2) // 5 * 17 + 5  # invert t_lat
+        _, t_lat, audio_t = temporal_shape(length)
         assert video.shape[2] == t_lat, (
             f"latent has {video.shape[2]} tokens, length {length} needs {t_lat}")
         audio = torch.zeros(video.shape[0], 32, 2, audio_t,
