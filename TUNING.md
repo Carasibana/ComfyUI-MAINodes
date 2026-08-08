@@ -51,6 +51,27 @@ different dial than one who says "it changed my character's pose."
 | camera pans or scrolls make the dilated spans wider than the action | known: camera motion raises the oracle's jerk floor globally. Raise `q` toward 0.85 as a stopgap; camera-motion-compensated jerk is on the roadmap |
 | background elements (birds, crowds, traffic) speed up during bursts | open problem, honestly. Two remedies tried and rejected in playback: post-hoc compositing (objects pop at the mask boundary) and the `freeze_threshold` latent freeze (degrades other artifacts). The freeze knob exists if your content favors that trade. The `show_drift` heatmap overlay at least shows you where the effect will occur |
 
+## VRAM expectations (measured)
+
+Weights: the int8 DiT is 20 GB, the text encoder 15 GB (offloads after
+encoding), the video VAE 4.9 GB. Activations at 1.0 MP run about 0.1 GB
+per latent token: a 5 s clip (37 tokens) needs ~5 GB, and its dilated
+regeneration pass (87 tokens) ~9 GB. Roughly half that at 0.5 MP.
+
+- 96 GB: everything stays resident, ~11.5 s/step.
+- 32 GB (5090 class): the DiT fits, but the dilated pass of a 5 s clip
+  lands around 30 GB total, right at the cliff, so ComfyUI starts
+  offloading and steps balloon (~20 s/it reports). What helps, in order:
+  start with 2 to 3 second clips (the dilated span is what hurts), drop
+  the regeneration to 0.5 MP, or use the probe graph so there are far
+  fewer of those expensive steps. The experimental w4a8 DiT (12.5 GB,
+  Kijai/MiniMax-H3-experimental, needs ComfyUI 0.31) should make 5 s at
+  1.0 MP comfortable (~23 GB); we have not validated it yet.
+- 24 GB: w4a8 plus 0.5 MP plus short clips territory. Untested by us.
+
+Cost scales with the burst spans, not the clip length, so a long clip
+with one short burst is far cheaper than these worst-case numbers.
+
 ## Method
 
 - Change one dial at a time, same seed, and compare in playback. Still
