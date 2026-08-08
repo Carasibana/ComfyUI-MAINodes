@@ -389,7 +389,11 @@ class H3JerkHeatmap:
         "The oracle made visible: overlays the jerk heat map on your frames "
         "(red-yellow pools where motion is too fast per latent token) and "
         "draws the per-token jerk profile as a bar strip with a playhead — "
-        "watch the burst light up as playback reaches it. Purely diagnostic/"
+        "watch the burst light up as playback reaches it. With show_drift "
+        "on, regions that move steadily WITHOUT burst jerk (birds, crowds, "
+        "traffic: velocity-high, jerk-low) glow blue: the drifter class "
+        "that time warping mishandles and background freezing protects. "
+        "Purely diagnostic/"
         "presentational; wire the same latent you'd give H3 Jerk Oracle. "
         "alpha 0.4-0.7 reads well; strip_height 0 hides the bar strip.")
 
@@ -400,13 +404,16 @@ class H3JerkHeatmap:
             "samples": ("LATENT",),
             "alpha": ("FLOAT", {"default": 0.55, "min": 0.0, "max": 1.0, "step": 0.05}),
             "strip_height": ("INT", {"default": 96, "min": 0, "max": 256}),
+        }, "optional": {
+            "show_drift": ("BOOLEAN", {"default": True,
+                "tooltip": "blue overlay on steady movers (velocity-high, jerk-low): the birds"}),
         }}
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "overlay"
     CATEGORY = "image/minimax/motion"
 
-    def overlay(self, images, samples, alpha, strip_height):
+    def overlay(self, images, samples, alpha, strip_height, show_drift=True):
         images = images.detach().float().cpu()  # --gpu-only hands us cuda tensors
         z = _video_component(samples)
         t_lat = z.shape[2]
@@ -414,6 +421,7 @@ class H3JerkHeatmap:
 
         v = z.detach().float().cpu().numpy()
         jmap = np.abs(np.diff(v, n=3, axis=2)).mean(axis=(0, 1))   # (T-3, h, w)
+        vmap = np.abs(np.diff(v, n=1, axis=2)).mean(axis=(0, 1))   # (T-1, h, w)
         tok = np.stack([jmap[min(max(k - 1, 0), jmap.shape[0] - 1)]
                         for k in range(t_lat)])
         for ph in range(5):
@@ -425,6 +433,21 @@ class H3JerkHeatmap:
         heat = torch.nn.functional.interpolate(
             torch.from_numpy(tok).float()[None], size=(H, W),
             mode="bilinear", align_corners=False)[0]               # (T, H, W)
+
+        drift = None
+        if show_drift:
+            vtok = np.stack([vmap[min(max(k - 1, 0), vmap.shape[0] - 1)]
+                             for k in range(t_lat)])
+            for ph in range(5):
+                m = vtok[ph::5].mean()
+                if m > 0:
+                    vtok[ph::5] /= m
+            lo2, hi2 = np.quantile(vtok, 0.05), np.quantile(vtok, 0.995)
+            vtok = np.clip((vtok - lo2) / (hi2 - lo2 + 1e-9), 0, 1)
+            dmap = np.clip(vtok - tok, 0, 1)          # moving, but not bursting
+            drift = torch.nn.functional.interpolate(
+                torch.from_numpy(dmap).float()[None], size=(H, W),
+                mode="bilinear", align_corners=False)[0]
 
         prof = _jerk_profile(z)
         pn = (prof - prof.min()) / (prof.max() - prof.min() + 1e-9)
@@ -440,6 +463,13 @@ class H3JerkHeatmap:
                                  0.3 + 0.7 * (1 - hm),
                                  torch.zeros_like(hm)], -1)
             img = images[f] * (1 - a) + color * a
+            if drift is not None:
+                dm = drift[k]
+                da = (dm * alpha * 0.8)[..., None]
+                dcolor = torch.stack([torch.zeros_like(dm),
+                                      0.45 + 0.35 * (1 - dm),
+                                      torch.ones_like(dm)], -1)
+                img = img * (1 - da) + dcolor * da
             if strip_height:
                 strip = torch.full((strip_height, W, 3), 0.09)
                 for t in range(t_lat):
