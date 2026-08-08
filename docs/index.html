@@ -26,14 +26,14 @@ oracle picks where, and exact frame selection recovers realtime. No
 training. Every number below comes from a measured comparison.</p>
 <a class="repo" href="https://github.com/matlowai/ComfyUI-MAINodes">github.com/matlowai/ComfyUI-MAINodes</a>
 
-<h2>Before and after, fresh scene, default knobs</h2>
+<h2 id="kitsune">Before and after, fresh scene, default knobs</h2>
 <video controls loop muted playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/kitsune_threeway_sbs.mp4"></video>
 <p class="cap">Baseline smears the aerial spin into a blob; both regenerated
 settings render it clean and keep the choreography. New scene, no per-clip
 tuning.</p>
 
-<h2>Fast motion under a panning camera</h2>
+<h2 id="panrun">Fast motion under a panning camera</h2>
 <video controls loop playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/panrun_sbs.mp4"></video>
 <p class="cap">A lateral tracking shot with a parasol burst mid-pan.
@@ -42,24 +42,24 @@ articulate through the burst. Detailed backgrounds can re-roll during
 dilated spans (watch the laundry line); that limitation and its dials
 are documented in TUNING.md.</p>
 
-<h2>Nine tiers, one seed, with render times</h2>
+<h2 id="ladder">Nine tiers, one seed, with render times</h2>
 <video controls loop playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/preview_ladder_grid.mp4"></video>
 <p class="cap">Every quality/speed rung from a one-minute turbo scout to the
 full pipeline. Times in the header, ws-normalized, 5 s 1024&#178; clip.</p>
 
-<h2>Baseline vs regenerated, same seed, real time</h2>
+<h2 id="derope">Baseline vs regenerated, same seed, real time</h2>
 <video controls loop playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/baseline_vs_regenerated_sbs.mp4"></video>
 <p class="cap">Left smears through the backflip, right doesn't.</p>
 
-<h2>The oracle, watching</h2>
+<h2 id="oracle">The oracle, watching</h2>
 <video controls loop muted playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/oracle_map.mp4"></video>
 <p class="cap">Heat pools where motion runs too hot; the strip lights up as
 the burst arrives. This map is what decides where the timeline dilates.</p>
 
-<h2>Uniform vs adaptive hold maps</h2>
+<h2 id="adaptive">Uniform vs adaptive hold maps</h2>
 <video controls loop playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/uniform_vs_adaptive_sbs.mp4"></video>
 <p class="cap">Already good, and slightly better: uniform dilation, then the

@@ -25,21 +25,30 @@ slow down reads the clip's own latent. No extra model, no training.
 Baseline on the left smears the aerial spin into a blob; the two
 regenerated settings render it clean and keep the choreography. New scene,
 default knobs, no per-clip tuning
-([full clip](assets/kitsune_threeway_sbs.mp4)).
+([view](https://matlowai.github.io/ComfyUI-MAINodes/#kitsune) /
+[download](https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/kitsune_threeway_sbs.mp4)).
 
-Demo clips (in [`assets/`](assets/)):
-- [baseline vs regenerated, same seed, real time](assets/baseline_vs_regenerated_sbs.mp4):
-  left smears through the backflip, right doesn't
-- [uniform vs adaptive hold maps](assets/uniform_vs_adaptive_sbs.mp4):
-  the bridge trade-off described below
-- [the oracle, watching](assets/oracle_map.mp4): heat pools where motion
-  runs too hot, and the strip along the bottom lights up as the burst
-  arrives
-- [fast motion under a panning camera](assets/panrun_sbs.mp4): parasol
-  burst mid-pan, baseline vs pipeline
-- [nine tiers, one seed](assets/preview_ladder_grid.mp4): every
-  quality/speed rung from a one-minute turbo scout to the full pipeline,
-  render times in the header
+All demos play on one page: **https://matlowai.github.io/ComfyUI-MAINodes/**
+
+Demo clips:
+- baseline vs regenerated, same seed, real time: left smears through the
+  backflip, right doesn't
+  ([view](https://matlowai.github.io/ComfyUI-MAINodes/#derope) /
+  [download](https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/baseline_vs_regenerated_sbs.mp4))
+- uniform vs adaptive hold maps, the bridge trade-off described below
+  ([view](https://matlowai.github.io/ComfyUI-MAINodes/#adaptive) /
+  [download](https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/uniform_vs_adaptive_sbs.mp4))
+- the oracle, watching: heat pools where motion runs too hot, and the
+  strip lights up as the burst arrives
+  ([view](https://matlowai.github.io/ComfyUI-MAINodes/#oracle) /
+  [download](https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/oracle_map.mp4))
+- fast motion under a panning camera: parasol burst mid-pan
+  ([view](https://matlowai.github.io/ComfyUI-MAINodes/#panrun) /
+  [download](https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/panrun_sbs.mp4))
+- nine tiers, one seed: every quality/speed rung with render times in the
+  header
+  ([view](https://matlowai.github.io/ComfyUI-MAINodes/#ladder) /
+  [download](https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/preview_ladder_grid.mp4))
 
 | baseline vs regenerated | the oracle, watching |
 |---|---|
