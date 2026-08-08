@@ -20,6 +20,13 @@ init at partial denoise, and the original frame rate is recovered
 afterward by dropping the held frames. The oracle that decides where to
 slow down reads the clip's own latent. No extra model, no training.
 
+![baseline vs inject 0.70 vs inject 0.50](assets/kitsune_threeway.gif)
+
+Baseline on the left smears the aerial spin into a blob; the two
+regenerated settings render it clean and keep the choreography. New scene,
+default knobs, no per-clip tuning
+([full clip](assets/kitsune_threeway_sbs.mp4)).
+
 Demo clips (in [`assets/`](assets/)):
 - [baseline vs regenerated, same seed, real time](assets/baseline_vs_regenerated_sbs.mp4):
   left smears through the backflip, right doesn't
