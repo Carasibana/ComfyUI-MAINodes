@@ -689,6 +689,80 @@ class H3TrajectoryLoad:
         return ({"samples": samples}, sigmas[step + 1:], int(step))
 
 
+class H3MotionComposite:
+    """Spatial recovery: regenerated pixels where the oracle saw motion,
+    baseline pixels everywhere else."""
+
+    DESCRIPTION = (
+        "Fixes the sped-up-background side effect: inside dilated spans "
+        "the model keeps background agents (birds, crowds, traffic) near "
+        "their natural pace instead of full slow motion, so recovery "
+        "overcranks them. This node composites per pixel on the shared "
+        "world clock: where the oracle's spatial jerk heat is high (your "
+        "subject) it keeps the regenerated frames; where it is low "
+        "(background) it keeps the baseline, whose timing was correct all "
+        "along. Wire recovered frames, baseline frames, and the BASELINE "
+        "latent. threshold sets how much heat counts as subject; grow "
+        "expands the mask to cover pose drift; feather softens the seam.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "regenerated": ("IMAGE",),
+            "baseline": ("IMAGE",),
+            "samples": ("LATENT", {"tooltip": "baseline latent, same as H3 Jerk Oracle"}),
+            "threshold": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.05}),
+            "grow": ("INT", {"default": 32, "min": 0, "max": 256,
+                             "tooltip": "pixels of mask dilation, covers pose drift"}),
+            "feather": ("INT", {"default": 48, "min": 0, "max": 256}),
+        }}
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "composite"
+    CATEGORY = "image/minimax/motion"
+
+    def composite(self, regenerated, baseline, samples, threshold, grow, feather):
+        import torch.nn.functional as F
+
+        regenerated = regenerated.detach().float().cpu()
+        baseline = baseline.detach().float().cpu()
+        n = min(regenerated.shape[0], baseline.shape[0])
+        H, W = baseline.shape[1], baseline.shape[2]
+
+        z = _video_component(samples)
+        t_lat = z.shape[2]
+        v = z.detach().float().cpu().numpy()
+        jmap = np.abs(np.diff(v, n=3, axis=2)).mean(axis=(0, 1))
+        tok = np.stack([jmap[min(max(k - 1, 0), jmap.shape[0] - 1)]
+                        for k in range(t_lat)])
+        for ph in range(5):
+            m = tok[ph::5].mean()
+            if m > 0:
+                tok[ph::5] /= m
+        lo, hi = np.quantile(tok, 0.05), np.quantile(tok, 0.995)
+        tok = np.clip((tok - lo) / (hi - lo + 1e-9), 0, 1)
+        heat = torch.from_numpy(tok).float()[None]              # (1, T, h, w)
+        heat = F.interpolate(heat, size=(H, W), mode="bilinear",
+                             align_corners=False)[0]            # (T, H, W)
+
+        mask = (heat >= threshold).float()
+        if grow:
+            k = grow // 2 * 2 + 1
+            mask = F.max_pool2d(mask[:, None], k, stride=1, padding=k // 2)[:, 0]
+        if feather:
+            k = feather // 2 * 2 + 1
+            w1 = torch.ones(1, 1, k, k) / (k * k)
+            mask = F.conv2d(mask[:, None], w1, padding=k // 2)[:, 0]
+        mask = mask.clamp(0, 1)
+
+        out = []
+        for f in range(n):
+            k = min(_frame_token(f, t_lat), t_lat - 1)
+            a = mask[k][..., None]
+            out.append(baseline[f] * (1 - a) + regenerated[f] * a)
+        return (torch.stack(out),)
+
+
 TIMESMEAR_CLASS_MAPPINGS = {
     "H3JerkOracle": H3JerkOracle,
     "H3TimeSmear": H3TimeSmear,
@@ -701,6 +775,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3ExpertSchedule": H3ExpertSchedule,
     "H3TrajectoryBank": H3TrajectoryBank,
     "H3TrajectoryLoad": H3TrajectoryLoad,
+    "H3MotionComposite": H3MotionComposite,
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3JerkOracle": "H3 Jerk Oracle (profile / window / hold map)",
@@ -714,4 +789,5 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3ExpertSchedule": "H3 Expert Schedule (base head, turbo tail)",
     "H3TrajectoryBank": "H3 Trajectory Bank (checkpoint every step)",
     "H3TrajectoryLoad": "H3 Trajectory Load (branch from a step)",
+    "H3MotionComposite": "H3 Motion Composite (subject regen, background baseline)",
 }

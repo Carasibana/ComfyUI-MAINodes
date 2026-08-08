@@ -106,6 +106,7 @@ other edits. Each node's info button documents its inputs.
 | H3 Expert Schedule | `base_head` | 2 | split the injected schedule: base-model head for structure, turbo tail for refinement (tail defaults to turbo's native 4 steps) |
 | H3 Trajectory Bank | `every_n` | 1 | wraps a sampler and checkpoints the trajectory latent each step (~7 MB per step for a 5 s clip) |
 | H3 Trajectory Load | `step` | 5 | resume a banked run from any step with its remaining schedule; swap the model, LoRA, or guider and continue without recomputing the head |
+| H3 Motion Composite | `threshold`, `grow`, `feather` | 0.35, 32, 48 | keeps regenerated pixels where the oracle saw motion and baseline pixels elsewhere. Fixes background agents (birds, crowds) getting overcranked by the time warp: their baseline timing was correct all along |
 
 A tuning guide for all of this, written for humans and for AI assistants
 working on a user's behalf, is in [`TUNING.md`](TUNING.md).
