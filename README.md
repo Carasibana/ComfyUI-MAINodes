@@ -1,103 +1,108 @@
 # ComfyUI-MAINodes
 
-MatlowAI's MiniMax-H3 node collection — research nodes that graduated to
-production, in one pack. Public research: findings, measurements, and the
-occasional retraction, all in the open.
+Custom nodes for MiniMax-H3. Two groups: **Motion Lab** (a test-time fix
+for fast-motion smearing) and **Contact-Sheet diffusion** (five views of
+one subject from one reference image).
 
-Two families:
+## Motion Lab
 
-## 1. Motion Lab — de-roping fast motion at test time
+H3 smears bursty motion — backflips, fast sword arcs, whip-fast reversals.
+The cause is structural: one latent token spans four pixel frames, and at
+high motion speed those four frames need four distinct poses that a single
+token can't hold. Re-denoising the affected region doesn't help, because
+the missing poses were never generated in the first place.
 
-H3 ropes/smears bursty motion (backflips, whip-fast sword arcs): one latent
-token carries four pixel frames and cannot hold four distinct sharp poses.
-This pipeline regenerates the clip as a *time-dilated performance* seeded
-from your own baseline — the model renders the same choreography with more
-frames of temporal capacity where the jerk oracle says it needs them, then
-exact frame selection recovers real time. No retraining, no reference
-plumbing, one joint generation on one timeline.
+This pipeline works around that at inference time. It re-generates the clip
+as a slowed-down version of itself, seeded from the original: frames where
+motion is too fast get held (repeated) so the model has more temporal room,
+the result is generated video-to-video from that retimed init at partial
+denoise, and the original frame rate is recovered afterward by dropping the
+held frames. The oracle that decides *where* to slow down reads the clip's
+own latent — no extra model, no training.
 
-| baseline vs regenerated (same seed, world clock) | the oracle, watching |
-|---|---|
-| ![de-rope side by side](assets/derope_sbs.gif) | ![oracle map](assets/oracle_map.gif) |
+Demo clips (in [`assets/`](assets/)):
+- [baseline vs regenerated, same seed, real time](assets/baseline_vs_regenerated_sbs.mp4) —
+  left smears through the backflip, right doesn't
+- [uniform vs adaptive hold maps](assets/uniform_vs_adaptive_sbs.mp4) —
+  the bridge trade-off described below
+- [oracle overlay](assets/oracle_map.mp4) — where and when the oracle sees
+  excessive motion
+
+![baseline vs regenerated](assets/derope_sbs.gif)
 
 ```
 (baseline video) -> VAEDecode frames        (baseline latent)
         |                                        |
         v                                        v
    H3TimeSmear  <-- hold_map ------------- H3JerkOracle
-        |  (integer holds, C1 ramps,             |
-        |   valley bridging)                     | (also: segments,
-        v                                        |  window, profile)
+        |  (integer holds)                       |
+        v                                        |
     VAEEncode -> H3V2VInit -> SamplerCustomAdvanced
                                   ^
-              H3InjectSchedule ---/   (inject 0.70)
+              H3InjectSchedule ---/
                                   |
-                              VAEDecode -> H3ExactRecover -> 24fps real time
-                                              (hold_map)
+                              VAEDecode -> H3ExactRecover -> original fps
 ```
 
-A ready-to-run API-format graph is in
-[`examples/motion_pipeline_api.json`](examples/motion_pipeline_api.json)
-(generates a baseline, reads its oracle, regenerates, recovers — POST it to
-`/prompt` or rebuild the wiring in the UI; every node's ⓘ info button
-documents its knobs and ranges).
+A runnable API-format graph is in
+[`examples/motion_pipeline_api.json`](examples/motion_pipeline_api.json):
+it generates a baseline, reads its oracle, regenerates, and recovers, in
+one queue item. Each node's info button documents its inputs.
 
-### Nodes & knobs (defaults = measured-best on our benchmarks)
+### Nodes
 
-| node | knob | default | what it does |
+| node | knob | default | notes |
 |---|---|---|---|
-| **H3 Jerk Oracle** | `preset` | balanced | balanced / max-quality (wide plateau) / economy — `custom` frees the knobs |
-| | `q` | 0.75 | jerk quantile that counts as "hot"; higher = tighter span, lower cost |
-| | `d_max` | 4 | peak hold count on the hottest tokens |
-| | `ramp` | on | C1 ramp shoulders — hard steps jitter |
-| | `bridge` | 8 | fill inter-peak valleys at d_max (see *two flavors* below); 0 = off |
-| **H3 Time Smear** | `dilation` | 4 | uniform hold count when no hold_map is wired |
-| **H3 Inject Schedule** | `preset` | balanced 0.70 | 0.70 balanced / 0.50 faithful-detail / 0.80 loose — `custom` frees the knob |
-| | `inject` | **0.70** | the big one: how deep the v2v injection starts. Lower inherits baseline artifacts; higher invents choreography |
-| **H3 Jerk Heatmap** | `alpha` | 0.55 | oracle overlay opacity |
-| | `strip_height` | 96 | jerk-profile bar strip with playhead (0 = off) |
+| H3 Jerk Oracle | `q` | 0.75 | jerk quantile treated as "hot"; higher = tighter span, lower cost |
+| | `d_max` | 4 | peak hold count; below 4 smearing starts returning in our tests |
+| | `ramp` | on | smooth shoulders on the hold curve; hard steps caused visible stutter |
+| | `bridge` | 8 | fill dips between peaks of the same burst (see below); 0 = off |
+| | `preset` | balanced | balanced / max quality / economy; `custom` uses the knobs |
+| H3 Time Smear | `dilation` | 4 | uniform hold count, used when no hold_map is wired |
+| H3 Inject Schedule | `inject` | 0.70 | fraction of the denoise schedule that runs. Lower keeps more of the init (including its artifacts); higher lets the model drift from the source choreography. 0.5–0.8 is the useful range |
+| | `preset` | 0.70 | 0.70 / 0.50 / 0.80; `custom` uses the knob |
+| H3 V2V Init | `length` | 0 (auto) | wraps the encoded init as H3's joint AV latent; audio regenerates with the video |
+| H3 Exact Recover | | | drops held frames per the hold map; recovery is frame selection, not resampling |
+| H3 Jerk Heatmap | `alpha`, `strip_height` | 0.55, 96 | diagnostic overlay of the oracle plus a per-token profile strip |
 
-**H3 Exact Recover** inverts the smear by frame selection (never
-resampling) — integer holds mean 24fps recovery is lossless by construction.
+### bridge and inject
 
-### Two flavors, both kept on purpose
+Both settings change the output in ways that are a preference, not a
+ranking. From same-seed comparisons on our test clips:
 
-Measured on the same seed, judged in playback:
+- `bridge: 8` (default): the hold plateau covers each burst fully.
+  Sharpest output, motion tracking equal to uniform dilation, ~2.9× frame
+  budget. Poses can drift slightly from the baseline (e.g. a head angle on
+  a landing).
+- `bridge: 0`: holds follow the raw oracle curve. Closest to the
+  baseline's poses; a few soft frames can remain where the curve dips
+  inside a burst.
+- no hold_map (uniform `dilation: 4`): most conservative, highest cost.
+- `inject 0.70` vs `0.50`: 0.50 measured sharper with closer motion
+  tracking on our clips; 0.70 has been the safer default in playback.
+  Try both on your content.
 
-- **`bridge` on (default)** — full plateau across each burst. Sharpest
-  results, choreography tracking statistically equal to uniform 4×
-  dilation, at ~2.9× budget. Trade-off: poses can drift subtly from the
-  baseline (a head turn on a landing, that kind of thing).
-- **`bridge: 0`** — the hold curve follows the raw oracle. Poses stay
-  closest to the baseline; a few soft frames can survive where the curve
-  dips inside a burst.
-- **No hold_map at all** (uniform `dilation: 4`) — the zero-artifact
-  reference point; highest cost, flattest pacing.
+### Notes on the approach
 
-It's a dial, not a doctrine. Start with the default, and if a specific pose
-matters more than sharpness, turn `bridge` off.
+- A reference conditions every step at full strength and will copy the
+  source's artifacts; an init decays with noise. At `inject 0.70` the
+  baseline's smear detail is destroyed while its coarse motion survives.
+- The model's clock stays uniform. The slowdown exists only in the content
+  (a speed ramp), so there is no boundary where the DiT and the VAE
+  disagree about time — warping the RoPE time axis directly was tried and
+  produced boundary stutter.
+- Holds are integer, so recovering the original frame rate is exact frame
+  selection.
 
-### Why this shape (the 60-second version)
-
-- Roping is an information deficit, not a rendering bug — re-denoising the
-  same tokens can't recover poses that were never generated. Capacity has
-  to come from somewhere: here, from more frames per world-second.
-- A *reference* rides every step at full fidelity and copies artifacts in;
-  an *init* decays with noise. Inject at 0.70 and the baseline's smear
-  detail is destroyed while its coarse choreography survives.
-- The model's own clock stays uniform — the nonuniform timeline lives in
-  the content (a speed-ramp, which video models render natively), so there
-  are no rate boundaries where DiT and VAE can disagree.
-
-## 2. Contact-Sheet diffusion (five views from one reference)
+## Contact-Sheet diffusion
 
 Five standalone image latents packed on the model's time axis, jointly
-denoised, independently decoded. Pair with a Turnaround LoRA from
+denoised, decoded independently. Use with a Turnaround LoRA from
 [matlod/minimax-h3-turnaround](https://huggingface.co/matlod/minimax-h3-turnaround).
-Nodes: **H3 Contact Sheet**, **H3 Contact Sheet Decode**; a scripted example
-lives in [`example_api_workflow.py`](example_api_workflow.py).
-(Previously published as ComfyUI-H3-ContactSheet — that repo stays up for
-existing installs; this is the consolidated home going forward.)
+Nodes: **H3 Contact Sheet**, **H3 Contact Sheet Decode**; a scripted
+example is in [`example_api_workflow.py`](example_api_workflow.py).
+Previously published as ComfyUI-H3-ContactSheet; that repo remains up for
+existing installs.
 
 ## Install
 
@@ -107,10 +112,8 @@ git clone https://github.com/matlowai/ComfyUI-MAINodes
 ```
 
 Restart ComfyUI. Nodes appear under `latent/minimax/motion`,
-`image/minimax/motion`, `sampling/custom_sampling/schedulers`, and the
-contact-sheet pair under their existing categories.
+`image/minimax/motion`, and `sampling/custom_sampling/schedulers`.
 
 ## License
 
-MIT. Research notes behind the defaults are being
-written up; numbers in the tooltips come from measured A/Bs, not vibes.
+MIT
