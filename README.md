@@ -29,7 +29,9 @@ Demo clips (in [`assets/`](assets/)):
   runs too hot, and the strip along the bottom lights up as the burst
   arrives
 
-![baseline vs regenerated](assets/derope_sbs.gif)
+| baseline vs regenerated | the oracle, watching |
+|---|---|
+| ![baseline vs regenerated](assets/derope_sbs.gif) | ![the oracle, watching](assets/oracle_map.gif) |
 
 ```
 (baseline video) -> VAEDecode frames        (baseline latent)
