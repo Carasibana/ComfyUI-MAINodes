@@ -33,6 +33,11 @@ Demo clips (in [`assets/`](assets/)):
 |---|---|
 | ![baseline vs regenerated](assets/derope_sbs.gif) | ![the oracle, watching](assets/oracle_map.gif) |
 
+Already good, and slightly better: uniform dilation, then the adaptive
+map without and with `bridge`. Same seed all three.
+
+![uniform vs adaptive, without and with bridge](assets/uniform_vs_adaptive.gif)
+
 ```
 (baseline video) -> VAEDecode frames        (baseline latent)
         |                                        |
