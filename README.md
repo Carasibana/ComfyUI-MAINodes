@@ -112,5 +112,5 @@ contact-sheet pair under their existing categories.
 
 ## License
 
-GPL-3.0 (matching ComfyUI). Research notes behind the defaults are being
+MIT. Research notes behind the defaults are being
 written up; numbers in the tooltips come from measured A/Bs, not vibes.
