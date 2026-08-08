@@ -70,6 +70,31 @@ the burst arrives. This map is what decides where the timeline dilates.</p>
 <p class="cap">Already good, and slightly better: uniform dilation, then the
 adaptive map without and with bridge. Same seed all three.</p>
 
+<h2 id="featherweight">The featherweight stack, for 24 to 32 GB cards</h2>
+<video controls loop playsinline preload="metadata"
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/featherweight_ref_triptych.mp4"></video>
+<p class="cap">The whole pipeline on the smallest community models (w4a8
+DiT, int8 VAE, nvfp4 text encoder, ComfyUI 0.31+). This one is Ref2VA:
+the courier girl is defined from two reference stills and dropped into a
+scene she has never been in, then de-roped. Baseline, recovered, and the
+oracle map that steered it. A 5 s, 1.0 MP de-rope fits a 32 GB card;
+measured numbers in TUNING.md.</p>
+
+<video controls loop playsinline preload="metadata"
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/featherweight_flf_triptych.mp4"></video>
+<p class="cap">First-and-last-frame conditioning through the same pipeline.
+The end anchor names a timestamp that lands mid-clip on the dilated
+regeneration's clock, and it simply does not fight: the injected
+trajectory owns the timing and the clip still lands on the anchor pose.
+Image-to-video works the same way
+(<a href="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/featherweight_i2v_triptych.mp4">clip</a>).</p>
+
+<video controls loop playsinline preload="metadata"
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/featherweight_int8_vs_w4a8_quad.mp4"></video>
+<p class="cap">One honest caveat: int8 and w4a8 render different takes from
+the same seed, because quantization bends the trajectory. Both coherent,
+both de-rope cleanly. Compare quality, not pixels.</p>
+
 <p style="margin-top:3em">Docs: <a href="https://github.com/matlowai/ComfyUI-MAINodes/blob/main/TUNING.md">TUNING.md</a>
 &middot; workflows in <a href="https://github.com/matlowai/ComfyUI-MAINodes/tree/main/examples">examples/</a>
 &middot; MIT</p>

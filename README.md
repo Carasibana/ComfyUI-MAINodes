@@ -49,6 +49,9 @@ Demo clips:
   header
   ([view](https://matlowai.github.io/ComfyUI-MAINodes/#ladder) /
   [download](https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/preview_ladder_grid.mp4))
+- the featherweight stack on 24-32 GB cards, with a Ref2VA subject drop-in
+  ([view](https://matlowai.github.io/ComfyUI-MAINodes/#featherweight) /
+  [download](https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/featherweight_ref_triptych.mp4))
 
 | baseline vs regenerated | the oracle, watching |
 |---|---|
