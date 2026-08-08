@@ -64,13 +64,42 @@ regeneration pass (87 tokens) ~9 GB. Roughly half that at 0.5 MP.
   offloading and steps balloon (~20 s/it reports). What helps, in order:
   start with 2 to 3 second clips (the dilated span is what hurts), drop
   the regeneration to 0.5 MP, or use the probe graph so there are far
-  fewer of those expensive steps. The experimental w4a8 DiT (12.5 GB,
-  Kijai/MiniMax-H3-experimental, needs ComfyUI 0.31) should make 5 s at
-  1.0 MP comfortable (~23 GB); we have not validated it yet.
-- 24 GB: w4a8 plus 0.5 MP plus short clips territory. Untested by us.
+  fewer of those expensive steps. Or switch stacks entirely: see the
+  featherweight numbers below.
+- 24 GB: featherweight plus 0.5 MP plus short clips territory. Untested
+  by us so far.
 
 Cost scales with the burst spans, not the clip length, so a long clip
 with one short burst is far cheaper than these worst-case numbers.
+
+### Featherweight stack, measured (ComfyUI 0.31+)
+
+The smallest community-published variant of each piece: w4a8 DiT
+(12.5 GB, Kijai/MiniMax-H3-experimental), int8_convrot video VAE
+(3.2 GB), nvfp4 AWQ text encoder (15.7 GB, offloads after encoding).
+Needs ComfyUI 0.31 with comfy-kitchen 0.2.28. Full de-roping pipeline
+measured on one card (peaks are torch-allocated for the whole process):
+
+| run | wall time | peak, TE resident | peak with TE offloaded |
+|---|---|---|---|
+| 3 s at 0.4 MP | 4.0 min | 34.4 GB | ~19 GB |
+| 3 s at 0.7 MP | 6.3 min | 35.2 GB | ~20 GB |
+| 5 s at 1.0 MP | 29 min | 43.8 GB | ~28 GB peak, ~20 GB sustained |
+
+The last column is what consumer cards see: without `--gpu-only` the
+text encoder leaves VRAM after encoding, which is default behavior. So
+a 5 s, 1.0 MP de-rope fits a 32 GB card with a few GB of headroom (the
+28 GB figure is a brief spike, under a minute total), and 3 s clips run
+comfortably. Resolution barely moves the peak (0.4 to 0.7 MP added less
+than 1 GB); frame count is what costs.
+
+Two honest notes. Quality: the featherweight output is coherent and
+sharp in our runs, but a given seed renders a DIFFERENT take of the
+scene than the int8 stack; quantization changes the trajectory, so
+compare quality, not pixels. Speed: on our card the w4a8 pipeline ran
+somewhat slower per clip than int8 (29 vs low-20s minutes for the 5 s
+case); on a 32 GB card that is the wrong comparison, because int8 does
+not fit and offload-thrash costs far more.
 
 ## Method
 

@@ -113,6 +113,13 @@ There is also [`motion_pipeline_i50.json`](examples/motion_pipeline_i50.json),
 the same finals graph with the inject 0.50 preset selected, for people who
 prefer the sharper flavor without touching a dropdown.
 
+For 24 to 32 GB cards there is
+[`motion_pipeline_featherweight.json`](examples/motion_pipeline_featherweight.json):
+the same finals graph pointed at the smallest community-published models
+(w4a8 DiT, int8_convrot VAE, nvfp4 text encoder). Needs ComfyUI 0.31+.
+Measured numbers and the honest caveats live in
+[TUNING.md](TUNING.md#featherweight-stack-measured-comfyui-031).
+
 All of them generate or probe a baseline, read its oracle, regenerate,
 and recover, in one queue item. The oracle's length and the regeneration
 length are wired dynamically, so changing the clip duration needs no
@@ -152,6 +159,7 @@ scale to your card and clip:
 | pipeline, inject 0.70 (`motion_pipeline.json`) | ~19 min incl. its own baseline | the default finals: safest playback feel |
 | pipeline, inject 0.50 (`motion_pipeline_i50.json`) | ~15 min incl. baseline | sharper, tracks the source motion closer; try both |
 | probe + expert turbo (`motion_pipeline_probe_expert.json`) | ~8.5 min, no full baseline | the fast full de-rope; preview output is intentionally rough |
+| featherweight (`motion_pipeline_featherweight.json`, ComfyUI 0.31+) | 4-6 min for 3 s clips; ~29 min for 5 s at 1.0 MP | the 24-32 GB card path; fits where int8 thrashes. See TUNING for measured peaks |
 
 Start with a short clip, 2 to 3 seconds, and scale up once you like what
 you see. Durations snap to the model's legal frame counts automatically
