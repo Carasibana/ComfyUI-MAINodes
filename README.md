@@ -113,7 +113,8 @@ other edits. Each node's info button documents its inputs.
 | H3 Expert Schedule | `base_head` | 2 | split the injected schedule: base-model head for structure, turbo tail for refinement (tail defaults to turbo's native 4 steps) |
 | H3 Trajectory Bank | `every_n` | 1 | wraps a sampler and checkpoints the trajectory latent each step (~7 MB per step for a 5 s clip) |
 | H3 Trajectory Load | `step` | 5 | resume a banked run from any step with its remaining schedule; swap the model, LoRA, or guider and continue without recomputing the head |
-| H3 Motion Composite | `threshold`, `grow`, `feather` | 0.35, 32, 48 | keeps regenerated pixels where the oracle saw motion and baseline pixels elsewhere. Fixes background agents (birds, crowds) getting overcranked by the time warp: their baseline timing was correct all along |
+| H3 V2V Init | `freeze_threshold` | 0 (off) | background freeze: with the baseline latent wired to `oracle_samples`, everything outside the motion region stays frozen to the init during generation, so background timing is exactly the baseline's. The in-generation fix for background agents speeding up |
+| H3 Motion Composite | | | deprecated: post-hoc compositing made moving background objects pop at the mask boundary in playback. Use the freeze above instead |
 
 A tuning guide for all of this, written for humans and for AI assistants
 working on a user's behalf, is in [`TUNING.md`](TUNING.md).

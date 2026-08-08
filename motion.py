@@ -253,7 +253,16 @@ class H3V2VInit:
         "causally synced foley, the preferred audio source for regenerated "
         "content. length=0 (default) derives the frame count from the latent "
         "itself; wire H3 Time Smear's length output or set it only to assert "
-        "a specific grid.")
+        "a specific grid.\n\n"
+        "Background freeze: wire the BASELINE latent into oracle_samples and "
+        "set freeze_threshold above 0 to keep everything outside the "
+        "oracle's motion region frozen to the smeared init during "
+        "generation. Frozen background is held baseline content, so after "
+        "exact recovery its timing is exactly the baseline's: background "
+        "agents (birds, crowds) cannot speed up. The mask is static over "
+        "time, so nothing pops at its boundary. Effects that fly far from "
+        "the subject may be clipped by the freeze; lower the threshold or "
+        "raise freeze_grow to give them room.")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -262,13 +271,24 @@ class H3V2VInit:
         }, "optional": {
             "length": ("INT", {"default": 0, "min": 0, "max": 3600,
                                "tooltip": "0 = derive from the latent (recommended); nonzero asserts this exact 17k+5 length"}),
+            "oracle_samples": ("LATENT", {"tooltip": "baseline latent; enables background freezing"}),
+            "freeze_threshold": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                "tooltip": "0 = off. Above 0: freeze background latent to the smeared init so its "
+                           "timing stays exactly the baseline's (fixes background agents speeding up). "
+                           "The subject mask is the oracle heat unioned over time, so the boundary never moves. "
+                           "0.35 is a sane start."}),
+            "freeze_grow": ("INT", {"default": 2, "min": 0, "max": 16,
+                "tooltip": "latent-pixels of mask dilation (16 image px each)"}),
         }}
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "build"
     CATEGORY = "latent/minimax/motion"
 
-    def build(self, samples, length=0):
+    def build(self, samples, length=0, oracle_samples=None, freeze_threshold=0.0,
+              freeze_grow=2):
+        import torch.nn.functional as F
+
         import comfy.nested_tensor
         from comfy_extras.nodes_minimax_h3 import temporal_shape
 
@@ -280,7 +300,31 @@ class H3V2VInit:
             f"latent has {video.shape[2]} tokens, length {length} needs {t_lat}")
         audio = torch.zeros(video.shape[0], 32, 2, audio_t,
                             device=video.device, dtype=video.dtype)
-        return ({"samples": comfy.nested_tensor.NestedTensor((video, audio))},)
+        out = {"samples": comfy.nested_tensor.NestedTensor((video, audio))}
+
+        if oracle_samples is not None and freeze_threshold > 0:
+            z = _video_component(oracle_samples)
+            v = z.detach().float().cpu().numpy()
+            jmap = np.abs(np.diff(v, n=3, axis=2)).mean(axis=(0, 1))  # (T-3, h, w)
+            for ph in range(5):
+                m = jmap[ph::5].mean()
+                if m > 0:
+                    jmap[ph::5] /= m
+            heat = jmap.max(axis=0)                       # union over time: static boundary
+            lo, hi = np.quantile(heat, 0.05), np.quantile(heat, 0.995)
+            heat = np.clip((heat - lo) / (hi - lo + 1e-9), 0, 1)
+            m = torch.from_numpy(heat >= freeze_threshold).float()[None, None]
+            if freeze_grow:
+                k = freeze_grow * 2 + 1
+                m = F.max_pool2d(m, k, stride=1, padding=k // 2)
+            h, w = video.shape[3], video.shape[4]
+            if m.shape[-2:] != (h, w):
+                m = F.interpolate(m, size=(h, w), mode="nearest")
+            vid_mask = m[0, 0].expand(t_lat, h, w)[None, None].to(video.device)
+            aud_mask = torch.ones(1, 32, 2, audio_t)
+            out["noise_mask"] = comfy.nested_tensor.NestedTensor(
+                (vid_mask.contiguous(), aud_mask))
+        return (out,)
 
 
 class H3InjectSchedule:
