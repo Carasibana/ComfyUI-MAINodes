@@ -101,6 +101,26 @@ somewhat slower per clip than int8 (29 vs low-20s minutes for the 5 s
 case); on a 32 GB card that is the wrong comparison, because int8 does
 not fit and offload-thrash costs far more.
 
+### Conditioning modes (I2VA, FL2VA, Ref2VA)
+
+The pipeline works with all of them, unmodified, at the shipped
+defaults. Tested end to end on the featherweight stack: wire your
+`first_frame` / `last_frame` / reference inputs into BOTH conditioning
+nodes (the baseline's and the regeneration's) and run.
+
+- I2VA: the first-frame pin lands at t=0 on any clock, so the
+  regeneration honors it exactly. Recovered frame 0 matched the
+  reference in our test.
+- FL2VA: the last-frame pin names a timestamp that lands mid-clip on
+  the regeneration's dilated clock, and it does not matter: at inject
+  0.70 the injected trajectory owns the timing and the pins act as
+  pose guidance. The recovered clip hit the anchor pose at the true
+  end. At much lower inject values this could in principle fight; if
+  your FLF de-rope stalls mid-clip, raise inject back toward 0.70.
+- Ref2VA (the ref2va checkpoint, w4a8 available): reference tokens
+  carry no timeline, so they pass through dilation untouched. Subject
+  identity held through the full de-rope in our test.
+
 ## Method
 
 - Change one dial at a time, same seed, and compare in playback. Still
