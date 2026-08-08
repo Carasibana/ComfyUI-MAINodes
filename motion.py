@@ -837,6 +837,47 @@ class H3MotionComposite:
         return (torch.stack(out),)
 
 
+class _AnyType(str):
+    def __ne__(self, other):
+        return False
+
+
+ANY = _AnyType("*")
+
+
+class H3ModeSwitch:
+    """Lazy two-way switch: only the selected branch executes."""
+
+    DESCRIPTION = (
+        "Routes one of two inputs through, and only the selected branch "
+        "executes (lazy evaluation), so a single workflow can carry both a "
+        "fast turbo preview path and the full pipeline with a mode dropdown "
+        "deciding which one actually runs. Wire any matching pair: VIDEO to "
+        "VIDEO, IMAGE to IMAGE. Recommended use: mode 'preview' while "
+        "iterating prompts and seeds, 'final' for the keeper.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "mode": (["preview", "final"], {"default": "preview"}),
+        }, "optional": {
+            "preview": (ANY, {"lazy": True}),
+            "final": (ANY, {"lazy": True}),
+        }}
+
+    RETURN_TYPES = (ANY,)
+    FUNCTION = "pick"
+    CATEGORY = "utils/minimax"
+
+    def check_lazy_status(self, mode, preview=None, final=None):
+        return ["preview"] if mode == "preview" else ["final"]
+
+    def pick(self, mode, preview=None, final=None):
+        out = preview if mode == "preview" else final
+        assert out is not None, f"selected branch '{mode}' is not wired"
+        return (out,)
+
+
 TIMESMEAR_CLASS_MAPPINGS = {
     "H3JerkOracle": H3JerkOracle,
     "H3TimeSmear": H3TimeSmear,
@@ -850,6 +891,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3TrajectoryBank": H3TrajectoryBank,
     "H3TrajectoryLoad": H3TrajectoryLoad,
     "H3MotionComposite": H3MotionComposite,
+    "H3ModeSwitch": H3ModeSwitch,
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3JerkOracle": "H3 Jerk Oracle (profile / window / hold map)",
@@ -864,4 +906,5 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3TrajectoryBank": "H3 Trajectory Bank (checkpoint every step)",
     "H3TrajectoryLoad": "H3 Trajectory Load (branch from a step)",
     "H3MotionComposite": "H3 Motion Composite (subject regen, background baseline)",
+    "H3ModeSwitch": "H3 Mode Switch (preview / final, lazy)",
 }
