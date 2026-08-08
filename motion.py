@@ -498,6 +498,86 @@ class H3AudioRecover:
         return ({"waveform": y.reshape(b, c, -1).contiguous(), "sample_rate": sr},)
 
 
+class H3ProbeSchedule:
+    """Head-only schedule for oracle probing: skip most of the first pass."""
+
+    DESCRIPTION = (
+        "Runs only the head of the baseline schedule. Wire the sampler's "
+        "denoised_output (the x0 estimate) into H3 Jerk Oracle and into the "
+        "decode that feeds H3 Time Smear: in our measurements the burst "
+        "timing is readable by step 4-5 of 25, and injection destroys fine "
+        "detail anyway, so the coarse early estimate is a workable init. "
+        "probe_steps is the dial: 6 of 25 skips ~75% of the first pass; "
+        "raise it if the init loses too much choreography on your content. "
+        "Trade-off: no finished baseline means no finished baseline audio "
+        "(H3 Audio Recover's reference input has nothing full-speed to "
+        "blend, and the probe's own audio estimate is rough).")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "scheduler": (["simple", "normal", "beta", "sgm_uniform", "karras",
+                           "exponential"], {"default": "simple"}),
+            "total_steps": ("INT", {"default": 25, "min": 4, "max": 100}),
+            "probe_steps": ("INT", {"default": 6, "min": 2, "max": 100,
+                            "tooltip": "how much of the schedule to actually run"}),
+        }}
+
+    RETURN_TYPES = ("SIGMAS",)
+    FUNCTION = "sigmas"
+    CATEGORY = "sampling/custom_sampling/schedulers"
+
+    def sigmas(self, model, scheduler, total_steps, probe_steps):
+        import comfy.samplers
+        full = comfy.samplers.calculate_sigmas(
+            model.get_model_object("model_sampling"), scheduler, total_steps)
+        return (full[:min(probe_steps, total_steps) + 1],)
+
+
+class H3ExpertSchedule:
+    """Split the injected schedule: base-model head, turbo tail."""
+
+    DESCRIPTION = (
+        "Expert split for the regeneration pass: the first base_head steps "
+        "run on the base model (structure forms on the least-distilled "
+        "weights), the remaining steps run on the turbo LoRA (refinement, "
+        "where distilled models are comfortable). Outputs head and tail "
+        "sigma slices of one continuous schedule. Wire: head into a "
+        "SamplerCustomAdvanced on the plain model with your RandomNoise; "
+        "tail into a second SamplerCustomAdvanced on the LoRA-patched "
+        "model with DisableNoise, continuing the head's output latent. "
+        "Defaults: total 8, inject 0.70 (6 steps run), base_head 2, so the "
+        "turbo tail gets 4 steps, its native count.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "scheduler": (["simple", "normal", "beta", "sgm_uniform", "karras",
+                           "exponential"], {"default": "beta"}),
+            "total_steps": ("INT", {"default": 8, "min": 4, "max": 100}),
+            "inject": ("FLOAT", {"default": 0.70, "min": 0.05, "max": 1.0,
+                                 "step": 0.05}),
+            "base_head": ("INT", {"default": 2, "min": 0, "max": 20,
+                          "tooltip": "steps run on the base model before the turbo tail"}),
+        }}
+
+    RETURN_TYPES = ("SIGMAS", "SIGMAS")
+    RETURN_NAMES = ("head_sigmas", "tail_sigmas")
+    FUNCTION = "sigmas"
+    CATEGORY = "sampling/custom_sampling/schedulers"
+
+    def sigmas(self, model, scheduler, total_steps, inject, base_head):
+        import comfy.samplers
+        full = comfy.samplers.calculate_sigmas(
+            model.get_model_object("model_sampling"), scheduler, total_steps)
+        run = max(1, int(round(total_steps * inject)))
+        s = full[total_steps - run:]
+        h = min(base_head, run - 1)
+        return (s[:h + 1], s[h:])
+
+
 TIMESMEAR_CLASS_MAPPINGS = {
     "H3JerkOracle": H3JerkOracle,
     "H3TimeSmear": H3TimeSmear,
@@ -506,6 +586,8 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3InjectSchedule": H3InjectSchedule,
     "H3JerkHeatmap": H3JerkHeatmap,
     "H3AudioRecover": H3AudioRecover,
+    "H3ProbeSchedule": H3ProbeSchedule,
+    "H3ExpertSchedule": H3ExpertSchedule,
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3JerkOracle": "H3 Jerk Oracle (profile / window / hold map)",
@@ -515,4 +597,6 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3InjectSchedule": "H3 Inject Schedule (v2v sigmas, 0.70)",
     "H3JerkHeatmap": "H3 Jerk Heatmap (oracle overlay tile)",
     "H3AudioRecover": "H3 Audio Recover (hold-map atempo, pitch kept)",
+    "H3ProbeSchedule": "H3 Probe Schedule (early-oracle head)",
+    "H3ExpertSchedule": "H3 Expert Schedule (base head, turbo tail)",
 }

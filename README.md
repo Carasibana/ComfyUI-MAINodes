@@ -71,8 +71,17 @@ schedule, 3 of 4 steps after injection). Point the LoRA loader at
 wherever you saved the conversion; community strength range is 0.65 to
 0.8, and v0.1 of that LoRA is a preview, so judge results accordingly.
 
-All of them generate a baseline, read its oracle, regenerate, and
-recover, in one queue item. The oracle's length and the regeneration
+A fourth graph,
+[`motion_pipeline_probe_expert.json`](examples/motion_pipeline_probe_expert.json),
+is the fast path: instead of finishing the baseline it runs only the
+first 6 steps (H3 Probe Schedule, configurable) and reads the oracle and
+the init from the early x0 estimate, then regenerates with a base-model
+head and a turbo tail (H3 Expert Schedule). Cheapest of the set; no
+full-speed audio track to blend, and the saved preview is intentionally
+rough.
+
+All of them generate or probe a baseline, read its oracle, regenerate,
+and recover, in one queue item. The oracle's length and the regeneration
 length are wired dynamically, so changing the clip duration needs no
 other edits. Each node's info button documents its inputs.
 
@@ -93,6 +102,11 @@ other edits. Each node's info button documents its inputs.
 | H3 Audio Recover | `fps` | 24 | retimes the regenerated audio to the original clock with the same hold map, pitch preserved, so the recovered video keeps its own foley |
 | | `reference_mix` | 0 | thickness dial: the regenerated foley is scored for the slowed take and comes back leaner (arguably more realistic); blend the baseline's denser full-speed track back in, 0 to 1. The two performances drift slightly in timing, so mid values can double misaligned impacts; the dial is happiest near its ends |
 | H3 Jerk Heatmap | `alpha`, `strip_height` | 0.55, 96 | the oracle-watching overlay from the demo clip, as a node |
+| H3 Probe Schedule | `probe_steps` | 6 | run only the head of the baseline; the early x0 feeds the oracle and the init. Raise it if the init loses choreography |
+| H3 Expert Schedule | `base_head` | 2 | split the injected schedule: base-model head for structure, turbo tail for refinement (tail defaults to turbo's native 4 steps) |
+
+A tuning guide for all of this, written for humans and for AI assistants
+working on a user's behalf, is in [`TUNING.md`](TUNING.md).
 
 ### bridge and inject
 
