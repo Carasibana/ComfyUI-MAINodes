@@ -60,17 +60,43 @@ class H3JerkOracle:
     knobs consume: LocalRate segment string, detected window, and the
     per-frame integer hold map (with C1 ramp shoulders) for H3TimeSmear."""
 
+    DESCRIPTION = (
+        "Reads WHERE and WHEN a clip's motion is too fast for the model from "
+        "the clip's own latent (per-token jerk, |Δ³| over time). Outputs: "
+        "hold_map → wire into H3 Time Smear for ADAPTIVE dilation; segments → "
+        "H3 Local Rate; window/profile for inspection.\n\n"
+        "Knobs: q = jerk quantile that counts as 'hot' (default 0.75; raise "
+        "toward 0.85 for tighter spans and lower cost, lower toward 0.7 to "
+        "catch more of the burst). d_max = peak hold count (default 4; the "
+        "measured sweet spot — 2-3 saves time but starts to rope again). "
+        "ramp = C1 shoulders on the hold curve (keep ON; hard steps jitter).\n\n"
+        "ADAPTIVE MODE NOTE: the oracle hold map dilates only the hot spans, "
+        "which saves significant render time (~2.4-3x total budget instead of "
+        "uniform 4x) and follows the clip's intended pacing/attention more "
+        "closely — quiet spans keep their native beat contrast. Trade-off: it "
+        "can artifact slightly more than uniform dilation if the hold plateau "
+        "dips inside a burst; if you see hiccups mid-burst, lower q or raise "
+        "d_max so the whole burst sits at the plateau.")
+
+    PRESETS = {
+        "balanced (default)": {"q": 0.75, "d_max": 4, "ramp": True},
+        "max quality (wide plateau)": {"q": 0.70, "d_max": 4, "ramp": True},
+        "economy (tight spans)": {"q": 0.85, "d_max": 3, "ramp": True},
+    }
+
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
             "samples": ("LATENT",),
             "length": ("INT", {"default": 124, "min": 5, "max": 3600, "step": 17}),
+            "preset": (["custom"] + list(cls.PRESETS), {"default": "balanced (default)",
+                       "tooltip": "any choice but 'custom' overrides the knobs below"}),
             "q": ("FLOAT", {"default": 0.75, "min": 0.5, "max": 0.99, "step": 0.01,
-                            "tooltip": "jerk quantile that counts as hot; higher = tighter span"}),
+                            "tooltip": "jerk quantile that counts as hot; higher = tighter span, lower cost"}),
             "d_max": ("INT", {"default": 4, "min": 2, "max": 8,
-                              "tooltip": "peak hold count / divisor on the hottest tokens"}),
+                              "tooltip": "peak hold count on the hottest tokens; 4 = measured sweet spot"}),
             "ramp": ("BOOLEAN", {"default": True,
-                                 "tooltip": "C1 ramp shoulders (1,2,..,d_max,..,2,1) instead of hard steps"}),
+                                 "tooltip": "C1 ramp shoulders (1,2,..,d_max,..,2,1) instead of hard steps — keep ON"}),
         }}
 
     RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "STRING")
@@ -78,7 +104,10 @@ class H3JerkOracle:
     FUNCTION = "read"
     CATEGORY = "latent/minimax/motion"
 
-    def read(self, samples, length, q, d_max, ramp):
+    def read(self, samples, length, q, d_max, ramp, preset="custom"):
+        if preset in self.PRESETS:
+            p = self.PRESETS[preset]
+            q, d_max, ramp = p["q"], p["d_max"], p["ramp"]
         z = _video_component(samples)
         t_lat = z.shape[2]
         prof = _jerk_profile(z)
@@ -120,6 +149,19 @@ class H3TimeSmear:
     the final hold; the emitted hold_map records exactly what happened so
     H3ExactRecover can invert it losslessly."""
 
+    DESCRIPTION = (
+        "Retimes frames onto a longer uniform grid by integer frame holds — "
+        "the seed material for v2v regeneration.\n\n"
+        "Two modes: UNIFORM (nothing wired to hold_map): every frame held "
+        "'dilation' times (default 4 — the zero-artifact reference point; "
+        "highest cost). ADAPTIVE (wire H3 Jerk Oracle's hold_map): only "
+        "jerk-hot spans get held, quiet spans stay real-time — cheaper and "
+        "preserves the clip's natural beat contrast ('motion beauty'), at a "
+        "small artifact risk where the hold curve dips inside a burst.\n\n"
+        "Output length is snapped up to the H3-legal 17k+5 grid by extending "
+        "the final hold. ALWAYS pass hold_map_used to H3 Exact Recover — it "
+        "records exactly what happened so recovery is lossless.")
+
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
@@ -137,6 +179,7 @@ class H3TimeSmear:
     CATEGORY = "image/minimax/motion"
 
     def smear(self, images, dilation, hold_map=""):
+        images = images.detach().cpu()  # keep the (possibly huge) held batch off VRAM
         n = images.shape[0]
         holds = (json.loads(hold_map)["holds"] if hold_map.strip()
                  else [dilation] * n)
@@ -152,6 +195,13 @@ class H3TimeSmear:
 class H3ExactRecover:
     """Invert H3TimeSmear: keep the first frame of every hold group —
     exact 24fps real-time recovery by frame selection (never resampling)."""
+
+    DESCRIPTION = (
+        "Inverts H3 Time Smear: keeps the first frame of every hold group, "
+        "giving exact 24fps real-time recovery by pure frame selection — "
+        "never interpolation or resampling, so recovered frames are pixel-"
+        "identical to generated ones. Wire hold_map from the SAME H3 Time "
+        "Smear node that produced the frames (hold_map_used output).")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -180,6 +230,14 @@ class H3V2VInit:
     injection (pair with H3InjectSchedule). Audio starts from zeros and
     regenerates on the truncated schedule (jointly with the video —
     the operator-preferred audio source for regenerated content)."""
+
+    DESCRIPTION = (
+        "Wraps a VAE-encoded video latent (from VAEEncode of the smeared "
+        "frames) as the nested audio+video latent H3's SamplerCustomAdvanced "
+        "expects, ready for partial-denoise injection. Audio starts empty and "
+        "generates jointly with the video on the truncated schedule — "
+        "causally synced foley, the preferred audio source for regenerated "
+        "content. 'length' must match the smeared frame count (17k+5).")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -212,22 +270,46 @@ class H3InjectSchedule:
     rendering; lower inherits more artifact risk, higher drifts toward
     free generation (invented-physics regime)."""
 
+    DESCRIPTION = (
+        "Truncated sigma schedule for v2v injection — THE quality dial of "
+        "the pipeline. inject = how much of the denoise trajectory actually "
+        "runs on top of your smeared init.\n\n"
+        "Recommended range 0.5-0.8. Default 0.70 (playback-ratified). 0.5 "
+        "measured as the metric quality point in our A/B (sharpest AND "
+        "closest choreography tracking) — try both on your content. Below "
+        "~0.5 the init's own artifacts start surviving into the output; "
+        "above ~0.8 the model increasingly ignores your baseline and invents "
+        "its own choreography. total_steps 25 for the base model; drop to "
+        "the distilled step count if you stack a turbo LoRA (measure first — "
+        "injection under heavy distillation is still experimental).")
+
+    PRESETS = {
+        "balanced 0.70 (default)": 0.70,
+        "faithful detail 0.50 (metric best)": 0.50,
+        "loose / creative 0.80": 0.80,
+    }
+
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
             "model": ("MODEL",),
+            "preset": (["custom"] + list(cls.PRESETS), {"default": "balanced 0.70 (default)",
+                       "tooltip": "any choice but 'custom' overrides the inject knob"}),
             "scheduler": (["simple", "normal", "beta", "sgm_uniform", "karras",
                            "exponential"], {"default": "simple"}),
             "total_steps": ("INT", {"default": 25, "min": 4, "max": 100}),
             "inject": ("FLOAT", {"default": 0.70, "min": 0.05, "max": 1.0,
-                                 "step": 0.05}),
+                                 "step": 0.05,
+                                 "tooltip": "0.5-0.8 recommended; lower keeps init artifacts, higher invents choreography"}),
         }}
 
     RETURN_TYPES = ("SIGMAS",)
     FUNCTION = "sigmas"
     CATEGORY = "sampling/custom_sampling/schedulers"
 
-    def sigmas(self, model, scheduler, total_steps, inject):
+    def sigmas(self, model, scheduler, total_steps, inject, preset="custom"):
+        if preset in self.PRESETS:
+            inject = self.PRESETS[preset]
         import comfy.samplers
         full = comfy.samplers.calculate_sigmas(
             model.get_model_object("model_sampling"), scheduler, total_steps)
@@ -238,6 +320,14 @@ class H3InjectSchedule:
 class H3JerkHeatmap:
     """The oracle made visible (demo tile as a node): jerk-heat overlay on
     the frames + a per-token jerk strip with playhead along the bottom."""
+
+    DESCRIPTION = (
+        "The oracle made visible: overlays the jerk heat map on your frames "
+        "(red-yellow pools where motion is too fast per latent token) and "
+        "draws the per-token jerk profile as a bar strip with a playhead — "
+        "watch the burst light up as playback reaches it. Purely diagnostic/"
+        "presentational; wire the same latent you'd give H3 Jerk Oracle. "
+        "alpha 0.4-0.7 reads well; strip_height 0 hides the bar strip.")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -253,6 +343,7 @@ class H3JerkHeatmap:
     CATEGORY = "image/minimax/motion"
 
     def overlay(self, images, samples, alpha, strip_height):
+        images = images.detach().float().cpu()  # --gpu-only hands us cuda tensors
         z = _video_component(samples)
         t_lat = z.shape[2]
         n, H, W, _ = images.shape
