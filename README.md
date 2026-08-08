@@ -59,7 +59,17 @@ map without and with `bridge`. Same seed all three.
                               VAEDecode -> H3ExactRecover -> original fps
 ```
 
-Two ready-made graphs live in [`examples/`](examples/):
+Three ready-made graphs live in [`examples/`](examples/):
+[`motion_pipeline.json`](examples/motion_pipeline.json) drags straight
+onto the ComfyUI canvas;
+[`motion_pipeline_api.json`](examples/motion_pipeline_api.json) is the
+same graph in API format for scripted use; and
+[`motion_pipeline_turbo.json`](examples/motion_pipeline_turbo.json) is the
+same pipeline with the regeneration pass running on the LightX2V 4-step
+turbo LoRA (Kijai's ComfyUI conversion, strength 0.8, er_sde with a beta
+schedule, 3 of 4 steps after injection). Point the LoRA loader at
+wherever you saved the conversion; community strength range is 0.65 to
+0.8, and v0.1 of that LoRA is a preview, so judge results accordingly.
 [`motion_pipeline.json`](examples/motion_pipeline.json) drags straight
 onto the ComfyUI canvas, and
 [`motion_pipeline_api.json`](examples/motion_pipeline_api.json) is the
