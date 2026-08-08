@@ -422,7 +422,15 @@ class H3AudioRecover:
         "duration shrinks. Wire audio from VAEDecodeAudio of the "
         "regenerated latent and hold_map from the same H3 Time Smear that "
         "built the init; the result lines up with H3 Exact Recover's video "
-        "frame for frame. fps is the video frame rate the holds count in.")
+        "frame for frame. fps is the video frame rate the holds count in.\n\n"
+        "Thickness dial: the regenerated foley is scored for the slowed "
+        "performance, so it comes back leaner than a native-speed mix "
+        "(often a more realistic feel). Wire the baseline clip's audio "
+        "into reference and raise reference_mix to blend its denser "
+        "full-speed track back in: 0 keeps the lean regenerated foley, "
+        "1 is the baseline track alone. Note: with an adaptive hold map, "
+        "audio in unheld spans passes through untouched, so dialog "
+        "outside the bursts is unaffected either way.")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -430,13 +438,18 @@ class H3AudioRecover:
             "audio": ("AUDIO",),
             "hold_map": ("STRING", {"default": ""}),
             "fps": ("INT", {"default": 24, "min": 1, "max": 120}),
+        }, "optional": {
+            "reference": ("AUDIO", {"tooltip": "baseline clip audio (already real-time)"}),
+            "reference_mix": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0,
+                                        "step": 0.05,
+                                        "tooltip": "0 = regenerated foley only (lean), 1 = reference only (dense)"}),
         }}
 
     RETURN_TYPES = ("AUDIO",)
     FUNCTION = "recover"
     CATEGORY = "audio/minimax/motion"
 
-    def recover(self, audio, hold_map, fps=24):
+    def recover(self, audio, hold_map, fps=24, reference=None, reference_mix=0.0):
         import math
 
         import torchaudio  # noqa: F401  (phase_vocoder)
@@ -473,6 +486,15 @@ class H3AudioRecover:
             spec = torchaudio.functional.phase_vocoder(spec, float(h), phase_adv)
             segs.append(torch.istft(spec, n_fft, hop, window=window))
         y = torch.cat(segs, dim=1)
+        if reference is not None and reference_mix > 0:
+            ref = reference["waveform"].detach().float().cpu().reshape(-1, reference["waveform"].shape[-1])
+            if reference["sample_rate"] != sr:
+                import torchaudio as _ta
+                ref = _ta.functional.resample(ref, reference["sample_rate"], sr)
+            n_out = min(y.shape[1], ref.shape[1])
+            if ref.shape[0] != y.shape[0]:
+                ref = ref[:1].expand(y.shape[0], -1)
+            y = (1 - reference_mix) * y[:, :n_out] + reference_mix * ref[:, :n_out]
         return ({"waveform": y.reshape(b, c, -1).contiguous(), "sample_rate": sr},)
 
 
