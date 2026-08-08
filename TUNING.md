@@ -9,9 +9,16 @@ test clips; expect your content to move the numbers a little.
 
 | priority | graph | cost (vs one baseline render) |
 |---|---|---|
-| best quality, audio dial available | `examples/motion_pipeline.json` | ~3.5x |
+| best quality, audio dial available (recommended for finals) | `examples/motion_pipeline.json` | ~3.5x |
 | good quality, fast | `examples/motion_pipeline_turbo.json` | ~1.6x |
-| fastest, no full baseline | `examples/motion_pipeline_probe_expert.json` | ~1x or less |
+| fastest, no full baseline (scouting) | `examples/motion_pipeline_probe_expert.json` | ~1x or less |
+
+The working rhythm we recommend: iterate prompts and seeds with plain
+turbo generations to learn what a prompt gives you globally, then run the
+keeper through the base pipeline. Users reaching for this pipeline
+usually want the best version of the clip; the faster graphs trade
+quality for speed and are there for different budgets, not as the
+default.
 
 The probe graph never finishes the baseline, so there is no full-speed
 audio track to blend and the preview output is intentionally blurry. If

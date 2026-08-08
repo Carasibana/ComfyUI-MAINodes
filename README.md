@@ -71,6 +71,13 @@ schedule, 3 of 4 steps after injection). Point the LoRA loader at
 wherever you saved the conversion; community strength range is 0.65 to
 0.8, and v0.1 of that LoRA is a preview, so judge results accordingly.
 
+Our recommended split after using all three: scout with turbo, finish
+with base. Iterate prompts and seeds on a plain turbo generation to see
+what you will get globally, then run the keeper through the base
+pipeline. The turbo and probe graphs stay for people with different
+budgets, but if you are reaching for this pipeline at all, you probably
+want the best version of the clip, and that is the base graph.
+
 A fourth graph,
 [`motion_pipeline_probe_expert.json`](examples/motion_pipeline_probe_expert.json),
 is the fast path: instead of finishing the baseline it runs only the
