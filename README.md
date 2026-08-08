@@ -70,14 +70,11 @@ turbo LoRA (Kijai's ComfyUI conversion, strength 0.8, er_sde with a beta
 schedule, 3 of 4 steps after injection). Point the LoRA loader at
 wherever you saved the conversion; community strength range is 0.65 to
 0.8, and v0.1 of that LoRA is a preview, so judge results accordingly.
-[`motion_pipeline.json`](examples/motion_pipeline.json) drags straight
-onto the ComfyUI canvas, and
-[`motion_pipeline_api.json`](examples/motion_pipeline_api.json) is the
-same thing in API format for scripted use. Both generate a baseline, read
-its oracle, regenerate, and recover, in one queue item. The oracle's
-length and the regeneration length are wired dynamically, so changing the
-clip duration needs no other edits. Each node's info button documents its
-inputs.
+
+All of them generate a baseline, read its oracle, regenerate, and
+recover, in one queue item. The oracle's length and the regeneration
+length are wired dynamically, so changing the clip duration needs no
+other edits. Each node's info button documents its inputs.
 
 ### Nodes
 
