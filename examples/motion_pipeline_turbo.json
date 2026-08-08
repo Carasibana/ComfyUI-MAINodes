@@ -2,7 +2,7 @@
  "id": "e3f2b845-8f2c-4b5a-9caf-eac1029d3e7e",
  "revision": 0,
  "last_node_id": 221,
- "last_link_id": 343,
+ "last_link_id": 344,
  "nodes": [
   {
    "id": 119,
@@ -104,7 +104,8 @@
      "name": "AUDIO",
      "type": "AUDIO",
      "links": [
-      239
+      239,
+      344
      ]
     }
    ],
@@ -1708,6 +1709,12 @@
       "name": "hold_map"
      },
      "link": 338
+    },
+    {
+     "name": "reference",
+     "shape": 7,
+     "type": "AUDIO",
+     "link": 344
     }
    ],
    "outputs": [
@@ -1724,7 +1731,8 @@
    },
    "widgets_values": [
     "",
-    24
+    24,
+    0.0
    ]
   },
   {
@@ -2286,6 +2294,14 @@
    208,
    2,
    "SAMPLER"
+  ],
+  [
+   344,
+   121,
+   0,
+   219,
+   2,
+   "AUDIO"
   ]
  ],
  "groups": [
