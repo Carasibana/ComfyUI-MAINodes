@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComfyUI-MAINodes: Motion Lab demos</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#101014; color:#e8e8ea; font:16px/1.55 system-ui, sans-serif;
+         max-width: 980px; margin: 0 auto; padding: 24px 16px 80px; }
+  h1 { font-size: 1.5rem; margin-bottom: .2em; }
+  h2 { font-size: 1.15rem; margin-top: 2.2em; border-bottom: 1px solid #2a2a33; padding-bottom: .3em; }
+  a { color:#8ab4ff; }
+  p.sub { color:#9a9aa5; margin-top: 0; }
+  video { width: 100%; border-radius: 8px; background:#000; display:block; }
+  .cap { color:#9a9aa5; font-size:.92rem; margin: .5em 0 0; }
+  .repo { display:inline-block; margin-top:.6em; padding:.45em .9em; background:#1c1c24;
+          border:1px solid #33333e; border-radius:8px; text-decoration:none; }
+</style>
+</head>
+<body>
+<h1>ComfyUI-MAINodes: Motion Lab</h1>
+<p class="sub">A test-time fix for MiniMax H3 smearing fast motion ("roping").
+The clip regenerates as slow motion seeded from your own render, a jerk
+oracle picks where, and exact frame selection recovers realtime. No
+training. Every number below comes from a measured comparison.</p>
+<a class="repo" href="https://github.com/matlowai/ComfyUI-MAINodes">github.com/matlowai/ComfyUI-MAINodes</a>
+
+<h2>Before and after, fresh scene, default knobs</h2>
+<video controls loop muted playsinline preload="metadata"
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/kitsune_threeway_sbs.mp4"></video>
+<p class="cap">Baseline smears the aerial spin into a blob; both regenerated
+settings render it clean and keep the choreography. New scene, no per-clip
+tuning.</p>
+
+<h2>Nine tiers, one seed, with render times</h2>
+<video controls loop playsinline preload="metadata"
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/preview_ladder_grid.mp4"></video>
+<p class="cap">Every quality/speed rung from a one-minute turbo scout to the
+full pipeline. Times in the header, ws-normalized, 5 s 1024&#178; clip.</p>
+
+<h2>Baseline vs regenerated, same seed, real time</h2>
+<video controls loop playsinline preload="metadata"
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/baseline_vs_regenerated_sbs.mp4"></video>
+<p class="cap">Left smears through the backflip, right doesn't.</p>
+
+<h2>The oracle, watching</h2>
+<video controls loop muted playsinline preload="metadata"
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/oracle_map.mp4"></video>
+<p class="cap">Heat pools where motion runs too hot; the strip lights up as
+the burst arrives. This map is what decides where the timeline dilates.</p>
+
+<h2>Uniform vs adaptive hold maps</h2>
+<video controls loop playsinline preload="metadata"
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/uniform_vs_adaptive_sbs.mp4"></video>
+<p class="cap">Already good, and slightly better: uniform dilation, then the
+adaptive map without and with bridge. Same seed all three.</p>
+
+<p style="margin-top:3em">Docs: <a href="https://github.com/matlowai/ComfyUI-MAINodes/blob/main/TUNING.md">TUNING.md</a>
+&middot; workflows in <a href="https://github.com/matlowai/ComfyUI-MAINodes/tree/main/examples">examples/</a>
+&middot; MIT</p>
+</body>
+</html>
