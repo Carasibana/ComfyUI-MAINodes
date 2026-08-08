@@ -11,7 +11,7 @@ test clips; expect your content to move the numbers a little.
 |---|---|---|
 | best quality, audio dial available (recommended for finals) | `examples/motion_pipeline.json` | ~3.5x |
 | turbo inside the pipeline (not recommended: see below) | `examples/motion_pipeline_turbo.json` | ~1.6x |
-| fastest, no full baseline (scouting) | `examples/motion_pipeline_probe_expert.json` | ~1x or less |
+| fastest, no full baseline (scouting only: the probe init is not good enough to feed a base-model finals pass, we tried) | `examples/motion_pipeline_probe_expert.json` | ~1x or less |
 
 The working rhythm we recommend: iterate prompts and seeds with plain
 turbo generations to learn what a prompt gives you globally, then run
