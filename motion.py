@@ -411,6 +411,71 @@ class H3JerkHeatmap:
         return (torch.stack(out),)
 
 
+class H3AudioRecover:
+    """Retime the regenerated clip's jointly-generated audio back to the
+    original clock, using the same hold map as the video."""
+
+    DESCRIPTION = (
+        "Retimes the regenerated clip's own audio back to the original "
+        "clock, using the same hold map as the video. Each hold segment is "
+        "compressed with a phase vocoder, so pitch is preserved while "
+        "duration shrinks. Wire audio from VAEDecodeAudio of the "
+        "regenerated latent and hold_map from the same H3 Time Smear that "
+        "built the init; the result lines up with H3 Exact Recover's video "
+        "frame for frame. fps is the video frame rate the holds count in.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "audio": ("AUDIO",),
+            "hold_map": ("STRING", {"default": ""}),
+            "fps": ("INT", {"default": 24, "min": 1, "max": 120}),
+        }}
+
+    RETURN_TYPES = ("AUDIO",)
+    FUNCTION = "recover"
+    CATEGORY = "audio/minimax/motion"
+
+    def recover(self, audio, hold_map, fps=24):
+        import math
+
+        import torchaudio  # noqa: F401  (phase_vocoder)
+
+        holds = json.loads(hold_map)["holds"]
+        wav = audio["waveform"].detach().float().cpu()   # [B, C, N]
+        sr = audio["sample_rate"]
+        b, c, n = wav.shape
+        x = wav.reshape(b * c, n)
+
+        runs = []                                        # consecutive equal holds
+        for h in holds:
+            if runs and runs[-1][0] == h:
+                runs[-1][1] += 1
+            else:
+                runs.append([h, 1])
+
+        n_fft, hop = 2048, 512
+        window = torch.hann_window(n_fft)
+        phase_adv = torch.linspace(0, math.pi * hop, n_fft // 2 + 1)[..., None]
+        spf = sr / float(fps)                            # samples per frame
+        segs, cursor = [], 0.0
+        for h, count in runs:
+            src = h * count * spf
+            s0, s1 = int(round(cursor)), int(round(cursor + src))
+            cursor += src
+            seg = x[:, s0:min(s1, n)]
+            if seg.shape[1] == 0:
+                continue
+            if h == 1:
+                segs.append(seg)
+                continue
+            spec = torch.stft(seg, n_fft, hop, window=window, return_complex=True)
+            spec = torchaudio.functional.phase_vocoder(spec, float(h), phase_adv)
+            segs.append(torch.istft(spec, n_fft, hop, window=window))
+        y = torch.cat(segs, dim=1)
+        return ({"waveform": y.reshape(b, c, -1).contiguous(), "sample_rate": sr},)
+
+
 TIMESMEAR_CLASS_MAPPINGS = {
     "H3JerkOracle": H3JerkOracle,
     "H3TimeSmear": H3TimeSmear,
@@ -418,6 +483,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3V2VInit": H3V2VInit,
     "H3InjectSchedule": H3InjectSchedule,
     "H3JerkHeatmap": H3JerkHeatmap,
+    "H3AudioRecover": H3AudioRecover,
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3JerkOracle": "H3 Jerk Oracle (profile / window / hold map)",
@@ -426,4 +492,5 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3V2VInit": "H3 V2V Init (nested AV latent)",
     "H3InjectSchedule": "H3 Inject Schedule (v2v sigmas, 0.70)",
     "H3JerkHeatmap": "H3 Jerk Heatmap (oracle overlay tile)",
+    "H3AudioRecover": "H3 Audio Recover (hold-map atempo, pitch kept)",
 }

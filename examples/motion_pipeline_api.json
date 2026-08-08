@@ -445,7 +445,11 @@
     0
    ],
    "fps": 24,
-   "bit_depth": 8
+   "bit_depth": 8,
+   "audio": [
+    "219",
+    0
+   ]
   }
  },
  "215": {
@@ -496,6 +500,20 @@
    "filename_prefix": "video/mainodes_demo_oraclemap",
    "format": "auto",
    "codec": "auto"
+  }
+ },
+ "219": {
+  "class_type": "H3AudioRecover",
+  "inputs": {
+   "audio": [
+    "210",
+    0
+   ],
+   "hold_map": [
+    "201",
+    1
+   ],
+   "fps": 24
   }
  }
 }

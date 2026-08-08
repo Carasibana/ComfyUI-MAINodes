@@ -52,10 +52,15 @@ map without and with `bridge`. Same seed all three.
                               VAEDecode -> H3ExactRecover -> original fps
 ```
 
-A runnable API-format graph is in
-[`examples/motion_pipeline_api.json`](examples/motion_pipeline_api.json).
-It generates a baseline, reads its oracle, regenerates, and recovers, in
-one queue item. Each node's info button documents its inputs.
+Two ready-made graphs live in [`examples/`](examples/):
+[`motion_pipeline.json`](examples/motion_pipeline.json) drags straight
+onto the ComfyUI canvas, and
+[`motion_pipeline_api.json`](examples/motion_pipeline_api.json) is the
+same thing in API format for scripted use. Both generate a baseline, read
+its oracle, regenerate, and recover, in one queue item. The oracle's
+length and the regeneration length are wired dynamically, so changing the
+clip duration needs no other edits. Each node's info button documents its
+inputs.
 
 ### Nodes
 
@@ -71,6 +76,7 @@ one queue item. Each node's info button documents its inputs.
 | | `preset` | 0.70 | 0.70 / 0.50 / 0.80; `custom` uses the knob |
 | H3 V2V Init | `length` | 0 (auto) | wraps the encoded init as H3's joint AV latent; audio regenerates with the video |
 | H3 Exact Recover | | | drops held frames per the hold map; recovery is frame selection, not resampling |
+| H3 Audio Recover | `fps` | 24 | retimes the regenerated audio to the original clock with the same hold map, pitch preserved, so the recovered video keeps its own foley |
 | H3 Jerk Heatmap | `alpha`, `strip_height` | 0.55, 96 | the oracle-watching overlay from the demo clip, as a node |
 
 ### bridge and inject
