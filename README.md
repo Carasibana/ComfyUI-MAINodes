@@ -91,7 +91,7 @@ other edits. Each node's info button documents its inputs.
 | H3 V2V Init | `length` | 0 (auto) | wraps the encoded init as H3's joint AV latent; audio regenerates with the video |
 | H3 Exact Recover | | | drops held frames per the hold map; recovery is frame selection, not resampling |
 | H3 Audio Recover | `fps` | 24 | retimes the regenerated audio to the original clock with the same hold map, pitch preserved, so the recovered video keeps its own foley |
-| | `reference_mix` | 0 | thickness dial: the regenerated foley is scored for the slowed take and comes back leaner (arguably more realistic); blend the baseline's denser full-speed track back in, 0 to 1 |
+| | `reference_mix` | 0 | thickness dial: the regenerated foley is scored for the slowed take and comes back leaner (arguably more realistic); blend the baseline's denser full-speed track back in, 0 to 1. The two performances drift slightly in timing, so mid values can double misaligned impacts; the dial is happiest near its ends |
 | H3 Jerk Heatmap | `alpha`, `strip_height` | 0.55, 96 | the oracle-watching overlay from the demo clip, as a node |
 
 ### bridge and inject
