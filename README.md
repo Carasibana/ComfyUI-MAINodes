@@ -35,6 +35,9 @@ Demo clips (in [`assets/`](assets/)):
 - [the oracle, watching](assets/oracle_map.mp4): heat pools where motion
   runs too hot, and the strip along the bottom lights up as the burst
   arrives
+- [nine tiers, one seed](assets/preview_ladder_grid.mp4): every
+  quality/speed rung from a one-minute turbo scout to the full pipeline,
+  render times in the header
 
 | baseline vs regenerated | the oracle, watching |
 |---|---|
