@@ -47,7 +47,7 @@ different dial than one who says "it changed my character's pose."
 | audio impacts feel soft | known vocoder trait; try `reference_mix: 1` for baseline foley, or accept lean |
 | dialog sounds processed | check whether the speech overlaps a burst; unheld spans pass through untouched, so only speech during bursts is affected. `reference_mix: 1` restores the original line |
 | probe init loses choreography | raise `probe_steps` from 6 toward 10 |
-| background elements (birds, crowds, traffic) speed up during bursts | set `freeze_threshold: 0.35` on `H3 V2V Init` with the baseline latent wired to `oracle_samples`. (Post-hoc compositing was tried and failed in playback: moving objects pop at the mask boundary.) |
+| background elements (birds, crowds, traffic) speed up during bursts | open problem, honestly. Two remedies tried and rejected in playback: post-hoc compositing (objects pop at the mask boundary) and the `freeze_threshold` latent freeze (degrades other artifacts). The freeze knob exists if your content favors that trade. The `show_drift` heatmap overlay at least shows you where the effect will occur |
 
 ## Method
 
