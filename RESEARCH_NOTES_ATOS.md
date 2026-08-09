@@ -138,6 +138,36 @@ Three contributions as implemented today:
   spatial jerk map about some axis, not temporal correlation. Untested;
   needs a real mirror clip, since a synthetic with uniform blocks
   passes any symmetry test trivially.
+- **The oracle has no "nothing is wrong here" state, and that is the
+  mechanical explanation for the overzealousness complaint.** Measured
+  2026-08-09 on synthetic latents. Two clips, same object, same average
+  speed: one at constant velocity (true trajectory jerk exactly 0), one
+  in stop/go lurches (trajectory jerk 0.347). The oracle is not blind to
+  the difference, its profile peak contrast is about 2x higher on the
+  jerky clip. But it still asked for **3.06x dilation on the clip whose
+  jerk is exactly zero**, versus 3.47x on the jerky one. The cause is
+  structural: `q` is a quantile of the profile, so the oracle always
+  selects the top (1-q) of tokens no matter what the clip contains. It
+  can rank, but it cannot abstain. A clip that needs no repair still
+  gets a 3x budget spent on its fastest quarter.
+  Second measurement, real clips: in the value domain the third
+  difference is nearly the same signal as the first, corr(|d1|,|d3|) =
+  0.960 and 0.977 on two of our renders. That is expected analytically,
+  since a textured object passing a location makes the value there
+  pulse, and a pulse has large differences of every order even at
+  constant velocity. So the score is heavily contaminated by motion
+  energy: it is closer to "how much is moving" than to "how abruptly
+  the motion changes", and the name oversells it.
+  Two consequences. (1) An **absolute** gate belongs next to the
+  relative one, so a smooth clip can be told it needs nothing, which
+  would also stop the pipeline inventing beats in dilated time it never
+  needed. (2) The trajectory-domain measurement is the more honest
+  instrument: tracking a body's centroid and differentiating THAT gave
+  jerk a visibly narrower profile than velocity (top-decile share 0.29
+  vs 0.22, and 0.47 vs 0.37 on a second clip) with only moderate
+  correlation between them (r = 0.46 and 0.72), which is the separation
+  the value-domain score fails to make. Probes:
+  `h3 tools/oracle_is_it_jerk.py`, `h3 tools/trajectory_jerk.py`.
 - Mask hysteresis. Once a region becomes attached, keep it attached for
   a short window unless evidence says it separated; prevents flicker on
   hands, props and cloth. Attachment-then-separation events (a thrown
