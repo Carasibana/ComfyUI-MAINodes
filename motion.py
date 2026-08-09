@@ -55,6 +55,39 @@ def _legal_ceil(n):
     return LEGAL_STEP * k + 5
 
 
+def _soft_edge(mask, feather, profile="linear", direction="centered"):
+    """Feather a (T, H, W) 0/1 mask. Separable box or gaussian blur;
+    direction pre-shifts the boundary so the ramp eats into the masked
+    side (inward) or the kept side (outward) instead of straddling it."""
+    import torch.nn.functional as F
+    if feather <= 0:
+        return mask
+    m = mask[:, None]
+    s = feather // 2
+    if s and direction != "centered":
+        k = s * 2 + 1
+        if direction == "inward":
+            m = 1 - F.max_pool2d(1 - m, k, stride=1, padding=k // 2)
+        else:  # outward
+            m = F.max_pool2d(m, k, stride=1, padding=k // 2)
+    k = feather // 2 * 2 + 1
+    if profile == "gaussian":
+        x = torch.arange(k, dtype=torch.float32) - k // 2
+        w = torch.exp(-(x ** 2) / (2 * (max(feather, 1) / 4.0) ** 2))
+    else:
+        w = torch.ones(k)
+    w = w / w.sum()
+    # replicate padding: masks that bleed off the image edge (inverted
+    # background lassos) must not erode at the border
+    m = F.pad(m, (k // 2, k // 2, k // 2, k // 2), mode="replicate")
+    m = F.conv2d(m, w.view(1, 1, k, 1))
+    m = F.conv2d(m, w.view(1, 1, 1, k))
+    m = m[:, 0].clamp(0, 1)
+    if profile == "smoothstep":
+        m = m * m * (3 - 2 * m)
+    return m
+
+
 class H3JerkOracle:
     """Read the jerk oracle from a final latent. Emits everything downstream
     knobs consume: LocalRate segment string, detected window, and the
@@ -154,6 +187,136 @@ class H3JerkOracle:
         hold_map = json.dumps({"holds": holds, "world_len": length})
         profile = " ".join(f"{v:.2f}" for v in prof)
         return (hold_map, ",".join(segs), int(w0), int(wlen), profile)
+
+
+class H3ManualHoldMap:
+    """Author the hold map by hand: time ranges in, oracle-format hold
+    map out. Solo mode replaces the oracle; gate mode keeps the oracle's
+    holds only inside your ranges (the oracle proposes, you dispose)."""
+
+    DESCRIPTION = (
+        "Manual targeting: turns user-chosen time ranges into the same "
+        "hold-map JSON the H3 Jerk Oracle emits, so H3 Time Smear, H3 "
+        "Exact Recover and H3 Audio Recover work unmodified.\n\n"
+        "ranges syntax: comma-separated start-end pairs, in frames or "
+        "seconds, with an optional per-range hold count: '36-60, "
+        "88-102:3' or '1.5s-2.4s:4'. Ends inclusive. Ranges snap "
+        "outward to the model's token grid (one token spans ~4 frames); "
+        "the segments output echoes what actually got held, so trust it "
+        "over your typed numbers.\n\n"
+        "GATE mode: wire the oracle's hold_map into oracle_hold_map and "
+        "the oracle's holds survive only inside your ranges — the fix "
+        "for an overzealous oracle. Leave it unwired to author holds "
+        "directly at 'hold' per range.\n\n"
+        "The report output is the price tag: world length vs effective "
+        "regen length. Show it before committing to the expensive pass; "
+        "set s_per_step (measured on a baseline run of YOUR clip on "
+        "YOUR card) for a minutes estimate.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "length": ("INT", {"default": 124, "min": 5, "max": 3600,
+                       "tooltip": "world-clock frame count of the clip"}),
+            "fps": ("INT", {"default": 24, "min": 1, "max": 120}),
+            "ranges": ("STRING", {"default": "", "multiline": True,
+                       "tooltip": "start-end[:hold], comma-separated; frames or seconds ('1.5s'), ends inclusive"}),
+            "hold": ("INT", {"default": 4, "min": 2, "max": 8,
+                     "tooltip": "hold count for ranges without an explicit :hold"}),
+            "ramp": ("BOOLEAN", {"default": True,
+                     "tooltip": "C1 ramp shoulders, same as the oracle — keep ON"}),
+            "bridge": ("INT", {"default": 8, "min": 0, "max": 20,
+                       "tooltip": "fill short valleys between peak spans, same rule as the oracle"}),
+        }, "optional": {
+            "oracle_hold_map": ("STRING", {"default": "", "forceInput": True,
+                                "tooltip": "wire H3 Jerk Oracle's hold_map to gate it by your ranges"}),
+            "s_per_step": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 120.0, "step": 0.05,
+                           "tooltip": "seconds per step from a baseline render of this clip; 0 skips the minutes estimate"}),
+            "est_steps": ("INT", {"default": 18, "min": 1, "max": 100,
+                          "tooltip": "steps the regen pass will actually run (total_steps x inject)"}),
+        }}
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("hold_map", "segments", "report")
+    FUNCTION = "build"
+    CATEGORY = "latent/minimax/motion"
+
+    def build(self, length, fps, ranges, hold, ramp, bridge,
+              oracle_hold_map="", s_per_step=0.0, est_steps=18):
+        spans = []
+        for part in ranges.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            h = hold
+            if ":" in part:
+                part, hs = part.rsplit(":", 1)
+                h = max(1, int(hs))
+            a_s, b_s = part.split("-")
+
+            def to_frame(v):
+                v = v.strip().lower()
+                return (int(round(float(v[:-1]) * fps)) if v.endswith("s")
+                        else int(v))
+
+            a, b = max(0, to_frame(a_s)), min(length - 1, to_frame(b_s))
+            assert a <= b, f"empty range '{part}' after clamping to the clip"
+            spans.append((a, b, h))
+        assert spans, "give at least one range, e.g. '36-60' or '1.5s-2.4s:4'"
+
+        frame_holds = np.ones(length, int)
+        if oracle_hold_map.strip():
+            oracle = json.loads(oracle_hold_map)["holds"]
+            assert len(oracle) == length, (
+                f"oracle map covers {len(oracle)} frames, length is {length}")
+            for a, b, _ in spans:                 # gate: oracle inside, 1 outside
+                frame_holds[a:b + 1] = oracle[a:b + 1]
+        else:
+            for a, b, h in spans:
+                frame_holds[a:b + 1] = h
+
+        t_lat = 0
+        while _tok_start_frame(t_lat) < length:
+            t_lat += 1
+        tok_d = np.ones(t_lat, int)
+        for t in range(t_lat):
+            f0 = _tok_start_frame(t)
+            f1 = min(_tok_start_frame(t + 1), length)
+            if f1 > f0:
+                tok_d[t] = int(frame_holds[f0:f1].max())
+
+        d_peak = int(tok_d.max())
+        if bridge and d_peak > 1:
+            hot = np.where(tok_d == d_peak)[0]
+            for a, b in zip(hot[:-1], hot[1:]):
+                if 1 < b - a <= bridge:
+                    tok_d[a:b + 1] = d_peak
+        if ramp and d_peak > 1:
+            for _ in range(d_peak - 1):
+                left = np.concatenate([[1], tok_d[:-1]])
+                right = np.concatenate([tok_d[1:], [1]])
+                tok_d = np.maximum(tok_d, np.maximum(left, right) - 1)
+
+        holds = [int(tok_d[_frame_token(f, t_lat)]) for f in range(length)]
+
+        segs, t0 = [], 0
+        for t in range(1, t_lat + 1):
+            if t == t_lat or tok_d[t] != tok_d[t0]:
+                if tok_d[t0] > 1:
+                    segs.append(f"{t0}:{t}:{int(tok_d[t0])}")
+                t0 = t
+
+        dilated = _legal_ceil(sum(holds))
+        t_lat_d = (dilated - 5) // 17 * 5 + 2
+        report = (f"{length}f ({length / fps:.1f}s) -> {dilated}f "
+                  f"({dilated / fps:.1f}s) effective regen, "
+                  f"{dilated / length:.2f}x; tokens {t_lat} -> {t_lat_d}")
+        if s_per_step > 0:
+            est = s_per_step * (t_lat_d / t_lat) * est_steps / 60
+            report += (f"; ~{est:.1f} min at {s_per_step:g} s/step x "
+                       f"{est_steps} steps")
+        hold_map = json.dumps({"holds": holds, "world_len": length})
+        return (hold_map, ",".join(segs), report)
 
 
 class H3TimeSmear:
@@ -262,7 +425,16 @@ class H3V2VInit:
         "agents (birds, crowds) cannot speed up. The mask is static over "
         "time, so nothing pops at its boundary. Effects that fly far from "
         "the subject may be clipped by the freeze; lower the threshold or "
-        "raise freeze_grow to give them room.")
+        "raise freeze_grow to give them room.\n\n"
+        "Manual freeze: wire a MASK instead and YOU choose the boundary "
+        "(overrides the oracle path). mask = the region to REGENERATE; "
+        "invert_mask flips it so you can paint the background/birds to "
+        "freeze directly. The mask is unioned over time (static boundary, "
+        "never pops) and feathered in pixel space BEFORE pooling to the "
+        "latent grid, so edge cells carry fractional freeze strength: a "
+        "smooth ramp, quantized to ~16 px cells, minimum one cell wide. "
+        "Prefer this over the composite node when background and subject "
+        "share lighting, shadows or water contact.")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -278,7 +450,13 @@ class H3V2VInit:
                            "The subject mask is the oracle heat unioned over time, so the boundary never moves. "
                            "0.35 is a sane start."}),
             "freeze_grow": ("INT", {"default": 2, "min": 0, "max": 16,
-                "tooltip": "latent-pixels of mask dilation (16 image px each)"}),
+                "tooltip": "latent-pixels of mask dilation (16 image px each); applies to both mask sources"}),
+            "mask": ("MASK", {"tooltip": "manual region to REGENERATE (1) vs freeze to baseline timing (0). "
+                     "Overrides the oracle path. Union over time: the boundary never moves"}),
+            "mask_feather": ("INT", {"default": 32, "min": 0, "max": 256,
+                "tooltip": "feather width in image pixels; pooled to fractional latent cells (~16 px quanta, smooth ramp)"}),
+            "invert_mask": ("BOOLEAN", {"default": False,
+                "tooltip": "on: the mask marks the FREEZE region instead (paint the background/birds directly)"}),
         }}
 
     RETURN_TYPES = ("LATENT",)
@@ -286,7 +464,7 @@ class H3V2VInit:
     CATEGORY = "latent/minimax/motion"
 
     def build(self, samples, length=0, oracle_samples=None, freeze_threshold=0.0,
-              freeze_grow=2):
+              freeze_grow=2, mask=None, mask_feather=32, invert_mask=False):
         import torch.nn.functional as F
 
         import comfy.nested_tensor
@@ -302,7 +480,24 @@ class H3V2VInit:
                             device=video.device, dtype=video.dtype)
         out = {"samples": comfy.nested_tensor.NestedTensor((video, audio))}
 
-        if oracle_samples is not None and freeze_threshold > 0:
+        if mask is not None:
+            h, w = video.shape[3], video.shape[4]
+            m = mask.detach().float().cpu()
+            if m.dim() == 2:
+                m = m[None]
+            if invert_mask:
+                m = 1.0 - m
+            m = (m.max(dim=0).values >= 0.5).float()[None]  # union: static boundary
+            m = _soft_edge(m, mask_feather)                 # pixel-space ramp first
+            m = F.interpolate(m[None], size=(h, w), mode="area")[0]  # fractional cells
+            if freeze_grow:
+                k = freeze_grow * 2 + 1
+                m = F.max_pool2d(m[None], k, stride=1, padding=k // 2)[0]
+            vid_mask = m[0].clamp(0, 1).expand(t_lat, h, w)[None, None].to(video.device)
+            aud_mask = torch.ones(1, 32, 2, audio_t)
+            out["noise_mask"] = comfy.nested_tensor.NestedTensor(
+                (vid_mask.contiguous(), aud_mask))
+        elif oracle_samples is not None and freeze_threshold > 0:
             z = _video_component(oracle_samples)
             v = z.detach().float().cpu().numpy()
             jmap = np.abs(np.diff(v, n=3, axis=2)).mean(axis=(0, 1))  # (T-3, h, w)
@@ -764,38 +959,61 @@ class H3TrajectoryLoad:
 
 
 class H3MotionComposite:
-    """Spatial recovery: regenerated pixels where the oracle saw motion,
-    baseline pixels everywhere else."""
+    """Spatial recovery: regenerated pixels where the oracle saw motion
+    (or where a manual mask says so), baseline pixels everywhere else."""
 
     DESCRIPTION = (
         "Fixes the sped-up-background side effect: inside dilated spans "
         "the model keeps background agents (birds, crowds, traffic) near "
         "their natural pace instead of full slow motion, so recovery "
         "overcranks them. This node composites per pixel on the shared "
-        "world clock: where the oracle's spatial jerk heat is high (your "
-        "subject) it keeps the regenerated frames; where it is low "
-        "(background) it keeps the baseline, whose timing was correct all "
-        "along. Wire recovered frames, baseline frames, and the BASELINE "
-        "latent. threshold sets how much heat counts as subject; grow "
-        "expands the mask to cover pose drift; feather softens the seam.")
+        "world clock: where the subject mask is high it keeps the "
+        "regenerated frames; where it is low it keeps the baseline, whose "
+        "timing was correct all along.\n\n"
+        "Two mask sources. ORACLE mode (wire samples, the BASELINE "
+        "latent): spatial jerk heat picks the subject automatically; "
+        "threshold sets how much heat counts as subject. MANUAL mode "
+        "(wire mask): you decide. A human can hide the seam along a real "
+        "edge (rooftop line, horizon) where the oracle cannot; lasso "
+        "generously and let feather do the blending. mask=1 keeps "
+        "regenerated pixels; invert_mask flips that, so you can lasso "
+        "the birds/sky region you want kept at baseline timing instead. "
+        "A single mask = static boundary (safe, never pops); a mask "
+        "batch = per-frame on the world clock (moving boundaries can "
+        "pop at the seam; feather harder).\n\n"
+        "grow expands the mask to cover pose drift. feather softens the "
+        "seam: profile linear (box), smoothstep or gaussian; direction "
+        "centered straddles the boundary, inward eats into the masked "
+        "side, outward eats into the kept side (trace a rooftop tight, "
+        "then feather outward into the sky).")
 
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
             "regenerated": ("IMAGE",),
             "baseline": ("IMAGE",),
-            "samples": ("LATENT", {"tooltip": "baseline latent, same as H3 Jerk Oracle"}),
-            "threshold": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.05}),
+            "threshold": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.05,
+                          "tooltip": "oracle mode: how much heat counts as subject; manual mode: binarization level for soft masks"}),
             "grow": ("INT", {"default": 32, "min": 0, "max": 256,
                              "tooltip": "pixels of mask dilation, covers pose drift"}),
             "feather": ("INT", {"default": 48, "min": 0, "max": 256}),
+        }, "optional": {
+            "samples": ("LATENT", {"tooltip": "BASELINE latent (oracle mode); optional when mask is wired"}),
+            "mask": ("MASK", {"tooltip": "manual subject mask, overrides the oracle. 1 = keep regenerated, 0 = keep baseline. One mask = static boundary; a batch = per-frame"}),
+            "invert_mask": ("BOOLEAN", {"default": False,
+                            "tooltip": "on: the mask marks the KEEP-BASELINE region instead (lasso the birds directly)"}),
+            "feather_profile": (["linear", "smoothstep", "gaussian"], {"default": "linear"}),
+            "feather_direction": (["centered", "inward", "outward"], {"default": "centered",
+                                  "tooltip": "where the ramp lives relative to the mask boundary"}),
         }}
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "composite"
     CATEGORY = "image/minimax/motion"
 
-    def composite(self, regenerated, baseline, samples, threshold, grow, feather):
+    def composite(self, regenerated, baseline, threshold, grow, feather,
+                  samples=None, mask=None, invert_mask=False,
+                  feather_profile="linear", feather_direction="centered"):
         import torch.nn.functional as F
 
         regenerated = regenerated.detach().float().cpu()
@@ -803,36 +1021,54 @@ class H3MotionComposite:
         n = min(regenerated.shape[0], baseline.shape[0])
         H, W = baseline.shape[1], baseline.shape[2]
 
-        z = _video_component(samples)
-        t_lat = z.shape[2]
-        v = z.detach().float().cpu().numpy()
-        jmap = np.abs(np.diff(v, n=3, axis=2)).mean(axis=(0, 1))
-        tok = np.stack([jmap[min(max(k - 1, 0), jmap.shape[0] - 1)]
-                        for k in range(t_lat)])
-        for ph in range(5):
-            m = tok[ph::5].mean()
-            if m > 0:
-                tok[ph::5] /= m
-        lo, hi = np.quantile(tok, 0.05), np.quantile(tok, 0.995)
-        tok = np.clip((tok - lo) / (hi - lo + 1e-9), 0, 1)
-        heat = torch.from_numpy(tok).float()[None]              # (1, T, h, w)
-        heat = F.interpolate(heat, size=(H, W), mode="bilinear",
-                             align_corners=False)[0]            # (T, H, W)
+        if mask is not None:
+            m = mask.detach().float().cpu()
+            if m.dim() == 2:
+                m = m[None]
+            if invert_mask:
+                m = 1.0 - m
+            if m.shape[-2:] != (H, W):
+                m = F.interpolate(m[:, None], size=(H, W), mode="bilinear",
+                                  align_corners=False)[:, 0]
+            alpha = (m >= threshold).float()
+            per_frame = alpha.shape[0]
+            token_indexed = False
+        else:
+            assert samples is not None, \
+                "wire samples (oracle mode) or mask (manual mode)"
+            z = _video_component(samples)
+            t_lat = z.shape[2]
+            v = z.detach().float().cpu().numpy()
+            jmap = np.abs(np.diff(v, n=3, axis=2)).mean(axis=(0, 1))
+            tok = np.stack([jmap[min(max(k - 1, 0), jmap.shape[0] - 1)]
+                            for k in range(t_lat)])
+            for ph in range(5):
+                m = tok[ph::5].mean()
+                if m > 0:
+                    tok[ph::5] /= m
+            lo, hi = np.quantile(tok, 0.05), np.quantile(tok, 0.995)
+            tok = np.clip((tok - lo) / (hi - lo + 1e-9), 0, 1)
+            heat = torch.from_numpy(tok).float()[None]          # (1, T, h, w)
+            heat = F.interpolate(heat, size=(H, W), mode="bilinear",
+                                 align_corners=False)[0]        # (T, H, W)
+            alpha = (heat >= threshold).float()
+            per_frame = 0
+            token_indexed = True
 
-        mask = (heat >= threshold).float()
         if grow:
             k = grow // 2 * 2 + 1
-            mask = F.max_pool2d(mask[:, None], k, stride=1, padding=k // 2)[:, 0]
-        if feather:
-            k = feather // 2 * 2 + 1
-            w1 = torch.ones(1, 1, k, k) / (k * k)
-            mask = F.conv2d(mask[:, None], w1, padding=k // 2)[:, 0]
-        mask = mask.clamp(0, 1)
+            alpha = F.max_pool2d(alpha[:, None], k, stride=1, padding=k // 2)[:, 0]
+        alpha = _soft_edge(alpha, feather, feather_profile, feather_direction)
 
         out = []
         for f in range(n):
-            k = min(_frame_token(f, t_lat), t_lat - 1)
-            a = mask[k][..., None]
+            if token_indexed:
+                a = alpha[min(_frame_token(f, t_lat), t_lat - 1)][..., None]
+            elif per_frame == 1:
+                a = alpha[0][..., None]
+            else:
+                idx = int(round(f * (per_frame - 1) / max(n - 1, 1)))
+                a = alpha[min(idx, per_frame - 1)][..., None]
             out.append(baseline[f] * (1 - a) + regenerated[f] * a)
         return (torch.stack(out),)
 
@@ -880,6 +1116,7 @@ class H3ModeSwitch:
 
 TIMESMEAR_CLASS_MAPPINGS = {
     "H3JerkOracle": H3JerkOracle,
+    "H3ManualHoldMap": H3ManualHoldMap,
     "H3TimeSmear": H3TimeSmear,
     "H3ExactRecover": H3ExactRecover,
     "H3V2VInit": H3V2VInit,
@@ -895,6 +1132,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3JerkOracle": "H3 Jerk Oracle (profile / window / hold map)",
+    "H3ManualHoldMap": "H3 Manual Hold Map (ranges to holds, gate)",
     "H3TimeSmear": "H3 Time Smear (integer holds)",
     "H3ExactRecover": "H3 Exact Recover (24fps frame selection)",
     "H3V2VInit": "H3 V2V Init (nested AV latent)",

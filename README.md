@@ -123,6 +123,24 @@ the same finals graph pointed at the smallest community-published models
 Measured numbers and the honest caveats live in
 [TUNING.md](TUNING.md#featherweight-stack-measured-comfyui-031).
 
+And for the "the oracle is overzealous, I know exactly where the
+problem is" crowd:
+[`motion_pipeline_targeted.json`](examples/motion_pipeline_targeted.json)
+(API twin alongside) puts a human in the loop. The oracle still
+proposes, but its hold map passes through **H3 Manual Hold Map**, which
+keeps holds only inside the time ranges you type (`36-60, 1.5s-2.4s:3`,
+frames or seconds, optional per-range hold count; leave the oracle
+unwired to author holds directly). Queue once and watch the saved
+oraclemap video to see where the heat pools; type your ranges; queue
+again. The node's report output prices the pass before you pay for it:
+world length in, effective regeneration length out, with an optional
+minutes estimate from your measured s/step. Since cost scales with the
+held spans, targeting one burst in a long clip is also the biggest
+speed lever this pack has. The drag-in graph additionally carries a
+muted spatial branch: export a frame, paint a mask, load it, unmute,
+and H3 Motion Composite returns your masked region to baseline timing
+with a feathered seam (see below).
+
 All of them generate or probe a baseline, read its oracle, regenerate,
 and recover, in one queue item. The oracle's length and the regeneration
 length are wired dynamically, so changing the clip duration needs no
@@ -149,8 +167,11 @@ other edits. Each node's info button documents its inputs.
 | H3 Expert Schedule | `base_head` | 2 | split the injected schedule: base-model head for structure, turbo tail for refinement (tail defaults to turbo's native 4 steps) |
 | H3 Trajectory Bank | `every_n` | 1 | wraps a sampler and checkpoints the trajectory latent each step (~7 MB per step for a 5 s clip) |
 | H3 Trajectory Load | `step` | 5 | resume a banked run from any step with its remaining schedule; swap the model, LoRA, or guider and continue without recomputing the head |
-| H3 V2V Init | `freeze_threshold` | 0 (off) | background freeze, experimental and not recommended: it fixes background timing but degraded other artifacts in our playback tests. Kept as a knob for content where the trade goes the other way |
-| H3 Motion Composite | | | deprecated: post-hoc compositing made moving background objects pop at the mask boundary in playback |
+| H3 Manual Hold Map | `ranges` | | manual time targeting: `start-end[:hold]` pairs, frames or seconds. Wire the oracle's hold_map in and its holds survive only inside your ranges (gate mode); leave it unwired to author holds directly. The report output prices the regeneration before you run it |
+| H3 V2V Init | `freeze_threshold` | 0 (off) | automatic background freeze, not recommended: it fixes background timing but degraded other artifacts in our playback tests. Kept for content where the trade goes the other way |
+| | `mask`, `mask_feather` | off, 32 | manual freeze region: you paint what regenerates (`invert_mask` to paint the frozen background instead). Static union over time, so the boundary never moves; feathered in pixel space, then pooled to fractional latent cells, so the ramp is smooth but its width is quantized to ~16 px |
+| H3 Motion Composite | `mask` | oracle heat | spatial recovery: regenerated pixels inside the mask, baseline outside. The automatic oracle-heat mode stays deprecated for moving background objects (they pop at its boundary); with a hand-drawn mask the seam goes where you hide it, along a real edge |
+| | `feather_profile`, `feather_direction` | linear, centered | seam control: linear/smoothstep/gaussian falloff; centered straddles the boundary, inward eats into the masked side, outward into the kept side |
 
 ### What to expect, time-wise
 
@@ -190,6 +211,28 @@ ranking. From same-seed comparisons on our test clips:
 - `inject 0.70` vs `0.50`: 0.50 measured sharper with closer motion
   tracking on our clips; 0.70 has been the safer default in playback.
   Try both on your content.
+
+### Manual spatial masks, or: the birds
+
+Time warping overcranks steady background movers (birds, crowds,
+traffic) inside dilated spans, and both automatic remedies failed our
+playback bar: compositing on the oracle's own heat mask popped at the
+boundary, and the latent freeze degraded other artifacts. The
+mechanisms were fine; the mask author wasn't. The oracle cannot hide a
+seam. You can, by lassoing the sky down to a rooftop line and letting
+the feather blend along an edge where nothing moves.
+
+So both mechanisms now take a hand-drawn MASK. On the demo clip, whose
+regeneration invented an extra flock and a small pagoda, a two-box
+keep-baseline mask (`invert_mask` on) returned both regions to the
+baseline take and kept the regenerated subject, seam along the cloud
+deck. Prefer the composite (pixel space, fine feather control) unless
+background and subject share lighting or contact, then use the V2V
+Init freeze (latent space, coarser feather, but the model renders the
+interaction). A single mask is a static boundary and cannot pop by
+construction; mask batches are supported for per-frame control but
+bring the moving-boundary risk back, so feather harder and judge in
+playback.
 
 ### Notes on the approach
 
