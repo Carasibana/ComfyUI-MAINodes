@@ -37,6 +37,12 @@ H3 audio is 32 kHz and some players decode that as silence; resample to
       with invert_mask on, the painted region returns to baseline
       timing; the seam (feather 64 smoothstep on a real edge) is
       invisible in playback
+- [ ] Latent freeze feather A/B: route the same mask through H3 V2V
+      Init's freeze path and run same-seed mask_feather 0 vs 32 vs 64.
+      Hypothesis: 0 may tie or win, since hard latent cells avoid the
+      half-frozen blend at the boundary and the decode smooths the edge
+      anyway. Judge the seam in playback; if 0 holds up, the feather
+      default (and docs) should change
 
 ## 2. Editor graph (motion_pipeline_editor.json)
 
