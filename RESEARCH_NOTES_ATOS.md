@@ -122,15 +122,15 @@ Three contributions as implemented today:
   a short window unless evidence says it separated; prevents flicker on
   hands, props and cloth. Attachment-then-separation events (a thrown
   ball spawning its own track) are future work.
-- Latent freeze without feathering. The V2V Init freeze mask currently
-  feathers in pixel space and pools to fractional latent cells, but the
-  feather may be unnecessary or even harmful in latent space: the VAE
-  decode and overlapping receptive fields already smooth a hard cell
-  edge, while fractional cells denoise as frozen/live blends that may
-  sit off-manifold and mush the seam. Hard 0/1 cells keep each cell in
-  one regime and let attention reconcile the boundary. Same-seed A/B at
-  mask_feather 0 vs 32 vs 64 decides it. The pixel-space composite
-  feather is a separate mechanism and still needed there.
+- Latent freeze without feathering (now the default). Feathering may be
+  unnecessary or even harmful in latent space: the VAE decode and
+  overlapping receptive fields already smooth a hard cell edge, while
+  fractional cells denoise as frozen/live blends that may sit
+  off-manifold and mush the seam. Hard 0/1 cells keep each cell in one
+  regime and let attention reconcile the boundary. mask_feather 0 now
+  snaps boundary cells to 0/1; the ratifying same-seed A/B (0 vs 32 vs
+  64) is on the alpha checklist. The pixel-space composite feather is a
+  separate mechanism and still needed there.
 - Camera-compensated jerk. Subtract the dominant global motion component
   per token before thresholding, to stop camera pans from inflating the
   dilated spans. Progression: global jerk, camera-compensated jerk,

@@ -491,11 +491,13 @@ class H3V2VInit:
         "(overrides the oracle path). mask = the region to REGENERATE; "
         "invert_mask flips it so you can paint the background/birds to "
         "freeze directly. The mask is unioned over time (static boundary, "
-        "never pops) and feathered in pixel space BEFORE pooling to the "
-        "latent grid, so edge cells carry fractional freeze strength: a "
-        "smooth ramp, quantized to ~16 px cells, minimum one cell wide. "
-        "Prefer this over the composite node when background and subject "
-        "share lighting, shadows or water contact.")
+        "never pops) and snapped to HARD latent cells by default "
+        "(mask_feather 0): every ~16 px cell is fully frozen or fully "
+        "live, no half-frozen blend cells, and the decode smooths the "
+        "edge. Set mask_feather above 0 to get the old pixel-space ramp "
+        "pooled to fractional cells if a hard seam ever shows. Prefer "
+        "this over the composite node when background and subject share "
+        "lighting, shadows or water contact.")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -514,8 +516,10 @@ class H3V2VInit:
                 "tooltip": "latent-pixels of mask dilation (16 image px each); applies to both mask sources"}),
             "mask": ("MASK", {"tooltip": "(alpha) manual region to REGENERATE (1) vs freeze to baseline timing (0). "
                      "Overrides the oracle path. Union over time: the boundary never moves"}),
-            "mask_feather": ("INT", {"default": 32, "min": 0, "max": 256,
-                "tooltip": "feather width in image pixels; pooled to fractional latent cells (~16 px quanta, smooth ramp)"}),
+            "mask_feather": ("INT", {"default": 0, "min": 0, "max": 256,
+                "tooltip": "0 (default): hard latent cells, every cell fully frozen or fully live; "
+                           "the decode smooths the edge. >0: pixel-space ramp pooled to fractional "
+                           "cells (~16 px quanta) if a hard seam ever shows"}),
             "invert_mask": ("BOOLEAN", {"default": False,
                 "tooltip": "on: the mask marks the FREEZE region instead (paint the background/birds directly)"}),
         }}
@@ -554,6 +558,11 @@ class H3V2VInit:
             if freeze_grow:
                 k = freeze_grow * 2 + 1
                 m = F.max_pool2d(m[None], k, stride=1, padding=k // 2)[0]
+            if mask_feather <= 0:
+                # hard cells: area pooling leaves boundary cells fractional
+                # (half-frozen blends denoise off-manifold); snap to 0/1 and
+                # let the decode's receptive-field overlap smooth the edge
+                m = (m >= 0.5).float()
             vid_mask = m[0].clamp(0, 1).expand(t_lat, h, w)[None, None].to(video.device)
             aud_mask = torch.ones(1, 32, 2, audio_t)
             out["noise_mask"] = comfy.nested_tensor.NestedTensor(

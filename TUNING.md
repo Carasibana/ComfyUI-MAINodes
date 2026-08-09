@@ -164,11 +164,15 @@ axis:
   control: size, linear/smoothstep/gaussian profile, in/out/centered
   direction) pastes baseline timing back outside the mask after
   recovery. `H3 V2V Init` `mask` freezes the region during generation
-  instead; its feather is built in pixel space then pooled to the
-  latent grid, so edge cells carry fractional freeze strength but the
-  ramp width is quantized to ~16 px cells (minimum one cell). Say so
-  when a user asks for a 4 px feather there; the composite path is the
-  fine-feather tool.
+  instead; its default is HARD latent cells (mask_feather 0): every
+  ~16 px cell fully frozen or fully live, no fractional blend cells.
+  Rationale: half-frozen cells denoise as frozen/live mixtures that can
+  themselves mush the seam, while the decode's receptive-field overlap
+  smooths a hard cell edge for free. mask_feather above 0 restores the
+  pooled fractional ramp if a hard seam ever shows in playback (report
+  it; that reading is one A/B from ratified). Either way this path
+  cannot do fine pixel feathering; the composite is the fine-feather
+  tool.
 
 The GUI for both axes at once is the `H3 Motion Editor` node
 (`examples/motion_pipeline_editor.json`): timeline blocks, per-frame
