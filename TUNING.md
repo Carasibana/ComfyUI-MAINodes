@@ -45,6 +45,7 @@ different dial than one who says "it changed my character's pose."
 | turbo output changes appearance (adds ornament, shifts style) | lower LoRA strength 0.8 toward 0.65; or raise `base_head` in the expert schedule so more structure forms on the base model |
 | audio feels thin | raise `reference_mix` (needs the non-probe graphs); it is happiest near 0 or 1, mid values can double misaligned impacts |
 | audio impacts feel soft | known vocoder trait; try `reference_mix: 1` for baseline foley, or accept lean |
+| unprompted speech or vocal sounds appear | any voice your prompt describes without verbatim words gets gap-filled: sometimes a coherent invented line, sometimes non-language vocalizing. Script the words in the dialogue format, declare the voice indistinct by design, or cut the voice mention from the prompt |
 | dialog sounds processed | check whether the speech overlaps a burst; unheld spans pass through untouched, so only speech during bursts is affected. `reference_mix: 1` restores the original line |
 | probe init loses choreography | raise `probe_steps` from 6 toward 10 |
 | background details change in regenerated spans (a flag recolors, props swap) | known limitation: detailed backgrounds re-roll during dilation. Try `inject` toward 0.5 (closer init tracking); simple backgrounds barely show it. A subject-only "foveated" mode that never regenerates the background is on the roadmap |
