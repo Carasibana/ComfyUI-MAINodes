@@ -1355,6 +1355,162 @@ class H3MotionEditor:
                 "result": (hold_map, mask, envelopes, report)}
 
 
+class H3SegmentCrop:
+    """Cut the world down to the held window plus real-time handles, so the
+    expensive regeneration pass only pays for the frames the user targeted."""
+
+    DESCRIPTION = (
+        "The compute lever for targeted de-roping: crops the clip to the "
+        "hold map's held span plus handle_frames of untouched context on "
+        "each side. Wire the cropped images into H3 Time Smear together "
+        "with the emitted segment hold_map, and the whole regeneration "
+        "chain (encode, v2v, sample, recover, audio) runs on the segment "
+        "only. Cost scales with dilated token count, so a one-burst window "
+        "in a long clip regenerates several times faster than the full "
+        "world. splice_map goes to H3 Segment Splice for reassembly. "
+        "first/last frame outputs are the handle endpoints for FLF "
+        "pinning on the regeneration's conditioning if you run an FL2VA "
+        "checkpoint (recommended: it anchors the seam poses).\n\n"
+        "The handles are generated at hold 1 and injected at your inject "
+        "value, so they come back close to the baseline; H3 Segment "
+        "Splice crossfades inside them. Multiple separate bursts are "
+        "covered by one window spanning first to last held frame in this "
+        "version.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "images": ("IMAGE", {"tooltip": "baseline frames, world clock"}),
+            "hold_map": ("STRING", {"default": "", "forceInput": True,
+                         "tooltip": "from the oracle, H3 Manual Hold Map, or H3 Motion Editor"}),
+            "handle_frames": ("INT", {"default": 12, "min": 2, "max": 48,
+                              "tooltip": "real-time context frames kept on each side of the held span"}),
+        }}
+
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "IMAGE", "IMAGE", "STRING")
+    RETURN_NAMES = ("images", "hold_map", "splice_map", "first_frame",
+                    "last_frame", "report")
+    FUNCTION = "crop"
+    CATEGORY = "image/minimax/motion"
+
+    def crop(self, images, hold_map, handle_frames=12):
+        images = images.detach().cpu()
+        holds = json.loads(hold_map)["holds"]
+        n = images.shape[0]
+        assert len(holds) == n, f"hold map covers {len(holds)}, clip has {n}"
+        held = [i for i, h in enumerate(holds) if h > 1]
+        assert held, "hold map has no held span; nothing to crop"
+        a = max(0, held[0] - handle_frames)
+        b = min(n - 1, held[-1] + handle_frames)
+        seg = images[a:b + 1]
+        seg_holds = [holds[f] if held[0] <= f <= held[-1] else 1
+                     for f in range(a, b + 1)]
+        seg_len = b - a + 1
+        splice = json.dumps({
+            "start": a, "end": b, "world_len": n,
+            "handle_in": held[0] - a, "handle_out": b - held[-1]})
+        dil_full = _legal_ceil(sum(holds))
+        dil_seg = _legal_ceil(sum(seg_holds))
+        report = (f"window f{a}-f{b} ({seg_len}f of {n}f); regen "
+                  f"{dil_seg}f instead of {dil_full}f full-clip: "
+                  f"{dil_full / dil_seg:.1f}x fewer sampled frames")
+        return (seg, json.dumps({"holds": seg_holds, "world_len": seg_len}),
+                splice, seg[:1].clone(), seg[-1:].clone(), report)
+
+
+class H3SegmentSplice:
+    """Reassemble: baseline outside the window, regenerated segment inside,
+    crossfaded across the handles. Audio spliced sample-accurately."""
+
+    DESCRIPTION = (
+        "Inverts H3 Segment Crop after recovery: the world is baseline "
+        "outside the window and the recovered segment inside, with a "
+        "video crossfade over feather_frames inside each handle zone "
+        "(handles regenerate close to baseline, so the blend hides the "
+        "residual tone drift). Wire segment = H3 Exact Recover's output "
+        "for the segment. Audio: baseline_audio is the full clip track, "
+        "segment_audio the retimed segment track from H3 Audio Recover; "
+        "the splice is sample-accurate with an equal-power crossfade in "
+        "the same handle zones. Omit the audio inputs to splice video "
+        "only.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "baseline": ("IMAGE",),
+            "segment": ("IMAGE", {"tooltip": "recovered segment, world clock"}),
+            "splice_map": ("STRING", {"default": "", "forceInput": True}),
+            "feather_frames": ("INT", {"default": 6, "min": 0, "max": 24,
+                               "tooltip": "crossfade width inside each handle"}),
+        }, "optional": {
+            "baseline_audio": ("AUDIO",),
+            "segment_audio": ("AUDIO",),
+            "fps": ("INT", {"default": 24, "min": 1, "max": 120}),
+        }}
+
+    RETURN_TYPES = ("IMAGE", "AUDIO")
+    FUNCTION = "splice"
+    CATEGORY = "image/minimax/motion"
+
+    def splice(self, baseline, segment, splice_map, feather_frames=6,
+               baseline_audio=None, segment_audio=None, fps=24):
+        baseline = baseline.detach().float().cpu()
+        segment = segment.detach().float().cpu()
+        sp = json.loads(splice_map)
+        a, b, n = sp["start"], sp["end"], sp["world_len"]
+        assert baseline.shape[0] >= n, (baseline.shape[0], n)
+        seg_len = b - a + 1
+        assert segment.shape[0] == seg_len, (segment.shape[0], seg_len)
+        fade_in = min(feather_frames, sp.get("handle_in", feather_frames))
+        fade_out = min(feather_frames, sp.get("handle_out", feather_frames))
+
+        out = baseline.clone()
+        for i in range(seg_len):
+            w = 1.0
+            if fade_in and i < fade_in:
+                w = (i + 1) / (fade_in + 1)
+            j = seg_len - 1 - i
+            if fade_out and j < fade_out:
+                w = min(w, (j + 1) / (fade_out + 1))
+            f = a + i
+            out[f] = baseline[f] * (1 - w) + segment[i] * w
+
+        audio = baseline_audio
+        if baseline_audio is not None and segment_audio is not None:
+            import math
+            sr = baseline_audio["sample_rate"]
+            bw = baseline_audio["waveform"].detach().float().cpu()
+            swav = segment_audio["waveform"].detach().float().cpu()
+            if segment_audio["sample_rate"] != sr:
+                import torchaudio
+                shp = swav.shape
+                swav = torchaudio.functional.resample(
+                    swav.reshape(-1, shp[-1]), segment_audio["sample_rate"],
+                    sr).reshape(shp[0], shp[1], -1)
+            y = bw.clone()
+            s0 = int(round(a / fps * sr))
+            s1 = min(int(round((b + 1) / fps * sr)), y.shape[-1])
+            need = s1 - s0
+            seg_a = swav[..., :need]
+            if seg_a.shape[-1] < need:   # pad with baseline tail if short
+                pad = y[..., s0 + seg_a.shape[-1]:s1]
+                seg_a = torch.cat([seg_a, pad], dim=-1)
+            xf = int(round(max(fade_in, fade_out) / fps * sr))
+            xf = min(xf, need // 2)
+            mixed = seg_a.clone()
+            if xf > 0:
+                t = torch.linspace(0, math.pi / 2, xf)
+                up, down = torch.sin(t) ** 2, torch.cos(t) ** 2
+                mixed[..., :xf] = (y[..., s0:s0 + xf] * down +
+                                   seg_a[..., :xf] * up)
+                mixed[..., -xf:] = (y[..., s1 - xf:s1] * up.flip(0) +
+                                    seg_a[..., -xf:] * down.flip(0))
+            y[..., s0:s1] = mixed
+            audio = {"waveform": y.contiguous(), "sample_rate": sr}
+        return (out, audio if audio is not None else
+                {"waveform": torch.zeros(1, 2, 1), "sample_rate": 48000})
+
+
 class _AnyType(str):
     def __ne__(self, other):
         return False
@@ -1412,6 +1568,8 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3MotionComposite": H3MotionComposite,
     "H3ModeSwitch": H3ModeSwitch,
     "H3MotionEditor": H3MotionEditor,
+    "H3SegmentCrop": H3SegmentCrop,
+    "H3SegmentSplice": H3SegmentSplice,
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3JerkOracle": "H3 Jerk Oracle (profile / window / hold map)",
@@ -1429,4 +1587,6 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3MotionComposite": "H3 Motion Composite (subject regen, background baseline)",
     "H3ModeSwitch": "H3 Mode Switch (preview / final, lazy)",
     "H3MotionEditor": "H3 Motion Editor (timeline, masks, automation)",
+    "H3SegmentCrop": "H3 Segment Crop (regen only the window)",
+    "H3SegmentSplice": "H3 Segment Splice (crossfade reassembly)",
 }

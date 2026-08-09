@@ -13,6 +13,8 @@ test clips; expect your content to move the numbers a little.
 | turbo inside the pipeline (not recommended: see below) | `examples/motion_pipeline_turbo.json` | ~1.6x |
 | fastest, no full baseline (scouting only: the probe init is not good enough to feed a base-model finals pass, we tried) | `examples/motion_pipeline_probe_expert.json` | ~1x or less |
 | user knows where the problem is (two-pass: review the oraclemap, type ranges, requeue) | `examples/motion_pipeline_targeted.json` | baseline + regen cost of YOUR spans only |
+| GUI editing on the node (blocks, painting, automation) | `examples/motion_pipeline_editor.json` | as targeted |
+| maximum speed for one burst in a longer clip (segment crop + splice) | `examples/motion_pipeline_editor_segment.json` | baseline + regen of window+handles only; the crop report states the ratio |
 
 The working rhythm we recommend: iterate prompts and seeds with plain
 turbo generations to learn what a prompt gives you globally, then run
@@ -177,6 +179,23 @@ cached. Its mask output is already feathered, so the composite runs
 with `mask_is_soft` on and its own feather at 0. When tuning for a
 user who cannot or will not paint, author `editor_state` JSON for
 them; the contract is in the node docstring.
+
+Compute honesty when a user asks where the speed comes from: TIME
+targeting is the lever. Sampler cost scales with the dilated frame
+count, so gating holds to the user's window helps, and `H3 Segment
+Crop` multiplies that by dropping the un-held world from the regen
+pass entirely (its report states the ratio). SPATIAL masks do not
+reduce FLOPs; the DiT still processes every token and the mask only
+controls blending. Sell the mask as quality control and the window as
+the speedup.
+
+A mask authored without frame-by-frame attention WILL cut off props
+that swing with the subject (a sword mid-cartwheel leaves a static
+blob and gets truncated at the boundary). Fixes, in order: paint
+per-frame in the editor following the prop, enlarge the static region
+to the prop's full arc, or feather outward. This is exactly the
+static-vs-per-frame trade; a human on the timeline beats any static
+region for rotating props.
 
 Method rules for masks: static union masks cannot pop (the boundary
 never moves); route the seam along a real image edge, not through sky

@@ -162,6 +162,19 @@ so everything downstream is the same pipeline. Agents skip the GUI
 and write the same `editor_state` JSON directly; the contract is in
 the node's docstring.
 
+And the compute payoff of targeting:
+[`motion_pipeline_editor_segment.json`](examples/motion_pipeline_editor_segment.json)
+(API twin alongside) adds **H3 Segment Crop** and **H3 Segment Splice**
+around the editor. The regeneration chain runs only on the editor's
+held window plus a few real-time handle frames, then the recovered
+segment splices back into the baseline with video and sample-accurate
+audio crossfades inside the handles. Cost scales with dilated frame
+count, so a one-burst window in a longer clip regenerates severalfold
+faster than the whole world; the crop node's report output states the
+exact ratio for your selection. On FL2VA checkpoints, wire the crop's
+first/last frame outputs into the regeneration conditioning to pin the
+seam poses.
+
 All of them generate or probe a baseline, read its oracle, regenerate,
 and recover, in one queue item. The oracle's length and the regeneration
 length are wired dynamically, so changing the clip duration needs no
@@ -189,6 +202,8 @@ other edits. Each node's info button documents its inputs.
 | H3 Trajectory Bank | `every_n` | 1 | wraps a sampler and checkpoints the trajectory latent each step (~7 MB per step for a 5 s clip) |
 | H3 Trajectory Load | `step` | 5 | resume a banked run from any step with its remaining schedule; swap the model, LoRA, or guider and continue without recomputing the head |
 | H3 Motion Editor | timeline, brushes, lanes | | the GUI: time blocks with bracket handles, per-frame mask painting, per-block dials, automation envelopes for hold/feather/strength. Compiles to a hold map and a soft mask; state is plain JSON that agents can author without the GUI |
+| H3 Segment Crop | `handle_frames` | 12 | cut the world to the held window plus context handles; the regen chain then pays only for the window. Report output states the speedup |
+| H3 Segment Splice | `feather_frames` | 6 | reassemble after recovery: baseline outside, segment inside, video + audio crossfades inside the handles |
 | H3 Manual Hold Map | `ranges` | | manual time targeting: `start-end[:hold]` pairs, frames or seconds. Wire the oracle's hold_map in and its holds survive only inside your ranges (gate mode); leave it unwired to author holds directly. The report output prices the regeneration before you run it |
 | H3 V2V Init | `freeze_threshold` | 0 (off) | automatic background freeze, not recommended: it fixes background timing but degraded other artifacts in our playback tests. Kept for content where the trade goes the other way |
 | | `mask`, `mask_feather` | off, 32 | manual freeze region: you paint what regenerates (`invert_mask` to paint the frozen background instead). Static union over time, so the boundary never moves; feathered in pixel space, then pooled to fractional latent cells, so the ramp is smooth but its width is quantized to ~16 px |
