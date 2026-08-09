@@ -118,6 +118,26 @@ Three contributions as implemented today:
   against the subject-averaged series to find regions participating in
   the same motion event, directly in the latent, no optical flow. The
   existing drift overlay (velocity high, jerk low) is a crude ancestor.
+- Duplicate-motion (mirror) detection: PROBED AND NOT SOLVED by the
+  co-motion statistic, 2026-08-09. Two synthetic results worth keeping.
+  (1) The oracle is scale-invariant to duplication: because `q` is a
+  quantile of the profile, a reflection showing the same motion at the
+  same time yields a bit-identical hold map (profile correlation
+  0.9999). The old "mirrors make the oracle over-dilate" line in TUNING
+  was wrong and is now corrected; the real amplifier is `bridge`
+  welding a temporally separated reflection burst to the body's burst
+  (+26% dilated time in the probe, +18% of it from bridge alone).
+  (2) Lagged correlation between per-cell jerk profiles CANNOT separate
+  a mirror from two independent dancers: one body's own parts already
+  correlate at ~1.0, so the confuser floor sits above the signal
+  (margin -0.145 with heterogeneous limbs). Sharpening: the same
+  statistic that is right for motion ATTACHMENT (you want the whole
+  body, sword included, to score as one event) is structurally wrong
+  for DE-DUPLICATION. A duplicate detector needs the geometric fact a
+  mirror actually provides, approximate reflection symmetry of the
+  spatial jerk map about some axis, not temporal correlation. Untested;
+  needs a real mirror clip, since a synthetic with uniform blocks
+  passes any symmetry test trivially.
 - Mask hysteresis. Once a region becomes attached, keep it attached for
   a short window unless evidence says it separated; prevents flicker on
   hands, props and cloth. Attachment-then-separation events (a thrown

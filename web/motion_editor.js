@@ -6,6 +6,9 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const LEGAL_STEP = 17;
+// per-step cost goes as tokens**COST_EXP (attention dominates); see motion.py
+const COST_EXP = 1.7;
+const tokensFor = (n) => Math.floor((n - 5) / 17) * 5 + 2;
 
 function tokStartFrame(t) {
   const c = Math.floor(t / 5), i = t % 5;
@@ -122,9 +125,11 @@ class MotionEditor {
     const dil = this.state.blocks.length
       ? legalCeil(holds.reduce((x, y) => x + y, 0)) : this.length;
     const t = (n) => (n / this.fps).toFixed(1);
+    const timeX = Math.pow(
+      tokensFor(dil) / Math.max(tokensFor(legalCeil(this.length)), 1), COST_EXP);
     this.priceEl.textContent =
       `${this.length}f (${t(this.length)}s) -> ~${dil}f (${t(dil)}s), ` +
-      `${(dil / this.length).toFixed(2)}x est` +
+      `${(dil / this.length).toFixed(2)}x frames / ~${timeX.toFixed(1)}x time per step` +
       (this.report ? ` | last run: ${this.report}` : "");
   }
 

@@ -18,6 +18,14 @@ import torch
 
 LEGAL_STEP = 17  # legal pixel lengths are 17k+5
 
+# Per-step cost does NOT scale linearly with token count: attention dominates,
+# so time goes as tokens**COST_EXP. Measured 2026-08-09, one clip one card,
+# 37 -> 92 tokens took 13.35 -> 65.85 s/step (4.93x for a 2.49x token ratio,
+# exponent 1.75). An independent field report on other hardware (16 -> 72
+# s/step) lands near 1.64. 1.7 splits them. Expect it to climb toward 2.0 at
+# higher resolution, where attention takes a larger share of the step.
+COST_EXP = 1.7
+
 
 def _video_component(samples):
     z = samples["samples"]
@@ -372,8 +380,9 @@ class H3ManualHoldMap:
         report = (f"{length}f ({length / fps:.1f}s) -> {dilated}f "
                   f"({dilated / fps:.1f}s) effective regen, "
                   f"{dilated / length:.2f}x; tokens {t_lat} -> {t_lat_d}")
+        report += f" ({(t_lat_d / t_lat) ** COST_EXP:.1f}x the time per step)"
         if s_per_step > 0:
-            est = s_per_step * (t_lat_d / t_lat) * est_steps / 60
+            est = s_per_step * (t_lat_d / t_lat) ** COST_EXP * est_steps / 60
             report += (f"; ~{est:.1f} min at {s_per_step:g} s/step x "
                        f"{est_steps} steps")
         hold_map = json.dumps({"holds": holds, "world_len": length})
@@ -1342,8 +1351,11 @@ class H3MotionEditor:
 
         # ---- report / envelopes ----
         dilated = _legal_ceil(sum(holds)) if holds else n
+        t_world = (_legal_ceil(n) - 5) // 17 * 5 + 2
+        t_dil = (dilated - 5) // 17 * 5 + 2
         report = (f"{n}f ({n / fps:.1f}s) -> {dilated}f ({dilated / fps:.1f}s) "
-                  f"effective regen, {dilated / max(n, 1):.2f}x; "
+                  f"effective regen, {dilated / max(n, 1):.2f}x frames / "
+                  f"{(t_dil / max(t_world, 1)) ** COST_EXP:.1f}x time per step; "
                   f"{len(blocks)} block(s)")
         if segments:
             report += f"; held segments {segments}"
@@ -1423,9 +1435,14 @@ class H3SegmentCrop:
             "handle_in": held[0] - a, "handle_out": b - held[-1]})
         dil_full = _legal_ceil(sum(holds))
         dil_seg = _legal_ceil(sum(seg_holds))
+        t_full = (dil_full - 5) // 17 * 5 + 2
+        t_seg = (dil_seg - 5) // 17 * 5 + 2
         report = (f"window f{a}-f{b} ({seg_len}f of {n}f); regen "
-                  f"{dil_seg}f instead of {dil_full}f full-clip: "
-                  f"{dil_full / dil_seg:.1f}x fewer sampled frames")
+                  f"{dil_seg}f instead of {dil_full}f full-clip "
+                  f"({t_seg} vs {t_full} tokens): about "
+                  f"{(t_full / t_seg) ** COST_EXP:.1f}x faster per step "
+                  f"(cost is superlinear in tokens, so the time saved beats "
+                  f"the {t_full / t_seg:.1f}x token cut)")
         return (seg, json.dumps({"holds": seg_holds, "world_len": seg_len}),
                 splice, seg[:1].clone(), seg[-1:].clone(), report)
 
