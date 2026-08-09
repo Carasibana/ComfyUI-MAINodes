@@ -284,6 +284,7 @@ class H3ManualHoldMap:
     holds only inside your ranges (the oracle proposes, you dispose)."""
 
     DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-09; the classic pipeline nodes are unchanged.\n\n"
         "Manual targeting: turns user-chosen time ranges into the same "
         "hold-map JSON the H3 Jerk Oracle emits, so H3 Time Smear, H3 "
         "Exact Recover and H3 Audio Recover work unmodified.\n\n"
@@ -511,7 +512,7 @@ class H3V2VInit:
                            "0.35 is a sane start."}),
             "freeze_grow": ("INT", {"default": 2, "min": 0, "max": 16,
                 "tooltip": "latent-pixels of mask dilation (16 image px each); applies to both mask sources"}),
-            "mask": ("MASK", {"tooltip": "manual region to REGENERATE (1) vs freeze to baseline timing (0). "
+            "mask": ("MASK", {"tooltip": "(alpha) manual region to REGENERATE (1) vs freeze to baseline timing (0). "
                      "Overrides the oracle path. Union over time: the boundary never moves"}),
             "mask_feather": ("INT", {"default": 32, "min": 0, "max": 256,
                 "tooltip": "feather width in image pixels; pooled to fractional latent cells (~16 px quanta, smooth ramp)"}),
@@ -1059,14 +1060,14 @@ class H3MotionComposite:
             "feather": ("INT", {"default": 48, "min": 0, "max": 256}),
         }, "optional": {
             "samples": ("LATENT", {"tooltip": "BASELINE latent (oracle mode); optional when mask is wired"}),
-            "mask": ("MASK", {"tooltip": "manual subject mask, overrides the oracle. 1 = keep regenerated, 0 = keep baseline. One mask = static boundary; a batch = per-frame"}),
+            "mask": ("MASK", {"tooltip": "(alpha) manual subject mask, overrides the oracle. 1 = keep regenerated, 0 = keep baseline. One mask = static boundary; a batch = per-frame"}),
             "invert_mask": ("BOOLEAN", {"default": False,
                             "tooltip": "on: the mask marks the KEEP-BASELINE region instead (lasso the birds directly)"}),
             "feather_profile": (["linear", "smoothstep", "gaussian"], {"default": "linear"}),
             "feather_direction": (["centered", "inward", "outward"], {"default": "centered",
                                   "tooltip": "where the ramp lives relative to the mask boundary"}),
             "mask_is_soft": ("BOOLEAN", {"default": False,
-                             "tooltip": "mask values are final alphas (e.g. from H3 Motion Editor): skip threshold/grow/feather"}),
+                             "tooltip": "(alpha) mask values are final alphas (e.g. from H3 Motion Editor): skip threshold/grow/feather"}),
         }}
 
     RETURN_TYPES = ("IMAGE",)
@@ -1166,6 +1167,7 @@ class H3MotionEditor:
     and the oracle hold map (if wired) passes through untouched."""
 
     DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-09; the classic pipeline nodes are unchanged.\n\n"
         "The Motion Lab editor node. Wire the baseline frames (and latent) "
         "in, queue once to load the filmstrip, then edit right on the node: "
         "drag time blocks on the timeline (DAW-style brackets, snapped to "
@@ -1360,6 +1362,7 @@ class H3SegmentCrop:
     expensive regeneration pass only pays for the frames the user targeted."""
 
     DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-09; the classic pipeline nodes are unchanged.\n\n"
         "The compute lever for targeted de-roping: crops the clip to the "
         "hold map's held span plus handle_frames of untouched context on "
         "each side. Wire the cropped images into H3 Time Smear together "
@@ -1423,6 +1426,7 @@ class H3SegmentSplice:
     crossfaded across the handles. Audio spliced sample-accurately."""
 
     DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-09; the classic pipeline nodes are unchanged.\n\n"
         "Inverts H3 Segment Crop after recovery: the world is baseline "
         "outside the window and the recovered segment inside, with a "
         "video crossfade over feather_frames inside each handle zone "
@@ -1573,7 +1577,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3JerkOracle": "H3 Jerk Oracle (profile / window / hold map)",
-    "H3ManualHoldMap": "H3 Manual Hold Map (ranges to holds, gate)",
+    "H3ManualHoldMap": "H3 Manual Hold Map (ranges to holds, gate) [alpha]",
     "H3TimeSmear": "H3 Time Smear (integer holds)",
     "H3ExactRecover": "H3 Exact Recover (24fps frame selection)",
     "H3V2VInit": "H3 V2V Init (nested AV latent)",
@@ -1586,7 +1590,7 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3TrajectoryLoad": "H3 Trajectory Load (branch from a step)",
     "H3MotionComposite": "H3 Motion Composite (subject regen, background baseline)",
     "H3ModeSwitch": "H3 Mode Switch (preview / final, lazy)",
-    "H3MotionEditor": "H3 Motion Editor (timeline, masks, automation)",
-    "H3SegmentCrop": "H3 Segment Crop (regen only the window)",
-    "H3SegmentSplice": "H3 Segment Splice (crossfade reassembly)",
+    "H3MotionEditor": "H3 Motion Editor (timeline, masks, automation) [alpha]",
+    "H3SegmentCrop": "H3 Segment Crop (regen only the window) [alpha]",
+    "H3SegmentSplice": "H3 Segment Splice (crossfade reassembly) [alpha]",
 }

@@ -123,6 +123,12 @@ the same finals graph pointed at the smallest community-published models
 Measured numbers and the honest caveats live in
 [TUNING.md](TUNING.md#featherweight-stack-measured-comfyui-031).
 
+Everything from here through the editor and segment graphs is new
+(2026-08-09) and marked **alpha**: the node interfaces may still move,
+and the interactive widget is young. The classic pipeline nodes above
+are untouched and differentially regression-tested against the
+previous release (same inputs, identical outputs).
+
 And for the "the oracle is overzealous, I know exactly where the
 problem is" crowd:
 [`motion_pipeline_targeted.json`](examples/motion_pipeline_targeted.json)
