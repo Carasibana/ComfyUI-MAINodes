@@ -16,6 +16,9 @@
   .cap { color:#9a9aa5; font-size:.92rem; margin: .5em 0 0; }
   .repo { display:inline-block; margin-top:.6em; padding:.45em .9em; background:#1c1c24;
           border:1px solid #33333e; border-radius:8px; text-decoration:none; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0 .4em; font-size: .95rem; }
+  th, td { text-align: left; padding: .45em .8em; border-bottom: 1px solid #2a2a33; }
+  th { color:#9a9aa5; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -94,6 +97,21 @@ Image-to-video works the same way
 <p class="cap">One honest caveat: int8 and w4a8 render different takes from
 the same seed, because quantization bends the trajectory. Both coherent,
 both de-rope cleanly. Compare quality, not pixels.</p>
+
+<h2 id="vram">What it costs, measured</h2>
+<table>
+<tr><th>featherweight run</th><th>wall time</th><th>peak VRAM you'd see</th></tr>
+<tr><td>3 s at 0.4 MP</td><td>4 min</td><td>~19 GB</td></tr>
+<tr><td>3 s at 0.7 MP</td><td>6.5 min</td><td>~20 GB</td></tr>
+<tr><td>5 s at 1.0 MP</td><td>29 min</td><td>~28 GB brief peak, ~20 GB sustained</td></tr>
+</table>
+<p class="cap">Full pipeline including its own baseline render, w4a8 stack
+on ComfyUI 0.31+, text encoder offloaded after encoding (the default).
+These are one clip's numbers, not a promise: the oracle decides how much
+of your clip gets time-dilated, and the dilated span is what costs. A
+calm clip with one short burst runs well under these figures; wall-to-wall
+action runs at them. Resolution barely moves the peak. Full table and the
+dials in <a href="https://github.com/matlowai/ComfyUI-MAINodes/blob/main/TUNING.md">TUNING.md</a>.</p>
 
 <p style="margin-top:3em">Docs: <a href="https://github.com/matlowai/ComfyUI-MAINodes/blob/main/TUNING.md">TUNING.md</a>
 &middot; workflows in <a href="https://github.com/matlowai/ComfyUI-MAINodes/tree/main/examples">examples/</a>
