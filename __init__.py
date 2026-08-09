@@ -19,6 +19,8 @@ this is the consolidated home going forward.
 from .contact_sheet import H3ContactSheet, H3ContactSheetDecode
 from .motion import TIMESMEAR_CLASS_MAPPINGS, TIMESMEAR_DISPLAY_MAPPINGS
 
+WEB_DIRECTORY = "./web"
+
 NODE_CLASS_MAPPINGS = dict(TIMESMEAR_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS = dict(TIMESMEAR_DISPLAY_MAPPINGS)
 

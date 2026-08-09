@@ -141,6 +141,27 @@ muted spatial branch: export a frame, paint a mask, load it, unmute,
 and H3 Motion Composite returns your masked region to baseline timing
 with a feathered seam (see below).
 
+The full editing experience is
+[`motion_pipeline_editor.json`](examples/motion_pipeline_editor.json)
+(API twin alongside): the **H3 Motion Editor** node puts a DAW-style
+editor right on the canvas. Queue once to load the filmstrip, then
+work on the node: drag bracket blocks on the timeline (multiple
+blocks, snapped to the model's token grid, jerk profile drawn
+underneath so you can see what the oracle sees), click a block and
+step frame by frame painting the problem areas with brush and eraser
+(onion skin included), set per-block dials for hold, feather size,
+feather profile and direction, edge grow, and temporal fade, and
+toggle `A` on hold, feather, or strength to draw an automation
+envelope with draggable breakpoints, exactly like an automation lane
+in a DAW. A block with no strokes regenerates its whole time span;
+strokes narrow it to the painted region. Queue again and only the
+regeneration side re-runs; the baseline stays cached. The node's
+outputs are ordinary `hold_map` and MASK wires, the mask arriving
+pre-feathered and envelope-scaled (`mask_is_soft` on the composite),
+so everything downstream is the same pipeline. Agents skip the GUI
+and write the same `editor_state` JSON directly; the contract is in
+the node's docstring.
+
 All of them generate or probe a baseline, read its oracle, regenerate,
 and recover, in one queue item. The oracle's length and the regeneration
 length are wired dynamically, so changing the clip duration needs no
@@ -167,6 +188,7 @@ other edits. Each node's info button documents its inputs.
 | H3 Expert Schedule | `base_head` | 2 | split the injected schedule: base-model head for structure, turbo tail for refinement (tail defaults to turbo's native 4 steps) |
 | H3 Trajectory Bank | `every_n` | 1 | wraps a sampler and checkpoints the trajectory latent each step (~7 MB per step for a 5 s clip) |
 | H3 Trajectory Load | `step` | 5 | resume a banked run from any step with its remaining schedule; swap the model, LoRA, or guider and continue without recomputing the head |
+| H3 Motion Editor | timeline, brushes, lanes | | the GUI: time blocks with bracket handles, per-frame mask painting, per-block dials, automation envelopes for hold/feather/strength. Compiles to a hold map and a soft mask; state is plain JSON that agents can author without the GUI |
 | H3 Manual Hold Map | `ranges` | | manual time targeting: `start-end[:hold]` pairs, frames or seconds. Wire the oracle's hold_map in and its holds survive only inside your ranges (gate mode); leave it unwired to author holds directly. The report output prices the regeneration before you run it |
 | H3 V2V Init | `freeze_threshold` | 0 (off) | automatic background freeze, not recommended: it fixes background timing but degraded other artifacts in our playback tests. Kept for content where the trade goes the other way |
 | | `mask`, `mask_feather` | off, 32 | manual freeze region: you paint what regenerates (`invert_mask` to paint the frozen background instead). Static union over time, so the boundary never moves; feathered in pixel space, then pooled to fractional latent cells, so the ramp is smooth but its width is quantized to ~16 px |

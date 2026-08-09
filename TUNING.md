@@ -168,6 +168,16 @@ axis:
   when a user asks for a 4 px feather there; the composite path is the
   fine-feather tool.
 
+The GUI for both axes at once is the `H3 Motion Editor` node
+(`examples/motion_pipeline_editor.json`): timeline blocks, per-frame
+painting, per-block dials, and automation envelopes (hold, feather,
+strength) compiled into the same hold_map/mask wires. Queue once to
+load the filmstrip, edit on the node, queue again; the baseline stays
+cached. Its mask output is already feathered, so the composite runs
+with `mask_is_soft` on and its own feather at 0. When tuning for a
+user who cannot or will not paint, author `editor_state` JSON for
+them; the contract is in the node docstring.
+
 Method rules for masks: static union masks cannot pop (the boundary
 never moves); route the seam along a real image edge, not through sky
 mid-gradient; lasso generously and let feather work; per-frame mask

@@ -189,6 +189,95 @@ class H3JerkOracle:
         return (hold_map, ",".join(segs), int(w0), int(wlen), profile)
 
 
+def _compile_hold_map(frame_holds, length, ramp, bridge):
+    """Frame-domain holds -> token-snapped holds + segments string.
+    Shared by H3ManualHoldMap and H3MotionEditor; same bridge/ramp rules
+    as the oracle."""
+    t_lat = 0
+    while _tok_start_frame(t_lat) < length:
+        t_lat += 1
+    tok_d = np.ones(t_lat, int)
+    for t in range(t_lat):
+        f0 = _tok_start_frame(t)
+        f1 = min(_tok_start_frame(t + 1), length)
+        if f1 > f0:
+            tok_d[t] = int(np.max(frame_holds[f0:f1]))
+
+    d_peak = int(tok_d.max())
+    if bridge and d_peak > 1:
+        hot = np.where(tok_d == d_peak)[0]
+        for a, b in zip(hot[:-1], hot[1:]):
+            if 1 < b - a <= bridge:
+                tok_d[a:b + 1] = d_peak
+    if ramp and d_peak > 1:
+        for _ in range(d_peak - 1):
+            left = np.concatenate([[1], tok_d[:-1]])
+            right = np.concatenate([tok_d[1:], [1]])
+            tok_d = np.maximum(tok_d, np.maximum(left, right) - 1)
+
+    holds = [int(tok_d[_frame_token(f, t_lat)]) for f in range(length)]
+    segs, t0 = [], 0
+    for t in range(1, t_lat + 1):
+        if t == t_lat or tok_d[t] != tok_d[t0]:
+            if tok_d[t0] > 1:
+                segs.append(f"{t0}:{t}:{int(tok_d[t0])}")
+            t0 = t
+    return holds, ",".join(segs), t_lat
+
+
+def _env_value(auto, param, frame, default):
+    """Evaluate a breakpoint envelope [[frame, value], ...] at a frame."""
+    pts = (auto or {}).get(param)
+    if not pts:
+        return default
+    pts = sorted(pts, key=lambda p: p[0])
+    if frame <= pts[0][0]:
+        return float(pts[0][1])
+    if frame >= pts[-1][0]:
+        return float(pts[-1][1])
+    for (f0, v0), (f1, v1) in zip(pts[:-1], pts[1:]):
+        if f0 <= frame <= f1:
+            if f1 == f0:
+                return float(v1)
+            a = (frame - f0) / (f1 - f0)
+            return float(v0) + a * (float(v1) - float(v0))
+    return default
+
+
+def _rasterize_strokes(strokes, h, w):
+    """Vector strokes (normalized coords, disc brush) -> (h, w) 0/1 mask.
+    Brush and erase apply in stroke order."""
+    import math
+    m = torch.zeros(h, w)
+    for s in strokes or []:
+        r = max(1.0, float(s.get("r", 0.03)) * w)
+        pts = s.get("pts") or []
+        stamped = []
+        for i, (x1, y1) in enumerate(pts):
+            if i == 0:
+                stamped.append((x1, y1))
+                continue
+            x0, y0 = pts[i - 1]
+            d = math.hypot((x1 - x0) * w, (y1 - y0) * h)
+            nsub = max(1, int(d / max(1.0, r * 0.5)))
+            for k in range(1, nsub + 1):
+                stamped.append((x0 + (x1 - x0) * k / nsub,
+                                y0 + (y1 - y0) * k / nsub))
+        val = 0.0 if s.get("t") == "erase" else 1.0
+        for px, py in stamped:
+            cx, cy = px * w, py * h
+            x0i, x1i = int(max(0, cx - r - 1)), int(min(w, cx + r + 2))
+            y0i, y1i = int(max(0, cy - r - 1)), int(min(h, cy + r + 2))
+            if x1i <= x0i or y1i <= y0i:
+                continue
+            ys = torch.arange(y0i, y1i).float()[:, None]
+            xs = torch.arange(x0i, x1i).float()[None, :]
+            hit = (ys - cy) ** 2 + (xs - cx) ** 2 <= r * r
+            patch = m[y0i:y1i, x0i:x1i]
+            patch[hit] = val
+    return m
+
+
 class H3ManualHoldMap:
     """Author the hold map by hand: time ranges in, oracle-format hold
     map out. Solo mode replaces the oracle; gate mode keeps the oracle's
@@ -275,37 +364,8 @@ class H3ManualHoldMap:
             for a, b, h in spans:
                 frame_holds[a:b + 1] = h
 
-        t_lat = 0
-        while _tok_start_frame(t_lat) < length:
-            t_lat += 1
-        tok_d = np.ones(t_lat, int)
-        for t in range(t_lat):
-            f0 = _tok_start_frame(t)
-            f1 = min(_tok_start_frame(t + 1), length)
-            if f1 > f0:
-                tok_d[t] = int(frame_holds[f0:f1].max())
-
-        d_peak = int(tok_d.max())
-        if bridge and d_peak > 1:
-            hot = np.where(tok_d == d_peak)[0]
-            for a, b in zip(hot[:-1], hot[1:]):
-                if 1 < b - a <= bridge:
-                    tok_d[a:b + 1] = d_peak
-        if ramp and d_peak > 1:
-            for _ in range(d_peak - 1):
-                left = np.concatenate([[1], tok_d[:-1]])
-                right = np.concatenate([tok_d[1:], [1]])
-                tok_d = np.maximum(tok_d, np.maximum(left, right) - 1)
-
-        holds = [int(tok_d[_frame_token(f, t_lat)]) for f in range(length)]
-
-        segs, t0 = [], 0
-        for t in range(1, t_lat + 1):
-            if t == t_lat or tok_d[t] != tok_d[t0]:
-                if tok_d[t0] > 1:
-                    segs.append(f"{t0}:{t}:{int(tok_d[t0])}")
-                t0 = t
-
+        holds, segments, t_lat = _compile_hold_map(frame_holds, length,
+                                                   ramp, bridge)
         dilated = _legal_ceil(sum(holds))
         t_lat_d = (dilated - 5) // 17 * 5 + 2
         report = (f"{length}f ({length / fps:.1f}s) -> {dilated}f "
@@ -316,7 +376,7 @@ class H3ManualHoldMap:
             report += (f"; ~{est:.1f} min at {s_per_step:g} s/step x "
                        f"{est_steps} steps")
         hold_map = json.dumps({"holds": holds, "world_len": length})
-        return (hold_map, ",".join(segs), report)
+        return (hold_map, segments, report)
 
 
 class H3TimeSmear:
@@ -1005,6 +1065,8 @@ class H3MotionComposite:
             "feather_profile": (["linear", "smoothstep", "gaussian"], {"default": "linear"}),
             "feather_direction": (["centered", "inward", "outward"], {"default": "centered",
                                   "tooltip": "where the ramp lives relative to the mask boundary"}),
+            "mask_is_soft": ("BOOLEAN", {"default": False,
+                             "tooltip": "mask values are final alphas (e.g. from H3 Motion Editor): skip threshold/grow/feather"}),
         }}
 
     RETURN_TYPES = ("IMAGE",)
@@ -1013,7 +1075,8 @@ class H3MotionComposite:
 
     def composite(self, regenerated, baseline, threshold, grow, feather,
                   samples=None, mask=None, invert_mask=False,
-                  feather_profile="linear", feather_direction="centered"):
+                  feather_profile="linear", feather_direction="centered",
+                  mask_is_soft=False):
         import torch.nn.functional as F
 
         regenerated = regenerated.detach().float().cpu()
@@ -1030,7 +1093,7 @@ class H3MotionComposite:
             if m.shape[-2:] != (H, W):
                 m = F.interpolate(m[:, None], size=(H, W), mode="bilinear",
                                   align_corners=False)[:, 0]
-            alpha = (m >= threshold).float()
+            alpha = m.clamp(0, 1) if mask_is_soft else (m >= threshold).float()
             per_frame = alpha.shape[0]
             token_indexed = False
         else:
@@ -1055,10 +1118,13 @@ class H3MotionComposite:
             per_frame = 0
             token_indexed = True
 
-        if grow:
-            k = grow // 2 * 2 + 1
-            alpha = F.max_pool2d(alpha[:, None], k, stride=1, padding=k // 2)[:, 0]
-        alpha = _soft_edge(alpha, feather, feather_profile, feather_direction)
+        if not (mask is not None and mask_is_soft):
+            if grow:
+                k = grow // 2 * 2 + 1
+                alpha = F.max_pool2d(alpha[:, None], k, stride=1,
+                                     padding=k // 2)[:, 0]
+            alpha = _soft_edge(alpha, feather, feather_profile,
+                               feather_direction)
 
         out = []
         for f in range(n):
@@ -1071,6 +1137,222 @@ class H3MotionComposite:
                 a = alpha[min(idx, per_frame - 1)][..., None]
             out.append(baseline[f] * (1 - a) + regenerated[f] * a)
         return (torch.stack(out),)
+
+
+class H3MotionEditor:
+    """DAW-style timeline + mask editor. The JS widget (web/motion_editor.js)
+    edits a serialized state; this node compiles it into a hold map, a soft
+    per-frame mask, and envelope data. Agents can author the same state JSON
+    directly, no GUI needed.
+
+    editor_state contract (v1):
+      {"v": 1, "blocks": [{
+          "id": str, "start": int, "end": int,     # frames, inclusive
+          "hold": int,                              # 0 = use oracle here
+          "dials": {"feather": 48, "profile": "smoothstep",
+                     "direction": "centered", "grow": 0, "fade": 6,
+                     "strength": 1.0},
+          "auto": {"hold": [[f,v],...], "feather": [[f,v],...],
+                    "strength": [[f,v],...]},       # breakpoint envelopes
+          "strokes": {"<frame>": [{"t": "brush"|"erase", "r": 0.03,
+                                    "pts": [[x,y],...]}, ...]},  # normalized
+          "static_strokes": [ ...same, applies to every frame of the block ]
+      }, ...]}
+
+    Mask semantics: a block with no strokes regenerates the whole frame for
+    its time span; strokes narrow that to the painted problem areas. Frames
+    outside every block follow outside_blocks. No blocks at all = mask is
+    all ones (composite becomes a no-op passthrough of the regenerated clip)
+    and the oracle hold map (if wired) passes through untouched."""
+
+    DESCRIPTION = (
+        "The Motion Lab editor node. Wire the baseline frames (and latent) "
+        "in, queue once to load the filmstrip, then edit right on the node: "
+        "drag time blocks on the timeline (DAW-style brackets, snapped to "
+        "the model's token grid), click a block and paint problem areas "
+        "frame by frame, dial feather/grow/fade per block, and draw "
+        "automation envelopes for hold, feather and strength. Outputs are "
+        "drop-ins: hold_map feeds H3 Time Smear, mask feeds H3 Motion "
+        "Composite (enable mask_is_soft there: the mask comes out already "
+        "feathered and envelope-scaled), report prices the pass before you "
+        "run it. Everything upstream stays cached between edits, so "
+        "re-queueing after an edit only re-runs the regeneration side.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "images": ("IMAGE", {"tooltip": "baseline frames (world clock)"}),
+            "editor_state": ("STRING", {"default": "", "multiline": True,
+                             "tooltip": "serialized editor state; the GUI widget maintains this"}),
+        }, "optional": {
+            "samples": ("LATENT", {"tooltip": "baseline latent, for the jerk profile strip"}),
+            "oracle_hold_map": ("STRING", {"default": "", "forceInput": True,
+                                "tooltip": "wire the oracle to gate it; blocks with hold=0 use oracle holds"}),
+            "fps": ("INT", {"default": 24, "min": 1, "max": 120}),
+            "ramp": ("BOOLEAN", {"default": True}),
+            "bridge": ("INT", {"default": 8, "min": 0, "max": 20}),
+            "invert_mask": ("BOOLEAN", {"default": False,
+                            "tooltip": "flip the final mask (paint keep-baseline regions instead)"}),
+            "outside_blocks": (["baseline", "regenerated"], {"default": "baseline",
+                               "tooltip": "what the composite shows on frames no block covers"}),
+            "paint_res": ("INT", {"default": 512, "min": 128, "max": 1024, "step": 64,
+                          "tooltip": "mask compile width; the composite rescales to full res"}),
+        }}
+
+    RETURN_TYPES = ("STRING", "MASK", "STRING", "STRING")
+    RETURN_NAMES = ("hold_map", "mask", "envelopes", "report")
+    OUTPUT_NODE = True
+    FUNCTION = "compile"
+    CATEGORY = "latent/minimax/motion"
+
+    def _thumbs(self, images, paint_w):
+        """Save filmstrip + paint-res frames to the temp dir for the widget.
+        Returns the ui payload lists; empty when not running inside ComfyUI."""
+        try:
+            import folder_paths
+            from PIL import Image
+        except ImportError:
+            return [], []
+        import os
+        import uuid
+        sub = "h3_editor"
+        root = os.path.join(folder_paths.get_temp_directory(), sub)
+        os.makedirs(root, exist_ok=True)
+        tag = uuid.uuid4().hex[:8]
+        n, H, W, _ = images.shape
+        pw = min(paint_w, W)
+        ph = max(1, round(H * pw / W))
+        sw = 96
+        sh = max(1, round(H * sw / W))
+        paint, strip = [], []
+        arr = (images.clamp(0, 1) * 255).byte().cpu().numpy()
+        for f in range(n):
+            im = Image.fromarray(arr[f])
+            name_p = f"{tag}_p{f:04d}.jpg"
+            im.resize((pw, ph)).save(os.path.join(root, name_p), quality=88)
+            paint.append({"filename": name_p, "subfolder": sub, "type": "temp"})
+            name_s = f"{tag}_s{f:04d}.jpg"
+            im.resize((sw, sh)).save(os.path.join(root, name_s), quality=80)
+            strip.append({"filename": name_s, "subfolder": sub, "type": "temp"})
+        return paint, strip
+
+    def compile(self, images, editor_state, samples=None, oracle_hold_map="",
+                fps=24, ramp=True, bridge=8, invert_mask=False,
+                outside_blocks="baseline", paint_res=512):
+        import torch.nn.functional as F
+
+        images = images.detach().float().cpu()
+        n, H, W, _ = images.shape
+        pw = min(paint_res, W)
+        ph = max(1, round(H * pw / W))
+
+        state = {}
+        if editor_state.strip():
+            state = json.loads(editor_state)
+        blocks = state.get("blocks") or []
+
+        oracle = None
+        if oracle_hold_map.strip():
+            oracle = json.loads(oracle_hold_map)["holds"]
+            assert len(oracle) == n, (
+                f"oracle map covers {len(oracle)} frames, clip has {n}")
+
+        # ---- hold map ----
+        if not blocks:
+            holds = list(oracle) if oracle else [1] * n
+            segments = ""
+            if oracle:
+                _, segments, _ = _compile_hold_map(
+                    np.asarray(holds, int), n, False, 0)
+        else:
+            frame_holds = np.ones(n, int)
+            for b in blocks:
+                a = max(0, int(b.get("start", 0)))
+                z = min(n - 1, int(b.get("end", a)))
+                base_hold = int(b.get("hold", 0))
+                for f in range(a, z + 1):
+                    h = _env_value(b.get("auto"), "hold", f,
+                                   float(base_hold))
+                    h = int(round(h))
+                    if h <= 0:
+                        h = oracle[f] if oracle else 4
+                    frame_holds[f] = max(frame_holds[f], h)
+            holds, segments, _ = _compile_hold_map(frame_holds, n, ramp, bridge)
+
+        # ---- mask ----
+        if not blocks:
+            mask = torch.ones(n, ph, pw)
+        else:
+            outside = 0.0 if outside_blocks == "baseline" else 1.0
+            mask = torch.full((n, ph, pw), outside)
+            for b in blocks:
+                a = max(0, int(b.get("start", 0)))
+                z = min(n - 1, int(b.get("end", a)))
+                dials = b.get("dials") or {}
+                fade = max(0, int(dials.get("fade", 6)))
+                grow = max(0, int(dials.get("grow", 0)))
+                profile = dials.get("profile", "smoothstep")
+                direction = dials.get("direction", "centered")
+                static = b.get("static_strokes") or []
+                per_frame = b.get("strokes") or {}
+                base_m = (_rasterize_strokes(static, ph, pw)
+                          if static else None)
+                for f in range(a, z + 1):
+                    fs = per_frame.get(str(f)) or []
+                    if fs or static:
+                        m = base_m.clone() if base_m is not None \
+                            else torch.zeros(ph, pw)
+                        if fs:
+                            mm = _rasterize_strokes(fs, ph, pw)
+                            m = torch.maximum(m, mm)
+                    else:
+                        m = torch.ones(ph, pw)   # bare block: whole frame
+                    if grow:
+                        k = grow // 2 * 2 + 1
+                        m = F.max_pool2d(m[None, None], k, stride=1,
+                                         padding=k // 2)[0, 0]
+                    feather = int(round(_env_value(
+                        b.get("auto"), "feather", f,
+                        float(dials.get("feather", 48)))))
+                    feather = int(feather * pw / max(W, 1))  # px are image px
+                    if feather > 0:
+                        m = _soft_edge(m[None], feather, profile,
+                                       direction)[0]
+                    strength = _env_value(b.get("auto"), "strength", f,
+                                          float(dials.get("strength", 1.0)))
+                    if fade:
+                        edge = min(f - a + 1, z - f + 1)
+                        if edge <= fade:
+                            strength *= edge / (fade + 1)
+                    m = m * max(0.0, min(1.0, strength))
+                    mask[f] = torch.maximum(mask[f], m)
+        if invert_mask:
+            mask = 1.0 - mask
+
+        # ---- report / envelopes ----
+        dilated = _legal_ceil(sum(holds)) if holds else n
+        report = (f"{n}f ({n / fps:.1f}s) -> {dilated}f ({dilated / fps:.1f}s) "
+                  f"effective regen, {dilated / max(n, 1):.2f}x; "
+                  f"{len(blocks)} block(s)")
+        if segments:
+            report += f"; held segments {segments}"
+        envelopes = json.dumps({
+            "fps": fps, "length": n,
+            "blocks": [{"id": b.get("id"), "start": b.get("start"),
+                        "end": b.get("end"), "auto": b.get("auto") or {}}
+                       for b in blocks]})
+        hold_map = json.dumps({"holds": holds, "world_len": n})
+
+        paint, strip = self._thumbs(images, paint_res)
+        prof = []
+        if samples is not None:
+            prof = [round(float(v), 3)
+                    for v in _jerk_profile(_video_component(samples))]
+        ui = {"h3_paint": paint, "h3_strip": strip,
+              "h3_profile": prof, "h3_length": [n], "h3_fps": [fps],
+              "h3_report": [report]}
+        return {"ui": ui,
+                "result": (hold_map, mask, envelopes, report)}
 
 
 class _AnyType(str):
@@ -1129,6 +1411,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3TrajectoryLoad": H3TrajectoryLoad,
     "H3MotionComposite": H3MotionComposite,
     "H3ModeSwitch": H3ModeSwitch,
+    "H3MotionEditor": H3MotionEditor,
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3JerkOracle": "H3 Jerk Oracle (profile / window / hold map)",
@@ -1145,4 +1428,5 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3TrajectoryLoad": "H3 Trajectory Load (branch from a step)",
     "H3MotionComposite": "H3 Motion Composite (subject regen, background baseline)",
     "H3ModeSwitch": "H3 Mode Switch (preview / final, lazy)",
+    "H3MotionEditor": "H3 Motion Editor (timeline, masks, automation)",
 }
