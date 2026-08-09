@@ -17,10 +17,13 @@ Graph shape (all other nodes stock):
 The denoise itself is any stock sampler; recommended res_multistep/simple,
 28 steps, denoise 1.0. Works at 512/1024/2048 per view.
 
-Tested against ComfyUI master a464ac33. The layout/payload interface this
-rides (minimax_refs conditioning + latent-shape-driven packing) is internal
-to comfy_extras/nodes_minimax_h3.py and may drift — pin your ComfyUI if the
-sheet quality changes after an update.
+Tested against ComfyUI master a464ac33 and v0.31.1. The layout/payload
+interface this rides (minimax_refs conditioning + latent-shape-driven
+packing) is internal to comfy_extras/nodes_minimax_h3.py and may drift;
+pin your ComfyUI if the sheet quality changes after an update.
+
+Drag-in graph: examples/contact_sheet.json (API twin alongside). Point the
+LoadImage at your reference, set the LoRA file you downloaded, queue.
 """
 
 import math

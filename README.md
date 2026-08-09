@@ -208,7 +208,11 @@ ranking. From same-seed comparisons on our test clips:
 Five standalone image latents packed on the model's time axis, jointly
 denoised, decoded independently. Use with a Turnaround LoRA from
 [matlod/minimax-h3-turnaround](https://huggingface.co/matlod/minimax-h3-turnaround).
-Nodes: **H3 Contact Sheet**, **H3 Contact Sheet Decode**; a scripted
+Nodes: **H3 Contact Sheet**, **H3 Contact Sheet Decode**.
+Drag-in workflow: [`examples/contact_sheet.json`](examples/contact_sheet.json)
+(API twin alongside) — point the LoadImage at your reference image, pick
+your downloaded LoRA file, queue. Stock loaders and sampler throughout;
+28 steps of res_multistep at denoise 1.0, LoRA strength 0.75. A scripted
 example is in [`example_api_workflow.py`](example_api_workflow.py).
 Previously published as ComfyUI-H3-ContactSheet; that repo remains up for
 existing installs.
