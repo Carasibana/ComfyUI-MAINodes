@@ -110,8 +110,10 @@ on ComfyUI 0.31+, text encoder offloaded after encoding (the default).
 These are one clip's numbers, not a promise: the oracle decides how much
 of your clip gets time-dilated, and the dilated span is what costs. A
 calm clip with one short burst runs well under these figures; wall-to-wall
-action runs at them. Resolution barely moves the peak. Full table and the
-dials in <a href="https://github.com/matlowai/ComfyUI-MAINodes/blob/main/TUNING.md">TUNING.md</a>.</p>
+action runs at them. Resolution barely moves the peak. Full table, the
+dials, and the exact known-good environment (torch nightly cu132,
+CUDA 13.2, ComfyUI 0.31.1, measured on Blackwell) in
+<a href="https://github.com/matlowai/ComfyUI-MAINodes/blob/main/TUNING.md">TUNING.md</a>.</p>
 
 <p style="margin-top:3em">Docs: <a href="https://github.com/matlowai/ComfyUI-MAINodes/blob/main/TUNING.md">TUNING.md</a>
 &middot; workflows in <a href="https://github.com/matlowai/ComfyUI-MAINodes/tree/main/examples">examples/</a>

@@ -101,6 +101,24 @@ somewhat slower per clip than int8 (29 vs low-20s minutes for the 5 s
 case); on a 32 GB card that is the wrong comparison, because int8 does
 not fit and offload-thrash costs far more.
 
+### Known-good environment (this works for me)
+
+Every number in this document was measured on this exact stack, on
+Blackwell silicon, so it is a safe reference point for 5090-class cards:
+
+```
+GPU:      RTX PRO 6000 Blackwell / driver 610.43.02
+Python:   3.12.13
+PyTorch:  2.14.0.dev20260801+cu132 (nightly; Blackwell wants the cu13x builds)
+CUDA:     13.2, cuDNN 9.24, Triton 3.8.0
+Attention: sageattention (no flash-attn, no xformers)
+ComfyUI:  0.31.1 with comfy-kitchen 0.2.28
+```
+
+If a 5090 runs far slower than the table above, check the torch build
+first: a stable cu126/cu128 wheel on Blackwell can cost you more than
+any dial in this document.
+
 ### Conditioning modes (I2VA, FL2VA, Ref2VA)
 
 The pipeline works with all of them, unmodified, at the shipped
