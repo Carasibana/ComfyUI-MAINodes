@@ -168,6 +168,40 @@ Three contributions as implemented today:
   correlation between them (r = 0.46 and 0.72), which is the separation
   the value-domain score fails to make. Probes:
   `h3 tools/oracle_is_it_jerk.py`, `h3 tools/trajectory_jerk.py`.
+- **PARKED FOR A SECOND OPINION (operator, 2026-08-09). Reframe: we
+  built an allocator, not a meter.** The shipped oracle answers "given
+  that I am going to spend a budget, where should it go", a relative
+  allocation between roughly 5x slow and not at all, spreading the extra
+  time as well as it can. The question it does not answer is "how much
+  extra time does THIS clip actually need". Those are different
+  problems and only the second one can decline to act. Degenerate case
+  that shows the gap plainly: a clip that is high jerk from start to
+  finish. The quantile still picks a top quarter, which is arbitrary,
+  and the other three quarters go unhelped even though they need help
+  just as much. Uniform dilation is the only current answer and it is a
+  blunt one.
+  Seed for the meter, not a decision: the project's founding sentence
+  already contains an absolute unit. A token spans four frames, and the
+  failure is that those four frames need four distinct poses the token
+  cannot hold. So the natural absolute quantity is **demand over
+  capacity**, how much pose change a span requires against how much one
+  token can represent, with the hold count falling out as the ratio
+  rounded up. That gives dilate-everything on a uniformly violent clip,
+  dilate-nothing on a smooth one, and it is calibratable once against
+  the speed at which smear actually appears rather than being fixed by
+  a quantile forever.
+  **Second parked observation (operator, impression, explicitly not yet
+  tested): global frame jerk, for example the background decelerating,
+  seems to produce less dangerous artifacts than articulated subject
+  jerk.** If that survives testing, a plausible reason is that a global
+  motion is low dimensional, a whole-frame shift is one simple thing a
+  token can represent cheaply, whereas an articulated body needs many
+  independent degrees of freedom in the same budget. That would mean
+  the quantity that matters is not jerk alone but jerk weighted by the
+  complexity of whatever is jerking, and it strengthens the case for
+  measuring residual jerk after global motion is subtracted rather than
+  raw jerk. Do not act on this before it is measured; both halves are
+  for Thursday.
 - Mask hysteresis. Once a region becomes attached, keep it attached for
   a short window unless evidence says it separated; prevents flicker on
   hands, props and cloth. Attachment-then-separation events (a thrown
