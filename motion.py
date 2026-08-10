@@ -1537,8 +1537,11 @@ class H3SegmentSplice:
                                     seg_a[..., -xf:] * down.flip(0))
             y[..., s0:s1] = mixed
             audio = {"waveform": y.contiguous(), "sample_rate": sr}
+        # 32 kHz, not 48: H3 emits 32 kHz and every other audio path in this
+        # file assumes it. A downstream node that trusts a wrong rate here
+        # mis-times everything after it.
         return (out, audio if audio is not None else
-                {"waveform": torch.zeros(1, 2, 1), "sample_rate": 48000})
+                {"waveform": torch.zeros(1, 2, 1), "sample_rate": 32000})
 
 
 class _AnyType(str):
