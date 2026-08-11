@@ -166,9 +166,12 @@ Three contributions as implemented today:
   jerk a visibly narrower profile than velocity (top-decile share 0.29
   vs 0.22, and 0.47 vs 0.37 on a second clip) with only moderate
   correlation between them (r = 0.46 and 0.72), which is the separation
-  the value-domain score fails to make. Probes:
-  `h3 tools/oracle_is_it_jerk.py`, `h3 tools/trajectory_jerk.py`.
-- **PARKED FOR A SECOND OPINION (operator, 2026-08-09). Reframe: we
+  the value-domain score fails to make. Method, so the numbers are reproducible without our scripts: build two
+  synthetic latent sequences with matched mean speed, one constant-velocity
+  and one lurching, run the shipped oracle on both; then for the real clips,
+  track a bright-region centroid per frame and differentiate the TRAJECTORY
+  rather than the latent values.
+- **PARKED FOR A SECOND OPINION, 2026-08-09. Reframe: we
   built an allocator, not a meter.** The shipped oracle answers "given
   that I am going to spend a budget, where should it go", a relative
   allocation between roughly 5x slow and not at all, spreading the extra
@@ -190,8 +193,8 @@ Three contributions as implemented today:
   dilate-nothing on a smooth one, and it is calibratable once against
   the speed at which smear actually appears rather than being fixed by
   a quantile forever.
-  **Second parked observation (operator, impression, explicitly not yet
-  tested): global frame jerk, for example the background decelerating,
+  **Second parked observation (an impression from playback, explicitly not
+  yet tested): global frame jerk, for example the background decelerating,
   seems to produce less dangerous artifacts than articulated subject
   jerk.** If that survives testing, a plausible reason is that a global
   motion is low dimensional, a whole-frame shift is one simple thing a
@@ -200,8 +203,7 @@ Three contributions as implemented today:
   the quantity that matters is not jerk alone but jerk weighted by the
   complexity of whatever is jerking, and it strengthens the case for
   measuring residual jerk after global motion is subtracted rather than
-  raw jerk. Do not act on this before it is measured; both halves are
-  for Thursday.
+  raw jerk. Do not act on this before it is measured; both halves are open.
 - Mask hysteresis. Once a region becomes attached, keep it attached for
   a short window unless evidence says it separated; prevents flicker on
   hands, props and cloth. Attachment-then-separation events (a thrown
