@@ -45,10 +45,16 @@ Directions, roughly in order of expected value per hour:
   actually appears, instead of fixed by a quantile forever. Success: the
   meter says "dilate nothing" on a smooth clip and "dilate everything" on a
   uniformly violent one, both of which the quantile gets wrong today.
-- **Trajectory-domain measurement.** Already showing promise in the notes
+- **Trajectory-domain measurement.** Showing promise on real clips
   (top-decile share 0.29 versus 0.22 for velocity, with only moderate
   correlation between them). Track a region centroid and differentiate the
-  trajectory rather than the latent values.
+  trajectory rather than the latent values. Now selectable on the oracle as
+  `profile_mode`. **Caveat measured while shipping it:** on a smooth
+  synthetic blob the centroid path is nearly noise-free, so its peak-to-mean
+  contrast is not comparable to the value domain's there (1.21x versus 1.88x
+  separation between a constant-velocity and a lurching toy). Treat it as an
+  ablation option, not as an established improvement, until it is measured on
+  real textured content.
 - **Knee-finding instead of a fixed quantile.** Run the cheap early-x0 probe
   at several dilation factors and take the knee of the curve per clip.
   Unlike a quantile, a knee can land at 1.0x, which is the abstention we
@@ -121,13 +127,19 @@ and it has a clear line of attack.
   Sampling sparse pose anchors from it and pinning them at their retimed
   positions gives the regeneration a ladder to climb instead of room to
   improvise. Success: beat count stops scaling with dilation factor.
-- **Dependency, and a note for anyone building similar things.** Stock
-  ComfyUI restricts H3 keyframe anchors to first and last
-  (`comfy/ldm/minimax/model.py` raises on anything else). Two community node
-  packs already work around this by handing stock a legal index and rewriting
-  only the temporal column after the packed layout is built. Upstream
-  PR #15439 would make arbitrary guides native, which is the outcome we would
-  prefer.
+- **Dependency, and related work worth reading.** Stock ComfyUI restricts H3
+  keyframe anchors to first and last (`comfy/ldm/minimax/model.py` raises on
+  anything else). Two community packs already work around this by handing
+  stock a legal index and rewriting only the temporal column after the packed
+  layout is built:
+  [ComfyUI-H3-Motion-Context-MultiRef](https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef),
+  whose `patch_layout.py` also compensates for reference blocks advancing the
+  packing cursor, and
+  [ComfyUI-H3-Multishot](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot),
+  which additionally exposes a condition-strength node. Both are worth a look
+  if you are working this area. Upstream
+  [PR #15439](https://github.com/Comfy-Org/ComfyUI/pull/15439) would make
+  arbitrary guides native, which is the outcome we would prefer.
 - **Two upstream bugs we found while verifying that, worth reporting.**
   (1) Keyframe condition rows are positioned relative to `text_len`, but
   reference blocks advance the packing cursor and the target is placed at the
@@ -209,6 +221,39 @@ Kept here so nobody re-derives them:
   checklist and the default reverts if the ramp wins.
 
 ---
+
+## How much work each of these is
+
+Rough sizing against this codebase, for anyone deciding where to jump in.
+The architecture helps more than it looks: `_jerk_profile` is a dozen lines
+of numpy and `_compile_hold_map` is a shared seam, so **any new detector is a
+drop-in** and most detection work is hours rather than days. The expensive
+items are the ones that change the time REPRESENTATION or reach into ComfyUI
+internals.
+
+**Already shipped on this branch (alpha, defaults unchanged):** the
+abstention gate (`abstain_below`) and alternative detectors (`profile_mode`:
+value |d3|, value |d1| baseline, trajectory centroid) on H3 Jerk Oracle. The
+default path is bit-identical to what shipped before.
+
+| item | size | why |
+|---|---|---|
+| delta-order ablation | done | now a dropdown on the oracle |
+| absolute abstention gate | done | contrast floor, off by default |
+| camera-compensated profile | hours | another `_jerk_profile` mode, same seam |
+| audio-onset profile as the cheap baseline | ~half day | solved DSP, emits the same profile shape |
+| slow-motion insert export | ~half day | the recover node already selects frames; emit the discarded ones |
+| paired-speed reachability | ~1 day | two renders plus offline latent diff, no new node |
+| knee-finding over dilation factors | ~1 day | orchestration around the existing probe schedule |
+| quantization agreement pre-filter | ~1 day | two renders per clip plus a divergence map |
+| mirror symmetry detector | ~1 day | needs real mirror footage; synthetics pass trivially |
+| spatial crop regeneration | ~2 days | mirrors the existing time crop/splice pair; seam risk |
+| fixed-budget bidirectional retiming | ~2 days | holds below 1 change the hold-map representation AND recovery semantics |
+| sparse pinned time / anchor ladder | ~2-3 days | needs the packed-layout temporal patch or upstream #15439, plus maintenance risk against upstream churn |
+| stabilize, repair, unstabilize | ~2-3 days | a whole preprocessing stage with warp and inverse warp |
+| VAE roundtrip probe | ~1 day | a script, not a node |
+| temporal capacity profiling | ~2-3 days | synthetic content generation plus a sweep |
+| cross-model transfer | large | a port, not a feature |
 
 ## What would actually help
 

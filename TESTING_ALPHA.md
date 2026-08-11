@@ -127,3 +127,26 @@ Persistence
 - P2: interaction jank, price/report confusion, seams below the playback
   bar
 - P3: cosmetics (canvas text is not hidpi-scaled yet, known)
+
+## 5. Oracle alpha knobs (added 2026-08-10)
+
+- [ ] `profile_mode` default (`value |d3|`) must reproduce your previous
+      results exactly: same clip, same seed, same hold map and same segments
+      string as before this change. Verified bit-identical offline; confirm
+      once in the graph.
+- [ ] `profile_mode` = `value |d1| (energy baseline)`: the honest cheap
+      baseline. On real clips it correlates 0.96-0.98 with |d3|, so if it
+      produces a materially similar hold map, that IS the finding and the
+      default detector is not earning its name.
+- [ ] `profile_mode` = `trajectory centroid |d3|`: expect a different hold
+      map. Judge in playback whether it targets the burst better or worse.
+      Do not judge from the profile string alone.
+- [ ] `abstain_below` (absolute gate, 0 = off): run it on a clip you KNOW is
+      calm. Raise until the oracle returns a flat hold map and empty
+      segments, then check it still dilates a genuinely fast clip at that
+      setting. Measured contrast ran ~1.9x higher on a lurching toy than a
+      constant-velocity one, so the useful range is likely 1.5-2.5. If a
+      single threshold cannot separate your calm and fast clips, say so:
+      that is evidence the contrast statistic is the wrong absolute unit and
+      the demand-over-capacity route in ROADMAP.md section 1 is needed
+      instead.

@@ -46,16 +46,70 @@ def _frame_token(f, t_lat):
     return 0
 
 
-def _jerk_profile(z):
-    """Phase-normalized per-token |Δ³| profile from a video latent."""
-    v = z.detach().float().cpu().numpy()          # (1, 24, T, h, w)
-    j = np.abs(np.diff(v, n=3, axis=2)).mean(axis=(0, 1, 3, 4))
-    prof = np.pad(j, (1, v.shape[2] - len(j) - 1), mode="edge")
-    for ph in range(5):                            # (1,4,4,4,4) grid bias
+def _phase_norm(prof):
+    """Divide out the (1,4,4,4,4) grid bias so tokens are comparable."""
+    for ph in range(5):
         m = prof[ph::5].mean()
         if m > 0:
             prof[ph::5] /= m
-    return prof                                    # (t_lat,)
+    return prof
+
+
+def _value_profile(v, order):
+    """Per-token |Δ^order| of the latent VALUES, averaged over c/h/w."""
+    j = np.abs(np.diff(v, n=order, axis=2)).mean(axis=(0, 1, 3, 4))
+    lead = order // 2
+    return np.pad(j, (lead, v.shape[2] - len(j) - lead), mode="edge")
+
+
+def _trajectory_profile(v, order=3):
+    """Per-token |Δ^order| of the energy CENTROID's path.
+
+    The value-domain score is contaminated by motion energy: a textured
+    object passing a location makes the value there pulse, and a pulse has
+    large differences of every order even at constant velocity (measured
+    corr(|d1|,|d3|) = 0.96-0.98 on real clips). Differentiating the centroid
+    TRAJECTORY instead measures how abruptly the motion changes, which is
+    what the method actually cares about, and on real textured clips it
+    separated jerk from velocity where the value domain did not (top-decile
+    share 0.29 vs 0.22, r = 0.46).
+
+    Caveat measured 2026-08-10: on a SMOOTH synthetic blob the centroid path
+    is nearly noise-free, so peak-to-mean contrast there is not comparable to
+    the value domain's (1.21x vs 1.88x separation on such a toy). This mode
+    is provided for ablation; it is not established as the better detector.
+    """
+    e = np.abs(v).mean(axis=(0, 1))                # (T, h, w) energy per token
+    e = e - e.min(axis=(1, 2), keepdims=True)
+    tot = e.sum(axis=(1, 2)) + 1e-8
+    ys = np.arange(e.shape[1], dtype=np.float64)[None, :, None]
+    xs = np.arange(e.shape[2], dtype=np.float64)[None, None, :]
+    cy = (e * ys).sum(axis=(1, 2)) / tot
+    cx = (e * xs).sum(axis=(1, 2)) / tot
+    path = np.stack([cy, cx], axis=1)              # (T, 2)
+    j = np.linalg.norm(np.diff(path, n=order, axis=0), axis=1)
+    lead = order // 2
+    return np.pad(j, (lead, path.shape[0] - len(j) - lead), mode="edge")
+
+
+PROFILE_MODES = {
+    "value |d3| (default)": ("value", 3),
+    "value |d1| (energy baseline)": ("value", 1),
+    "trajectory centroid |d3|": ("traj", 3),
+}
+
+
+def _jerk_profile(z, mode="value |d3| (default)", phase_norm=True):
+    """Per-token motion-overload profile from a video latent.
+
+    Default reproduces the original phase-normalized |Δ³| exactly. The other
+    modes exist so the detector can be ablated against a cheap baseline
+    rather than assumed: see ROADMAP.md section 1.
+    """
+    v = z.detach().float().cpu().numpy()          # (1, 24, T, h, w)
+    kind, order = PROFILE_MODES.get(mode, ("value", 3))
+    prof = _value_profile(v, order) if kind == "value" else _trajectory_profile(v, order)
+    return _phase_norm(prof) if phase_norm else prof   # (t_lat,)
 
 
 def _legal_ceil(n):
@@ -144,6 +198,27 @@ class H3JerkOracle:
                                   "(measured production rule: a plateau dip between peaks "
                                   "of the same burst causes mid-burst artifacts). Max gap "
                                   "in tokens to fill; 0 disables."}),
+            "profile_mode": (list(PROFILE_MODES), {"default": "value |d3| (default)",
+                       "tooltip": "(alpha) which signal to threshold. The default is the "
+                                  "shipped one. |d1| is the honest cheap baseline (on real "
+                                  "clips it correlates 0.96-0.98 with |d3|, so the default "
+                                  "is closer to motion ENERGY than to jerk). 'trajectory' "
+                                  "differentiates the energy CENTROID's path instead, which "
+                                  "is closer to the physical quantity; on real textured clips "
+                                  "it gave a narrower profile than velocity. EXPERIMENTAL: on "
+                                  "SMOOTH synthetic content the centroid is nearly noise-free, "
+                                  "so its contrast is not comparable to the value domain's "
+                                  "there. Ablate it, do not assume it."}),
+            "abstain_below": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10.0, "step": 0.1,
+                       "tooltip": "(alpha) ABSOLUTE gate, 0 = off (shipped behaviour). "
+                                  "q is a quantile, so the oracle always dilates the top "
+                                  "(1-q) of tokens even on a clip that needs nothing: a "
+                                  "synthetic clip with EXACTLY zero trajectory jerk still "
+                                  "got 3.06x. If the profile's peak-to-mean contrast is "
+                                  "below this, the oracle abstains and returns a flat "
+                                  "hold map (no dilation, no cost). Measured contrast ran "
+                                  "about 2x higher on a jerky clip than a smooth one, so "
+                                  "try 1.5-2.5 and check against a clip you know is calm."}),
         }}
 
     RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "STRING")
@@ -151,13 +226,22 @@ class H3JerkOracle:
     FUNCTION = "read"
     CATEGORY = "latent/minimax/motion"
 
-    def read(self, samples, length, q, d_max, ramp, preset="custom", bridge=8):
+    def read(self, samples, length, q, d_max, ramp, preset="custom", bridge=8,
+             profile_mode="value |d3| (default)", abstain_below=0.0):
         if preset in self.PRESETS:
             p = self.PRESETS[preset]
             q, d_max, ramp = p["q"], p["d_max"], p["ramp"]
         z = _video_component(samples)
         t_lat = z.shape[2]
-        prof = _jerk_profile(z)
+        prof = _jerk_profile(z, profile_mode)
+
+        # Absolute gate. The quantile can rank but cannot abstain, so without
+        # this a calm clip still pays for its own fastest quarter.
+        contrast = float(prof.max() / max(prof.mean(), 1e-8))
+        if abstain_below > 0.0 and contrast < abstain_below:
+            flat = json.dumps({"holds": [1] * length, "world_len": length})
+            return (flat, "", 0, int(length),
+                    " ".join(f"{v:.2f}" for v in prof))
 
         thr = np.quantile(prof, q)
         tok_d = np.where(prof >= thr, d_max, 1).astype(int)
