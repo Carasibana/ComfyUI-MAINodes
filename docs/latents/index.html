@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Do not drink the latents: H3 guide + reference evidence</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#101014; color:#e8e8ea; font:16px/1.55 system-ui, sans-serif;
+         max-width: 1100px; margin: 0 auto; padding: 24px 16px 80px; }
+  h1 { font-size: 1.5rem; margin-bottom: .2em; }
+  h2 { font-size: 1.15rem; margin-top: 2.2em; border-bottom: 1px solid #2a2a33; padding-bottom: .3em; }
+  a { color:#8ab4ff; }
+  p.sub { color:#9a9aa5; margin-top: 0; }
+  img { width: 100%; border-radius: 8px; background:#000; display:block; }
+  .cap { color:#9a9aa5; font-size:.92rem; margin: .5em 0 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0 .4em; font-size: .95rem; }
+  th, td { text-align: left; padding: .45em .8em; border-bottom: 1px solid #2a2a33; }
+  th { color:#9a9aa5; font-weight: 600; }
+  code { background:#1c1c24; padding:.1em .35em; border-radius:4px; }
+</style>
+</head>
+<body>
+<h1>Do not drink the latents</h1>
+<p class="sub">Evidence sheets for a MiniMax H3 packing question: when a keyframe
+guide and a Ref2VA reference are used on the same conditioning, where does the
+guide actually land? Two sheets, twenty renders, one seed. Kept here rather than
+on the front page because it is a note for one upstream discussion, not part of
+the Motion Lab.</p>
+
+<h2>The setup</h2>
+<p>Guide rows are positioned from the text span, while reference blocks are
+packed afterwards and advance the cursor the target video sits on. So every
+reference slides the guide earlier relative to the clip it is meant to anchor.
+The size of the slide is the reference's own cursor advance:</p>
+<table>
+<tr><th>reference</th><th>guide lands at</th><th>visible?</th></tr>
+<tr><td>none</td><td>+0.0 units</td><td>on target frame 0</td></tr>
+<tr><td>one image</td><td>&minus;1.0 unit (&minus;0.6 frames)</td><td>sub-frame, no</td></tr>
+<tr><td>107-frame video plate</td><td>&minus;150 units (&minus;90 frames)</td><td>outside a 73-frame clip</td></tr>
+</table>
+
+<h2>Does the guide land?</h2>
+<img src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/h3anchor_frame0_sheet.png"
+     alt="Grid of generated frame 0 across builds and reference configurations">
+<p class="cap">Row 1 is the input for each column. Below it, generated frame 0
+measured against the guide image (mean absolute error, 0&ndash;255). The image
+reference columns hold the guide everywhere, because the slide is under one
+frame. The video plate of the same scene is where it breaks: 33.91, and the
+beaker in the guide is simply gone. Stock master has no row because it raises
+<code>RuntimeError: shape mismatch</code> on all four reference configurations.</p>
+
+<h2>Does the reference do anything?</h2>
+<img src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/h3anchor_frame72_sheet.png"
+     alt="Grid of generated frame 72 across builds and reference configurations">
+<p class="cap">Frame 72 of 73. Swapping an image reference for a restyled
+version of the same subject moves the output by about 12/255; swapping the
+video plate moves it by about 51/255, and what transfers is framing, scale and
+staging rather than identity. A single seed and a single subject, so read these
+as a direction, not a law.</p>
+
+<h2>Reading the numbers</h2>
+<p>Mean absolute error on 0&ndash;255 RGB, full frame. About 1.7 is seed-level
+noise between two runs of the same configuration, about 5 is a cleanly anchored
+frame, and a guide the model ignores lands near 70. The fix that produces the
+clean rows is <a href="https://github.com/matlowai/ComfyUI/tree/fix/minimax-h3-keyframes-refs-compose">one
+small branch</a>: derive the guide origin from the same reference advance the
+target uses. It renders pixel-identical whether applied to master or on top of
+the upstream PR.</p>
+
+<p style="margin-top:3em"><a href="../">back to the Motion Lab</a>
+&middot; <a href="https://github.com/matlowai/ComfyUI-MAINodes">repo</a>
+&middot; MIT</p>
+</body>
+</html>
