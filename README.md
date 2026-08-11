@@ -238,6 +238,13 @@ burst spans, not the runtime.
 A tuning guide for all of this, written for humans and for AI assistants
 working on a user's behalf, is in [`TUNING.md`](TUNING.md).
 
+Where the method is honestly weak, and what we are doing about it, is split
+across two documents: [`RESEARCH_NOTES_ATOS.md`](RESEARCH_NOTES_ATOS.md) for
+what has been measured (including the finding that the oracle can rank but
+cannot abstain), and [`ROADMAP.md`](ROADMAP.md) for the methods under
+investigation, what would count as success for each, and the approaches we
+tried and rejected.
+
 ### bridge and inject
 
 Both settings change the output in ways that are a preference, not a
