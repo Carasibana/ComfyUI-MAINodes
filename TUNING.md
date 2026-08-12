@@ -12,6 +12,9 @@ test clips; expect your content to move the numbers a little.
 | best quality, audio dial available (recommended for finals) | `examples/motion_pipeline.json` | ~3.5x |
 | turbo inside the pipeline (not recommended: see below) | `examples/motion_pipeline_turbo.json` | ~1.6x |
 | fastest, no full baseline (scouting only: the probe init is not good enough to feed a base-model finals pass, we tried) | `examples/motion_pipeline_probe_expert.json` | ~1x or less |
+| user knows where the problem is (two-pass: review the oraclemap, type ranges, requeue) | `examples/motion_pipeline_targeted.json` | baseline + regen cost of YOUR spans only |
+| GUI editing on the node (blocks, painting, automation) | `examples/motion_pipeline_editor.json` | as targeted |
+| maximum speed for one burst in a longer clip (segment crop + splice) | `examples/motion_pipeline_editor_segment.json` | baseline + regen of window+handles only; the crop report states the ratio |
 
 The working rhythm we recommend: iterate prompts and seeds with plain
 turbo generations to learn what a prompt gives you globally, then run
@@ -49,9 +52,11 @@ different dial than one who says "it changed my character's pose."
 | dialog sounds processed | check whether the speech overlaps a burst; unheld spans pass through untouched, so only speech during bursts is affected. `reference_mix: 1` restores the original line |
 | probe init loses choreography | raise `probe_steps` from 6 toward 10 |
 | background details change in regenerated spans (a flag recolors, props swap) | known limitation: detailed backgrounds re-roll during dilation. Try `inject` toward 0.5 (closer init tracking); simple backgrounds barely show it. A subject-only "foveated" mode that never regenerates the background is on the roadmap |
-| camera pans or scrolls make the dilated spans wider than the action | known: camera motion raises the oracle's jerk floor globally. Raise `q` toward 0.85 as a stopgap; camera-motion-compensated jerk is on the roadmap |
-| an action repeats or doubles in regenerated spans (two backflips become four) | the model fills dilated time with extra beats instead of slowing the existing ones; its prior for action density wins over the init. Try `inject` toward 0.5 (closer init tracking), and state exact counts positively in the prompt ("performs exactly two backflips in total"). Mirrors and reflections make it worse: the oracle reads the same motion twice and over-dilates. On the roadmap as beat-anchored recovery |
-| background elements (birds, crowds, traffic) speed up during bursts | open problem, honestly. Two remedies tried and rejected in playback: post-hoc compositing (objects pop at the mask boundary) and the `freeze_threshold` latent freeze (degrades other artifacts). The freeze knob exists if your content favors that trade. The `show_drift` heatmap overlay at least shows you where the effect will occur |
+| camera pans or scrolls make the dilated spans wider than the action | known: camera motion raises the oracle's jerk floor globally. Raise `q` toward 0.85 as a stopgap, or gate the oracle through `H3 Manual Hold Map` with the ranges where the real action is; camera-motion-compensated jerk is on the roadmap |
+| the oracle dilates spans the user does not care about / the pass is too expensive for one burst | `H3 Manual Hold Map` in gate mode: wire the oracle's hold_map, type the ranges that matter, everything else recovers to hold 1. The report output shows the effective length before the expensive pass runs |
+| an action repeats or doubles in regenerated spans (two backflips become four) | the model fills dilated time with extra beats instead of slowing the existing ones; its prior for action density wins over the init. Try `inject` toward 0.5 (closer init tracking), and state exact counts positively in the prompt ("performs exactly two backflips in total"). On the roadmap as beat-anchored recovery |
+| the clip contains a mirror or a big reflection and the beats double | do NOT blame the oracle first. Synthetic probe, 2026-08-09: a reflection showing the SAME motion at the SAME time leaves the oracle's output bit-identical (its threshold is a quantile of the profile, so duplicating the motion scales every token equally and selects exactly the same ones; profile shape correlation 0.9999). What does bite is a reflection prominent at a DIFFERENT time than the body, which a camera tilt produces (mirror early, subject late): that leaves two separated hot clusters and `bridge` welds them into one long plateau, +26% dilated time in the probe, of which `bridge` alone is +18%. So on mirror content try `bridge: 0` first, then `inject` toward 0.5, then explicit counts in the prompt. Everything left over after that is the model's action-density prior, not the oracle |
+| background elements (birds, crowds, traffic) speed up during bursts | the AUTOMATIC remedies stay rejected (oracle-mask compositing popped at the boundary, blanket freeze degraded other artifacts). The manual path is new and promising: draw the keep-baseline region yourself (`show_drift` on the heatmap shows what to lasso in blue), wire it into `H3 Motion Composite` `mask` with `invert_mask` on, feather 48-64 smoothstep, and put the seam on a real edge (horizon, rooftop) where nothing moves. Use the `H3 V2V Init` `mask` freeze instead when background and subject share lighting or contact. First internal A/B (demo clip, invented flock + pagoda both removed, static seam) awaits playback ratification |
 
 ## VRAM expectations (measured)
 
@@ -140,6 +145,69 @@ nodes (the baseline's and the regeneration's) and run.
 - Ref2VA (the ref2va checkpoint, w4a8 available): reference tokens
   carry no timeline, so they pass through dilation untouched. Subject
   identity held through the full de-rope in our test.
+
+## Manual targeting (time ranges and spatial masks)
+
+When the user can point at the problem, let them. Two tools, one per
+axis:
+
+- Time: `H3 Manual Hold Map` converts typed ranges (`36-60,
+  1.5s-2.4s:3`; frames or seconds, ends inclusive) into an
+  oracle-format hold map. Gate mode (oracle hold_map wired in) is the
+  default recommendation: the oracle decides hold strength, the user
+  decides where it is allowed to spend. Ranges snap outward to the
+  token grid, so trust the segments output over the typed numbers, and
+  show the user the report output: it states world length vs effective
+  regeneration length, and estimates minutes when given a measured
+  s/step. Cost scales with held spans, so this is also the speed
+  answer for long clips with one burst.
+- Space: `H3 Motion Composite` `mask` (pixel space, full feather
+  control: size, linear/smoothstep/gaussian profile, in/out/centered
+  direction) pastes baseline timing back outside the mask after
+  recovery. `H3 V2V Init` `mask` freezes the region during generation
+  instead; its default is HARD latent cells (mask_feather 0): every
+  ~16 px cell fully frozen or fully live, no fractional blend cells.
+  Rationale: half-frozen cells denoise as frozen/live mixtures that can
+  themselves mush the seam, while the decode's receptive-field overlap
+  smooths a hard cell edge for free. mask_feather above 0 restores the
+  pooled fractional ramp if a hard seam ever shows in playback (report
+  it; that reading is one A/B from ratified). Either way this path
+  cannot do fine pixel feathering; the composite is the fine-feather
+  tool.
+
+The GUI for both axes at once is the `H3 Motion Editor` node
+(`examples/motion_pipeline_editor.json`): timeline blocks, per-frame
+painting, per-block dials, and automation envelopes (hold, feather,
+strength) compiled into the same hold_map/mask wires. Queue once to
+load the filmstrip, edit on the node, queue again; the baseline stays
+cached. Its mask output is already feathered, so the composite runs
+with `mask_is_soft` on and its own feather at 0. When tuning for a
+user who cannot or will not paint, author `editor_state` JSON for
+them; the contract is in the node docstring.
+
+Compute honesty when a user asks where the speed comes from: TIME
+targeting is the lever. Sampler cost scales with the dilated frame
+count, so gating holds to the user's window helps, and `H3 Segment
+Crop` multiplies that by dropping the un-held world from the regen
+pass entirely (its report states the ratio). SPATIAL masks do not
+reduce FLOPs; the DiT still processes every token and the mask only
+controls blending. Sell the mask as quality control and the window as
+the speedup.
+
+A mask authored without frame-by-frame attention WILL cut off props
+that swing with the subject (a sword mid-cartwheel leaves a static
+blob and gets truncated at the boundary). Fixes, in order: paint
+per-frame in the editor following the prop, enlarge the static region
+to the prop's full arc, or feather outward. This is exactly the
+static-vs-per-frame trade; a human on the timeline beats any static
+region for rotating props.
+
+Method rules for masks: static union masks cannot pop (the boundary
+never moves); route the seam along a real image edge, not through sky
+mid-gradient; lasso generously and let feather work; per-frame mask
+batches reintroduce the moving-boundary pop and need harder feather
+and a playback check. The two-pass rhythm for the targeted graph is
+queue once, read `mainodes_targeted_oraclemap`, type ranges, requeue.
 
 ## Method
 
