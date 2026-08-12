@@ -181,6 +181,42 @@ exact ratio for your selection. On FL2VA checkpoints, wire the crop's
 first/last frame outputs into the regeneration conditioning to pin the
 seam poses.
 
+Four shorter paths, each measured on one prompt and seed:
+
+[`motion_pipeline_split_lora.json`](examples/motion_pipeline_split_lora.json)
+splits pass 1 mid-trajectory. The bare model runs the early, high-sigma
+steps -- where the motion is actually decided -- and a turbo LoRA takes
+over for the low-sigma steps, off one schedule with no re-noising
+between them (`SplitSigmas` + `DisableNoise`). Running a turbo LoRA
+across the whole of pass 1 cost about 23% of mean subject motion and 30%
+of the peak in our measurements, and the second pass never gave it back;
+splitting recovered 99% of it, and still finished faster than a plain
+12-step pass 1.
+
+[`motion_pipeline_upscale_derope.json`](examples/motion_pipeline_upscale_derope.json)
+does the de-rope and a spatial upscale in the same second pass: pass 1
+renders at 0.4 MP, the smeared frames are resampled to the target size,
+and the regeneration runs there. The second pass rebuilds detail rather
+than interpolating it -- measured 89% of a native 1.5 MP render's
+high-frequency detail for 77% of the wall time. The cost is jerk
+removal: a soft pass 1 gives the oracle blurrier evidence, so it cuts
+less of it.
+
+[`motion_pipeline_fast_iterate.json`](examples/motion_pipeline_fast_iterate.json)
+is the same idea sized for iteration: 0.2 MP in, 0.4 MP out, about 95
+seconds end to end. Use it to find out whether the choreography lands
+before paying for a final.
+
+[`motion_pipeline_ref2va.json`](examples/motion_pipeline_ref2va.json)
+runs the pipeline in full-reference mode, with the six-section prompt
+contract and a reference image (wired to ComfyUI's stock `example.png`
+so it runs out of the box -- swap in your own).
+
+**There is a resolution floor.** Below roughly 0.4 MP the subject smears
+regardless of configuration, and a square canvas is worse than portrait
+for a standing figure at the same pixel count. The small-canvas paths
+are for iteration, not finals.
+
 All of them generate or probe a baseline, read its oracle, regenerate,
 and recover, in one queue item. The oracle's length and the regeneration
 length are wired dynamically, so changing the clip duration needs no
@@ -207,6 +243,19 @@ other edits. Each node's info button documents its inputs.
 | H3 Expert Schedule | `base_head` | 2 | split the injected schedule: base-model head for structure, turbo tail for refinement (tail defaults to turbo's native 4 steps) |
 | H3 Trajectory Bank | `every_n` | 1 | wraps a sampler and checkpoints the trajectory latent each step (~7 MB per step for a 5 s clip) |
 | H3 Trajectory Load | `step` | 5 | resume a banked run from any step with its remaining schedule; swap the model, LoRA, or guider and continue without recomputing the head |
+
+#### Alpha nodes
+
+Added 2026-08-09 and after. These are the research surface: they
+work and are documented, but their names, defaults and outputs may
+change, and they have had far less playback mileage than the nodes
+above. `TESTING_ALPHA.md` is the manual checklist; `ROADMAP.md` and
+`RESEARCH_NOTES_ATOS.md` carry the open questions and what we
+rejected. If you want the settled pipeline, everything above this
+line is it.
+
+| node | knob | default | notes |
+|---|---|---|---|
 | H3 Motion Editor | timeline, brushes, lanes | | the GUI: time blocks with bracket handles, per-frame mask painting, per-block dials, automation envelopes for hold/feather/strength. Compiles to a hold map and a soft mask; state is plain JSON that agents can author without the GUI |
 | H3 Segment Crop | `handle_frames` | 12 | cut the world to the held window plus context handles; the regen chain then pays only for the window. Report output states the speedup |
 | H3 Segment Splice | `feather_frames` | 6 | reassemble after recovery: baseline outside, segment inside, video + audio crossfades inside the handles |
@@ -227,6 +276,9 @@ scale to your card and clip:
 | pipeline, inject 0.50 (`motion_pipeline_i50.json`) | ~15 min incl. baseline | sharper, tracks the source motion closer; try both |
 | probe + expert turbo (`motion_pipeline_probe_expert.json`) | ~8.5 min, no full baseline | the fast full de-rope; preview output is intentionally rough |
 | featherweight (`motion_pipeline_featherweight.json`, ComfyUI 0.31+) | 4-6 min for 3 s clips; ~29 min for 5 s at 1.0 MP | the 24-32 GB card path; fits where int8 thrashes. See TUNING for measured peaks |
+| split LoRA pass 1 (`motion_pipeline_split_lora.json`) | ~7.5 min at 1.5 MP | most motion retained of the pass-1 recipes we measured |
+| upscale de-rope (`motion_pipeline_upscale_derope.json`) | ~6 min at 0.4 -> 1.5 MP | 89% of native detail, 77% of the time |
+| fast iterate (`motion_pipeline_fast_iterate.json`) | ~95 s at 0.2 -> 0.4 MP | prompt and choreography loop, not a final |
 
 Start with a short clip, 2 to 3 seconds, and scale up once you like what
 you see. Durations snap to the model's legal frame counts automatically
