@@ -1205,18 +1205,35 @@ class H3AudioRecover:
         segs, cursor = [], 0.0
         for h, count in runs:
             src = h * count * spf
+            # exact world-clock samples this run must occupy. The vocoder's
+            # istft comes back hop-quantized (~16 ms at 32 kHz), and letting
+            # those errors accumulate slides the retimed track against the
+            # reference toward the clip's end -- which is what turns a mid
+            # reference_mix into audible doubled impacts.
+            tgt = int(round(count * spf))
             s0, s1 = int(round(cursor)), int(round(cursor + src))
             cursor += src
             seg = x[:, s0:min(s1, n)]
             if seg.shape[1] == 0:
+                # source exhausted: hold the clock with silence instead of
+                # silently shortening every later segment's position
+                segs.append(torch.zeros(x.shape[0], tgt))
                 continue
-            if h == 1:
-                segs.append(seg)
-                continue
-            spec = torch.stft(seg, n_fft, hop, window=window, return_complex=True)
-            spec = torchaudio.functional.phase_vocoder(spec, float(h), phase_adv)
-            segs.append(torch.istft(spec, n_fft, hop, window=window))
+            if h > 1:
+                spec = torch.stft(seg, n_fft, hop, window=window,
+                                  return_complex=True)
+                spec = torchaudio.functional.phase_vocoder(spec, float(h),
+                                                           phase_adv)
+                seg = torch.istft(spec, n_fft, hop, window=window)
+            if seg.shape[1] < tgt:
+                seg = torch.nn.functional.pad(seg, (0, tgt - seg.shape[1]))
+            segs.append(seg[:, :tgt])
         y = torch.cat(segs, dim=1)
+        if reference is None and reference_mix > 0:
+            print(f"[H3AudioRecover] reference_mix={reference_mix} but no "
+                  "reference audio is wired: the mix does NOTHING and the "
+                  "output is pure regenerated audio. Wire the baseline's "
+                  "audio into 'reference' to blend it back in")
         if reference is not None and reference_mix > 0:
             ref = reference["waveform"].detach().float().cpu().reshape(-1, reference["waveform"].shape[-1])
             if reference["sample_rate"] != sr:
