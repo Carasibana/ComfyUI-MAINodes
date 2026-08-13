@@ -188,7 +188,7 @@ splits pass 1 mid-trajectory. The bare model runs the early, high-sigma
 steps -- where the motion is actually decided -- and a turbo LoRA takes
 over for the low-sigma steps, off one schedule with no re-noising
 between them (`SplitSigmas` + `DisableNoise`). Running a turbo LoRA
-across the whole of pass 1 cost about 23% of mean subject motion and 30%
+across the whole of pass 1 cost about 22% of mean subject motion and 30%
 of the peak in our measurements, and the second pass never gave it back;
 splitting recovered 99% of it, and still finished faster than a plain
 12-step pass 1.
@@ -198,7 +198,9 @@ does the de-rope and a spatial upscale in the same second pass: pass 1
 renders at 0.4 MP, the smeared frames are resampled to the target size,
 and the regeneration runs there. The second pass rebuilds detail rather
 than interpolating it -- measured 89% of a native 1.5 MP render's
-high-frequency detail for 77% of the wall time. The cost is jerk
+high-frequency detail for 83% of the wall time. Most of what the cheap
+pass 1 saves, the larger second pass gives back: pass 1 drops from 179 s
+to 31 s, and pass 2 rises from 305 s to 372 s. The cost is jerk
 removal: a soft pass 1 gives the oracle blurrier evidence, so it cuts
 less of it.
 
@@ -213,9 +215,19 @@ contract and a reference image (wired to ComfyUI's stock `example.png`
 so it runs out of the box -- swap in your own).
 
 **There is a resolution floor.** Below roughly 0.4 MP the subject smears
-regardless of configuration, and a square canvas is worse than portrait
-for a standing figure at the same pixel count. The small-canvas paths
-are for iteration, not finals.
+regardless of configuration, and every quality judgement we took from a
+448x448 render turned out to be worthless. The small-canvas paths are for
+iteration, not finals. Separately, a distilled LoRA wants the size it was
+trained at: ours was mush at 448x448 and clean at its native 768x768.
+
+**Do not run a turbo LoRA at its distilled step count in pass 2.** A
+distilled LoRA's step budget is sized for a full denoise from noise;
+pass 2 is a partial re-denoise from a v2v init, so those steps land far
+too finely and the subject dissolves into a coarse mosaic. Running an
+8-step LoRA for 8 steps of a 0.50 injection failed at both 0.2 and
+1.0 MP and with either v1.0 file; 4 steps of the same schedule was
+clean. Budget pass-2 steps against the fraction of the schedule you are
+actually running, not against the LoRA's name.
 
 All of them generate or probe a baseline, read its oracle, regenerate,
 and recover, in one queue item. The oracle's length and the regeneration
@@ -277,7 +289,7 @@ scale to your card and clip:
 | probe + expert turbo (`motion_pipeline_probe_expert.json`) | ~8.5 min, no full baseline | the fast full de-rope; preview output is intentionally rough |
 | featherweight (`motion_pipeline_featherweight.json`, ComfyUI 0.31+) | 4-6 min for 3 s clips; ~29 min for 5 s at 1.0 MP | the 24-32 GB card path; fits where int8 thrashes. See TUNING for measured peaks |
 | split LoRA pass 1 (`motion_pipeline_split_lora.json`) | ~7.5 min at 1.5 MP | most motion retained of the pass-1 recipes we measured |
-| upscale de-rope (`motion_pipeline_upscale_derope.json`) | ~6 min at 0.4 -> 1.5 MP | 89% of native detail, 77% of the time |
+| upscale de-rope (`motion_pipeline_upscale_derope.json`) | ~6.75 min at 0.4 -> 1.5 MP | 89% of native detail, 83% of the time |
 | fast iterate (`motion_pipeline_fast_iterate.json`) | ~95 s at 0.2 -> 0.4 MP | prompt and choreography loop, not a final |
 
 Start with a short clip, 2 to 3 seconds, and scale up once you like what
