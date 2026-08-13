@@ -381,6 +381,12 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/matlowai/ComfyUI-MAINodes
 ```
 
+**The example graphs also need [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes).**
+They use `PathchSageAttentionKJ`,
+`MiniMaxH3MemoryEfficientSageAttentionPatch` and `MiniMaxChunkFeedForward`
+from it. Without KJNodes a graph loads with those three missing and will
+not run. The nodes in this pack themselves have no such dependency.
+
 Restart ComfyUI. Nodes appear under `latent/minimax/motion`,
 `image/minimax/motion`, and `sampling/custom_sampling/schedulers`.
 
