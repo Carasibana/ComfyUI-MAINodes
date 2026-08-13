@@ -1,6 +1,8 @@
 """v2v time-smear nodes — the validated fast-motion recipe as knobs.
 
 Pipeline (all defaults = measured best values, 2026-08-08):
+  H3VideoFit        (source-video path only) arbitrary frames -> the 17k+5
+                    grid, audio cut to match, length for the oracle
   H3JerkOracle      latent -> jerk profile, window, LocalRate segments,
                     per-frame integer hold map (C1 ramps)
   H3TimeSmear       frames + hold map -> smeared frames on a 17k+5 grid
@@ -117,6 +119,143 @@ def _legal_ceil(n):
     return LEGAL_STEP * k + 5
 
 
+# The two exact neighbours on the 17k+5 grid. _legal_ceil above clamps to
+# k>=2 (never below 39) because a smear target that short is not worth
+# generating; a FIT must not invent 27 frames out of a 12-frame clip, so it
+# uses these instead.
+def _grid_floor(n):
+    return 5 + LEGAL_STEP * max(0, (n - 5) // LEGAL_STEP)
+
+
+def _grid_ceil(n):
+    return 5 + LEGAL_STEP * max(0, -(-(n - 5) // LEGAL_STEP))
+
+
+def _token_count(frames):
+    """Latent tokens for a pixel length, snapped up to the 17k+5 grid."""
+    return (_legal_ceil(frames) - 5) // LEGAL_STEP * 5 + 2
+
+
+# Fixed per-render cost that is NOT sampling: model/LoRA setup, VAE encode and
+# decode, node overhead. Measured 2026-08-12, 1.5 MP pass 2 on GPU1, warm:
+# 124.8 s at 1 step, 209.9 / 212.8 at 2, 293.6 at 3 — a straight line of
+# ~84 s per step on ~41 s of intercept. Without this term a 1-step estimate
+# is 33% low.
+#
+# That 41 s was measured on an already-dilated pass, so it is NOT a constant:
+# divided by that run's time multiplier it is ~6.7 s, and a separate fit over
+# 266 corpus runs found the step-independent cost scaling at t**1.66 against
+# the step's t**1.70. So overhead is scaled by time_x below, the same as the
+# steps are. The two measurements agree once the dilation is divided out
+# (~0.5 of one step for pass 2; the corpus fit reads ~1.1 for turbo pass 1,
+# which is a different workload, not a contradiction).
+#
+# The whole minutes estimate is a ballpark. It is here so nobody discovers
+# a 30 minute pass by waiting through it, not to be quotable.
+OVERHEAD_S = 6.7
+
+
+def _cost_report(world_len, dilated, fps=24, s_per_step=0.0, est_steps=18,
+                 overhead_s=OVERHEAD_S, tail=""):
+    """The price tag every targeting node shows before the expensive pass.
+
+    Same sentence everywhere: world length in, effective regeneration length
+    out, then the TIME multiplier. The frame ratio is stated too but labelled,
+    because reading it as a time ratio understates the bill badly: per-step
+    cost goes as tokens**COST_EXP, so 2.5x the frames is about 4.9x the time.
+    """
+    world_len = max(1, int(world_len))
+    dilated = max(world_len, int(dilated))
+    fps = max(1, int(fps))
+    t_world = _token_count(world_len)
+    t_dil = _token_count(dilated)
+    time_x = (t_dil / t_world) ** COST_EXP
+    report = (f"{world_len}f ({world_len / fps:.1f}s) -> {dilated}f "
+              f"({dilated / fps:.1f}s) effective regen, "
+              f"{dilated / world_len:.2f}x frames / {time_x:.1f}x time per "
+              f"step; tokens {t_world} -> {t_dil}")
+    if tail:
+        report += f"; {tail}"
+    if s_per_step > 0:
+        secs = time_x * (overhead_s + s_per_step * max(1, int(est_steps)))
+        report += (f"; roughly {secs / 60:.0f} min at {s_per_step:g} s/step x "
+                   f"{int(est_steps)} steps (+{overhead_s:g}s encode/decode, "
+                   f"all x{time_x:.1f})")
+    return report
+
+
+def _cost_widgets(with_fps=False):
+    """Optional widgets that turn the report's multiplier into minutes.
+    Shared so every node that prices a pass asks for the same three numbers."""
+    w = {}
+    if with_fps:
+        w["fps"] = ("INT", {"default": 24, "min": 1, "max": 120,
+                    "tooltip": "only used to phrase the report in seconds"})
+    w["s_per_step"] = ("FLOAT", {"default": 0.0, "min": 0.0, "max": 120.0, "step": 0.05,
+                       "tooltip": "seconds per step from a baseline render of this clip; 0 skips the minutes estimate"})
+    w["est_steps"] = ("INT", {"default": 18, "min": 1, "max": 100,
+                      "tooltip": "steps the regen pass will actually run (total_steps x inject)"})
+    w["overhead_s"] = ("FLOAT", {"default": OVERHEAD_S, "min": 0.0, "max": 600.0, "step": 1.0,
+                       "tooltip": "fixed non-sampling seconds per render (setup, VAE encode/decode). "
+                                  "40 measured at 1.5 MP on a warm instance; take it from the gap "
+                                  "between your own 1-step and 2-step wall times"})
+    return w
+
+
+# --- window / segment geometry -------------------------------------------
+# A frame index is a token START iff it is one of these offsets inside a
+# 17-frame chunk: _tok_start_frame(5c+i) = 17c + (0, 1, 5, 9, 13)[i].
+TOK_OFFSETS = (0, 1, 5, 9, 13)
+
+
+def _is_tok_start(f):
+    return f % LEGAL_STEP in TOK_OFFSETS
+
+
+def _seg_contrib(holds, f, c0, c1, hot_lo, hot_hi):
+    """Smeared-frame contribution of world frame f inside a window whose
+    regenerated core is [c0, c1]. Handle frames are hold 1 at a COLD cut
+    (real-time baseline context, the shipped behaviour), but inherit the
+    world hold at a HOT cut so both sides of the seam are repaired at the
+    same temporal rate (seam policy 4)."""
+    if c0 <= f <= c1:
+        return int(holds[f])
+    hot = hot_lo if f < c0 else hot_hi
+    return int(holds[f]) if hot else 1
+
+
+def _seg_holds(holds, a, b, c0, c1, hot_lo=False, hot_hi=False):
+    return [_seg_contrib(holds, f, c0, c1, hot_lo, hot_hi)
+            for f in range(a, b + 1)]
+
+
+def _grid_grow(holds, a, b, c0, c1, n, hot_lo=False, hot_hi=False):
+    """Widen [a, b] outward until sum(seg_holds) sits exactly on the 17k+5
+    grid, and return (a, b, residual).
+
+    Why: H3TimeSmear lands on the grid with `holds[-1] += target - sum`,
+    which parks a multi-frame freeze on the window's last frame. Handle
+    frames cost exactly 1 smeared frame each, so growing a handle by the
+    deficit reaches the same grid point with no freeze at all. residual is
+    what is still left for H3TimeSmear to absorb (0 unless the clip runs
+    out of frames on both sides).
+    """
+    def contrib(f):
+        return _seg_contrib(holds, f, c0, c1, hot_lo, hot_hi)
+
+    s = sum(contrib(f) for f in range(a, b + 1))
+    need = _legal_ceil(s) - s
+    # each step subtracts exactly the frame's own contribution and never
+    # overshoots, so _legal_ceil(sum) is invariant through the loop
+    while need > 0 and b < n - 1 and contrib(b + 1) <= need:
+        b += 1
+        need -= contrib(b)
+    while need > 0 and a > 0 and contrib(a - 1) <= need:
+        a -= 1
+        need -= contrib(a)
+    return a, b, need
+
+
 def _soft_edge(mask, feather, profile="linear", direction="centered"):
     """Feather a (T, H, W) 0/1 mask. Separable box or gaussian blur;
     direction pre-shifts the boundary so the ramp eats into the masked
@@ -150,6 +289,141 @@ def _soft_edge(mask, feather, profile="linear", direction="centered"):
     return m
 
 
+class H3VideoFit:
+    """Snap an arbitrary clip's frame count onto H3's 17k+5 grid before it
+    enters the pipeline: trim or pad the frames, cut the audio to match,
+    and emit the resulting length so nothing downstream has to be told it
+    by hand."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-12; the classic pipeline nodes are unchanged.\n\n"
+        "The doorway for footage you already have. H3 works in 17-frame "
+        "chunks, so legal clip lengths are 5, 22, 39, 56 ... 17k+5; an "
+        "arbitrary MP4 lands between them. This trims (or pads) the batch to "
+        "the nearest legal count, cuts the source audio by the same amount, "
+        "and outputs 'length' — wire it into H3 Jerk Oracle's length instead "
+        "of typing a number or wiring the duration expression the generated "
+        "examples use.\n\n"
+        "Why it matters even though nothing errors: the H3 VAE encoder pads a "
+        "short final chunk by REPEATING THE LAST FRAME, silently. A 312-frame "
+        "clip is encoded as 323 frames, the last 11 of them frozen, so the "
+        "final tokens read as calm and the oracle under-dilates the end of "
+        "your clip. Trimming to 311 removes the invented stillness.\n\n"
+        "Default 'trim tail': never invents content, cuts at most 16 frames "
+        "(0.67s at 24fps), and keeps frame 0, which is the anchor every "
+        "keyframe/FLF path and the audio clock reference. 'trim head' if the "
+        "action you care about is at the end. 'pad tail' repeats the last "
+        "frame up to the next legal length (and pads the audio with silence) "
+        "— it makes the encoder's hidden padding explicit and visible rather "
+        "than removing it, so prefer it only when you cannot lose the tail.\n\n"
+        "max_frames is the cost lever: per-step time is superlinear in token "
+        "count, so capping a long source before fitting is the cheapest knob "
+        "in the graph. 0 = use the whole clip.\n\n"
+        "The report output is the receipt: frames in, frames out, which end "
+        "lost them, the token count, and a warning if the source is not 24fps "
+        "(H3 has one frame rate; a 30fps source will play back 1.25x slower).")
+
+    MODES = ["trim tail (default)", "trim head",
+             "pad tail (freeze last frame)", "nearest (trim or pad)"]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "images": ("IMAGE", {"tooltip": "source frames, e.g. LoadVideo -> GetVideoComponents"}),
+            "mode": (cls.MODES, {"default": "trim tail (default)",
+                     "tooltip": "how to reach the nearest 17k+5 length; trimming never invents frames"}),
+        }, "optional": {
+            "max_frames": ("INT", {"default": 0, "min": 0, "max": 3600,
+                           "tooltip": "cap the clip before fitting (drops the tail); 0 = whole clip. "
+                                      "The cheapest cost knob there is: time per step goes as tokens**1.7"}),
+            "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 0.01,
+                    "tooltip": "source frame rate, for the audio cut and the 24fps warning; "
+                               "wire GetVideoComponents' fps output"}),
+            "audio": ("AUDIO", {"tooltip": "the source's own track; cut to the same span. "
+                                "Unwired -> the audio output carries nothing"}),
+        }}
+
+    RETURN_TYPES = ("IMAGE", "INT", "AUDIO", "STRING")
+    RETURN_NAMES = ("images", "length", "audio", "report")
+    FUNCTION = "fit"
+    CATEGORY = "image/minimax/motion"
+
+    def fit(self, images, mode, max_frames=0, fps=24.0, audio=None):
+        images = images.detach().cpu()
+        src = int(images.shape[0])
+        assert src > 0, "no frames on the images input"
+        n = min(src, int(max_frames)) if max_frames else src
+        capped = n < src
+
+        lo, hi = _grid_floor(n), _grid_ceil(n)
+        if n < 5:                                  # cannot trim below the grid
+            out_n, how = 5, "pad"
+        elif n == lo:
+            out_n, how = n, "none"
+        elif mode.startswith("pad"):
+            out_n, how = hi, "pad"
+        elif mode.startswith("nearest"):
+            out_n = lo if (n - lo) <= (hi - n) else hi
+            how = "trim" if out_n < n else "pad"
+        else:
+            out_n, how = lo, "trim"
+
+        head = mode == "trim head" and how == "trim"
+        start = n - out_n if head else 0           # first kept source frame
+        clip = images[:n]
+        if how == "trim":
+            out = clip[start:start + out_n]
+        elif how == "pad":
+            pad = out_n - n
+            out = torch.cat([clip, clip[-1:].repeat(pad, 1, 1, 1)], dim=0)
+        else:
+            out = clip
+
+        fps = float(fps) or 24.0
+        cut = None
+        if audio is not None:
+            wav = audio["waveform"].detach().float().cpu()   # [B, C, N]
+            sr = int(audio["sample_rate"])
+            spf = sr / fps
+            a = int(round(start * spf))
+            b = int(round((start + out_n) * spf))
+            seg = wav[..., a:min(b, wav.shape[-1])]
+            if seg.shape[-1] < b - a:                        # pad tail = silence
+                seg = torch.nn.functional.pad(seg, (0, b - a - seg.shape[-1]))
+            cut = {"waveform": seg.contiguous(), "sample_rate": sr}
+
+        parts = [f"{src} frames in, {out_n} out"]
+        if capped:
+            parts.append(f"capped at max_frames={max_frames}, {src - n} off the tail")
+        if how == "trim":
+            parts.append(f"dropped {n - out_n} from the "
+                         f"{'head' if head else 'tail'}")
+        elif how == "pad":
+            parts.append(f"padded {out_n - n} by repeating the last frame "
+                         f"(audio padded with silence)")
+        else:
+            parts.append("already on the 17k+5 grid, passed through")
+        # tokens straight from the grid index, not _token_count: that helper
+        # goes through _legal_ceil's k>=2 clamp and would price a legal
+        # 5-frame clip at 39 frames / 12 tokens.
+        k = (out_n - 5) // LEGAL_STEP
+        report = ("; ".join(parts) +
+                  f". {out_n} = 17x{k}+5, {5 * k + 2} tokens, "
+                  f"{out_n / fps:.2f}s at {fps:g} fps")
+        if cut is not None:
+            report += f"; audio {cut['sample_rate']} Hz cut to match"
+        if how == "trim" and (n - out_n) > 0.25 * n:
+            # only fires under ~64 frames, where one grid step is a big share
+            # of the clip. Flag it, do not override the user's mode.
+            report += (f". WARNING: the trim dropped {(n - out_n) / n:.0%} of "
+                       f"the clip; 'pad tail' would have kept all {n} frames")
+        if abs(fps - 24.0) > 0.1:
+            report += (f". WARNING: H3 is a 24fps model and these frames go in "
+                       f"as 24fps, so the result plays {fps / 24.0:.2f}x "
+                       f"slower than the source")
+        return (out, int(out_n), cut, report)
+
+
 class H3JerkOracle:
     """Read the jerk oracle from a final latent. Emits everything downstream
     knobs consume: LocalRate segment string, detected window, and the
@@ -171,7 +445,16 @@ class H3JerkOracle:
         "closely — quiet spans keep their native beat contrast. Trade-off: it "
         "can artifact slightly more than uniform dilation if the hold plateau "
         "dips inside a burst — the bridge knob (default 8) closes such valleys automatically per our measured production rule; if you still see hiccups mid-burst, lower q or raise "
-        "d_max so the whole burst sits at the plateau.")
+        "d_max so the whole burst sits at the plateau.\n\n"
+        "EFFECTIVE SIZE: this node decides how long the regeneration pass "
+        "really is, and the report output states it before you pay — world "
+        "length in, effective regen length out, then the multipliers. Expect "
+        "a 5 s action clip to run as 11 to 13 s of frame data, so on a card "
+        "that fits 10 s you can de-rope about a third of that. The frame and "
+        "TIME multipliers are not the same number: per-step cost goes as "
+        "tokens^1.7, so 2.5x the frames is roughly 4.9x the time per step. "
+        "q and d_max are the two knobs that move it. Set s_per_step from a "
+        "baseline render of this clip on this card for a minutes estimate.")
 
     PRESETS = {
         "balanced (default)": {"q": 0.75, "d_max": 4, "ramp": True},
@@ -219,15 +502,18 @@ class H3JerkOracle:
                                   "hold map (no dilation, no cost). Measured contrast ran "
                                   "about 2x higher on a jerky clip than a smooth one, so "
                                   "try 1.5-2.5 and check against a clip you know is calm."}),
+            **_cost_widgets(with_fps=True),
         }}
 
-    RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "STRING")
-    RETURN_NAMES = ("hold_map", "segments", "window_start", "window_len", "profile")
+    RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "STRING", "STRING")
+    RETURN_NAMES = ("hold_map", "segments", "window_start", "window_len",
+                    "profile", "report")
     FUNCTION = "read"
     CATEGORY = "latent/minimax/motion"
 
     def read(self, samples, length, q, d_max, ramp, preset="custom", bridge=8,
-             profile_mode="value |d3| (default)", abstain_below=0.0):
+             profile_mode="value |d3| (default)", abstain_below=0.0,
+             fps=24, s_per_step=0.0, est_steps=18, overhead_s=OVERHEAD_S):
         if preset in self.PRESETS:
             p = self.PRESETS[preset]
             q, d_max, ramp = p["q"], p["d_max"], p["ramp"]
@@ -241,7 +527,11 @@ class H3JerkOracle:
         if abstain_below > 0.0 and contrast < abstain_below:
             flat = json.dumps({"holds": [1] * length, "world_len": length})
             return (flat, "", 0, int(length),
-                    " ".join(f"{v:.2f}" for v in prof))
+                    " ".join(f"{v:.2f}" for v in prof),
+                    _cost_report(length, _legal_ceil(length), fps, s_per_step,
+                                 est_steps, overhead_s,
+                                 tail=f"abstained, profile contrast "
+                                      f"{contrast:.2f} < {abstain_below:g}"))
 
         thr = np.quantile(prof, q)
         tok_d = np.where(prof >= thr, d_max, 1).astype(int)
@@ -278,7 +568,12 @@ class H3JerkOracle:
 
         hold_map = json.dumps({"holds": holds, "world_len": length})
         profile = " ".join(f"{v:.2f}" for v in prof)
-        return (hold_map, ",".join(segs), int(w0), int(wlen), profile)
+        n_held = sum(1 for h in holds if h > 1)
+        report = _cost_report(
+            length, _legal_ceil(sum(holds)), fps, s_per_step, est_steps,
+            overhead_s,
+            tail=f"{n_held} of {length} frames held, peak x{int(tok_d.max())}")
+        return (hold_map, ",".join(segs), int(w0), int(wlen), profile, report)
 
 
 def _compile_hold_map(frame_holds, length, ramp, bridge):
@@ -412,10 +707,7 @@ class H3ManualHoldMap:
         }, "optional": {
             "oracle_hold_map": ("STRING", {"default": "", "forceInput": True,
                                 "tooltip": "wire H3 Jerk Oracle's hold_map to gate it by your ranges"}),
-            "s_per_step": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 120.0, "step": 0.05,
-                           "tooltip": "seconds per step from a baseline render of this clip; 0 skips the minutes estimate"}),
-            "est_steps": ("INT", {"default": 18, "min": 1, "max": 100,
-                          "tooltip": "steps the regen pass will actually run (total_steps x inject)"}),
+            **_cost_widgets(),
         }}
 
     RETURN_TYPES = ("STRING", "STRING", "STRING")
@@ -424,7 +716,8 @@ class H3ManualHoldMap:
     CATEGORY = "latent/minimax/motion"
 
     def build(self, length, fps, ranges, hold, ramp, bridge,
-              oracle_hold_map="", s_per_step=0.0, est_steps=18):
+              oracle_hold_map="", s_per_step=0.0, est_steps=18,
+              overhead_s=OVERHEAD_S):
         spans = []
         for part in ranges.split(","):
             part = part.strip()
@@ -459,16 +752,8 @@ class H3ManualHoldMap:
 
         holds, segments, t_lat = _compile_hold_map(frame_holds, length,
                                                    ramp, bridge)
-        dilated = _legal_ceil(sum(holds))
-        t_lat_d = (dilated - 5) // 17 * 5 + 2
-        report = (f"{length}f ({length / fps:.1f}s) -> {dilated}f "
-                  f"({dilated / fps:.1f}s) effective regen, "
-                  f"{dilated / length:.2f}x; tokens {t_lat} -> {t_lat_d}")
-        report += f" ({(t_lat_d / t_lat) ** COST_EXP:.1f}x the time per step)"
-        if s_per_step > 0:
-            est = s_per_step * (t_lat_d / t_lat) ** COST_EXP * est_steps / 60
-            report += (f"; ~{est:.1f} min at {s_per_step:g} s/step x "
-                       f"{est_steps} steps")
+        report = _cost_report(length, _legal_ceil(sum(holds)), fps,
+                              s_per_step, est_steps, overhead_s)
         hold_map = json.dumps({"holds": holds, "world_len": length})
         return (hold_map, segments, report)
 
@@ -491,7 +776,14 @@ class H3TimeSmear:
         "small artifact risk where the hold curve dips inside a burst.\n\n"
         "Output length is snapped up to the H3-legal 17k+5 grid by extending "
         "the final hold. ALWAYS pass hold_map_used to H3 Exact Recover — it "
-        "records exactly what happened so recovery is lossless.")
+        "records exactly what happened so recovery is lossless.\n\n"
+        "EFFECTIVE SIZE: the report output is the price tag for everything "
+        "downstream of here — a 5 s action clip regenerates as 11 to 13 s of "
+        "frame data, and that dilated length, not the runtime, is what sets "
+        "the bill and the VRAM peak. Read the TIME multiplier, not the frame "
+        "one: per-step cost is superlinear in tokens, so 2.5x the frames is "
+        "about 4.9x the time per step. Set s_per_step from a baseline render "
+        "of this clip on this card for a minutes estimate.")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -502,25 +794,32 @@ class H3TimeSmear:
         }, "optional": {
             "hold_map": ("STRING", {"default": "",
                                     "tooltip": "from H3JerkOracle — per-frame integer holds"}),
+            **_cost_widgets(with_fps=True),
         }}
 
-    RETURN_TYPES = ("IMAGE", "STRING", "INT")
-    RETURN_NAMES = ("images", "hold_map_used", "length")
+    RETURN_TYPES = ("IMAGE", "STRING", "INT", "STRING")
+    RETURN_NAMES = ("images", "hold_map_used", "length", "report")
     FUNCTION = "smear"
     CATEGORY = "image/minimax/motion"
 
-    def smear(self, images, dilation, hold_map=""):
+    def smear(self, images, dilation, hold_map="", fps=24, s_per_step=0.0,
+              est_steps=18, overhead_s=OVERHEAD_S):
         images = images.detach().cpu()  # keep the (possibly huge) held batch off VRAM
         n = images.shape[0]
         holds = (json.loads(hold_map)["holds"] if hold_map.strip()
                  else [dilation] * n)
         assert len(holds) == n, f"hold map covers {len(holds)} frames, batch has {n}"
         target = _legal_ceil(sum(holds))
+        n_held = sum(1 for h in holds if h > 1)   # count before the tail pad
         holds = list(holds)
         holds[-1] += target - sum(holds)          # tail pad lives in the last hold
         idx = torch.tensor([i for i, h in enumerate(holds) for _ in range(h)])
         used = json.dumps({"holds": holds, "world_len": n})
-        return (images[idx], used, int(target))
+        mode = ("uniform x{}".format(dilation) if not hold_map.strip()
+                else "adaptive, {} of {} frames held".format(n_held, n))
+        report = _cost_report(n, target, fps, s_per_step, est_steps,
+                              overhead_s, tail=mode)
+        return (images[idx], used, int(target), report)
 
 
 class H3ExactRecover:
@@ -1493,6 +1792,18 @@ class H3SegmentCrop:
                          "tooltip": "from the oracle, H3 Manual Hold Map, or H3 Motion Editor"}),
             "handle_frames": ("INT", {"default": 12, "min": 2, "max": 48,
                               "tooltip": "real-time context frames kept on each side of the held span"}),
+        }, "optional": {
+            "grid_align": ("BOOLEAN", {"default": False,
+                           "tooltip": "(alpha, OFF = shipped behaviour, bit-identical) H3 Time "
+                                      "Smear reaches the 17k+5 grid by extending the LAST hold, "
+                                      "which parks a multi-frame freeze on the window's final "
+                                      "frame (measured: hold 8, a third of a second frozen) and "
+                                      "a frozen tail is where H3 invents extra beats. Handle "
+                                      "frames cost exactly 1 smeared frame each, so turning this "
+                                      "ON grows a hold-1 handle by the deficit instead and the "
+                                      "sum lands on the grid exactly, no freeze. Changes the "
+                                      "crop bounds, so it changes the render: leave it off to "
+                                      "reproduce an earlier result."}),
         }}
 
     RETURN_TYPES = ("IMAGE", "STRING", "STRING", "IMAGE", "IMAGE", "STRING")
@@ -1501,7 +1812,7 @@ class H3SegmentCrop:
     FUNCTION = "crop"
     CATEGORY = "image/minimax/motion"
 
-    def crop(self, images, hold_map, handle_frames=12):
+    def crop(self, images, hold_map, handle_frames=12, grid_align=False):
         images = images.detach().cpu()
         holds = json.loads(hold_map)["holds"]
         n = images.shape[0]
@@ -1510,6 +1821,10 @@ class H3SegmentCrop:
         assert held, "hold map has no held span; nothing to crop"
         a = max(0, held[0] - handle_frames)
         b = min(n - 1, held[-1] + handle_frames)
+        raw = sum(_seg_holds(holds, a, b, held[0], held[-1]))
+        pad = _legal_ceil(raw) - raw          # what H3TimeSmear would freeze
+        if grid_align:
+            a, b, pad = _grid_grow(holds, a, b, held[0], held[-1], n)
         seg = images[a:b + 1]
         seg_holds = [holds[f] if held[0] <= f <= held[-1] else 1
                      for f in range(a, b + 1)]
@@ -1527,6 +1842,13 @@ class H3SegmentCrop:
                   f"{(t_full / t_seg) ** COST_EXP:.1f}x faster per step "
                   f"(cost is superlinear in tokens, so the time saved beats "
                   f"the {t_full / t_seg:.1f}x token cut)")
+        if grid_align:
+            report += (f"; grid_align grew the handles to f{a}-f{b}, "
+                       f"tail freeze {pad}f")
+        elif pad:
+            report += (f"; NOTE H3 Time Smear will reach the grid by holding "
+                       f"the last frame {pad + 1}x ({pad}f of freeze); "
+                       f"grid_align removes it")
         return (seg, json.dumps({"holds": seg_holds, "world_len": seg_len}),
                 splice, seg[:1].clone(), seg[-1:].clone(), report)
 
@@ -1670,6 +1992,7 @@ class H3ModeSwitch:
 
 
 TIMESMEAR_CLASS_MAPPINGS = {
+    "H3VideoFit": H3VideoFit,
     "H3JerkOracle": H3JerkOracle,
     "H3ManualHoldMap": H3ManualHoldMap,
     "H3TimeSmear": H3TimeSmear,
@@ -1689,6 +2012,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3SegmentSplice": H3SegmentSplice,
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
+    "H3VideoFit": "H3 Video Fit (source clip -> 17k+5 frames) [alpha]",
     "H3JerkOracle": "H3 Jerk Oracle (profile / window / hold map)",
     "H3ManualHoldMap": "H3 Manual Hold Map (ranges to holds, gate) [alpha]",
     "H3TimeSmear": "H3 Time Smear (integer holds)",

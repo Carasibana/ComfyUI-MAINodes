@@ -15,6 +15,7 @@ test clips; expect your content to move the numbers a little.
 | user knows where the problem is (two-pass: review the oraclemap, type ranges, requeue) | `examples/motion_pipeline_targeted.json` | baseline + regen cost of YOUR spans only |
 | GUI editing on the node (blocks, painting, automation) | `examples/motion_pipeline_editor.json` | as targeted |
 | maximum speed for one burst in a longer clip (segment crop + splice) | `examples/motion_pipeline_editor_segment.json` | baseline + regen of window+handles only; the crop report states the ratio |
+| de-roping footage that already exists (no baseline render) | `examples/motion_pipeline_v2v_source.json` [alpha] | regen only, ~2.5x one baseline-equivalent render; there is no baseline pass |
 
 The working rhythm we recommend: iterate prompts and seeds with plain
 turbo generations to learn what a prompt gives you globally, then run
@@ -208,6 +209,38 @@ mid-gradient; lasso generously and let feather work; per-frame mask
 batches reintroduce the moving-boundary pop and need harder feather
 and a playback check. The two-pass rhythm for the targeted graph is
 queue once, read `mainodes_targeted_oraclemap`, type ranges, requeue.
+
+## Source footage instead of a baseline render (alpha)
+
+`examples/motion_pipeline_v2v_source.json` swaps the first pass for a file
+on disk: `LoadVideo -> GetVideoComponents -> H3 Video Fit -> ImageScale ->
+VAEEncode`, and from there the graph is the standard one. The oracle reads
+the source's own encoded latent; nothing else in the chain changes.
+
+Two things to get right, in this order.
+
+1. Frame count. H3's legal lengths are 5, 22, 39 ... 17k+5. An arbitrary
+   file lands between them, and the VAE does NOT complain: `encode_temporal`
+   pads the last chunk by repeating the final frame, so a 312-frame clip is
+   encoded as 323 with 11 frozen frames on the end. The oracle then reads
+   those tokens as calm and under-dilates the real ending. `H3 Video Fit`
+   trims to 311 instead and hands the count straight to the oracle's
+   `length`. Read its report; it states which end lost frames.
+2. Canvas. The source is resized to the `ResolutionSelector` dimensions with
+   a centre crop, and the same width/height feed the conditioning. Pick the
+   aspect ratio that matches your footage or you will crop the subject out.
+
+`max_frames` on the fit node is the cost lever. Per-step time goes as
+tokens**1.7, so capping a long source before fitting saves more than it
+looks: 192 frames capped to 150 fits to 141, which is 42 tokens instead of
+57, about 1.7x faster per step.
+
+Audio: the graph keeps YOUR track. Exact recovery restores the world clock
+frame for frame, so the source audio still lines up with the regenerated
+video; it is wired into `H3 Audio Recover`'s `reference` at `reference_mix
+1.0`. Lower the mix to hear the model's own foley for the slowed
+performance instead, or blend. If your source has no audio stream, the fit
+node's audio output carries nothing and that link must be removed.
 
 ## Method
 

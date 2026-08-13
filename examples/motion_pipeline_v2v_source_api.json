@@ -1,0 +1,501 @@
+{
+ "119": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "minimax_h3/minimax_h3_video_vae_fp16.safetensors"
+  },
+  "_meta": {
+   "title": "VAELoader"
+  }
+ },
+ "120": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "minimax_h3/minimax_h3_audio_vae_fp32.safetensors"
+  },
+  "_meta": {
+   "title": "VAELoader (audio)"
+  }
+ },
+ "127": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "minimax_h3/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+   "weight_dtype": "default"
+  },
+  "_meta": {
+   "title": "UNETLoader"
+  }
+ },
+ "128": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "minimax_h3/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+   "type": "minimax",
+   "device": "default"
+  },
+  "_meta": {
+   "title": "CLIPLoader"
+  }
+ },
+ "135": {
+  "class_type": "KSamplerSelect",
+  "inputs": {
+   "sampler_name": "res_multistep"
+  },
+  "_meta": {
+   "title": "KSamplerSelect"
+  }
+ },
+ "115": {
+  "class_type": "ResolutionSelector",
+  "inputs": {
+   "aspect_ratio": "9:16 (Portrait Widescreen)",
+   "megapixels": 0.6,
+   "multiple": 32
+  },
+  "_meta": {
+   "title": "canvas (must match the source's shape)"
+  }
+ },
+ "300": {
+  "class_type": "LoadVideo",
+  "inputs": {
+   "file": "your_source_clip.mp4"
+  },
+  "_meta": {
+   "title": "Load Video (YOUR footage goes here)"
+  }
+ },
+ "301": {
+  "class_type": "GetVideoComponents",
+  "inputs": {
+   "video": [
+    "300",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Get Video Components"
+  }
+ },
+ "302": {
+  "class_type": "H3VideoFit",
+  "inputs": {
+   "images": [
+    "301",
+    0
+   ],
+   "mode": "trim tail (default)",
+   "max_frames": 150,
+   "fps": [
+    "301",
+    2
+   ],
+   "audio": [
+    "301",
+    1
+   ]
+  },
+  "_meta": {
+   "title": "H3 Video Fit (arbitrary clip -> 17k+5)"
+  }
+ },
+ "303": {
+  "class_type": "ImageScale",
+  "inputs": {
+   "image": [
+    "302",
+    0
+   ],
+   "upscale_method": "lanczos",
+   "width": [
+    "115",
+    0
+   ],
+   "height": [
+    "115",
+    1
+   ],
+   "crop": "center"
+  },
+  "_meta": {
+   "title": "source frames -> H3 canvas"
+  }
+ },
+ "304": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "303",
+    0
+   ],
+   "vae": [
+    "119",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "encode the SOURCE (stands in for the baseline render)"
+  }
+ },
+ "305": {
+  "class_type": "H3JerkOracle",
+  "inputs": {
+   "samples": [
+    "304",
+    0
+   ],
+   "length": [
+    "302",
+    1
+   ],
+   "q": 0.75,
+   "d_max": 4,
+   "ramp": true,
+   "preset": "balanced (default)",
+   "bridge": 8
+  },
+  "_meta": {
+   "title": "H3 Jerk Oracle (reads the source's own latent)"
+  }
+ },
+ "306": {
+  "class_type": "H3TimeSmear",
+  "inputs": {
+   "images": [
+    "303",
+    0
+   ],
+   "dilation": 4,
+   "hold_map": [
+    "305",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "H3 Time Smear"
+  }
+ },
+ "307": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "306",
+    0
+   ],
+   "vae": [
+    "119",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "VAEEncode (smeared init)"
+  }
+ },
+ "308": {
+  "class_type": "H3V2VInit",
+  "inputs": {
+   "samples": [
+    "307",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "H3 V2V Init"
+  }
+ },
+ "309": {
+  "class_type": "H3InjectSchedule",
+  "inputs": {
+   "model": [
+    "127",
+    0
+   ],
+   "scheduler": "simple",
+   "total_steps": 25,
+   "inject": 0.7,
+   "preset": "balanced 0.70 (default)"
+  },
+  "_meta": {
+   "title": "H3 Inject Schedule"
+  }
+ },
+ "310": {
+  "class_type": "RandomNoise",
+  "inputs": {
+   "noise_seed": 20260812
+  },
+  "_meta": {
+   "title": "RandomNoise"
+  }
+ },
+ "311": {
+  "class_type": "MiniMaxH3ImageToVideo",
+  "inputs": {
+   "prompt": "integrated_multimodal_description: [Shot 1] REPLACE THIS with a description of YOUR source clip: the subject, their wardrobe, the setting, and the exact action from first frame to last, as one continuous take. Name the camera move the source actually has (here: the camera holds a Static Shot at chest height for the whole clip). Close with the sharpness clause, which is the part that does the de-roping: every frame is crisp and sharp as if shot at a very high shutter speed, each limb and edge held in fine clean detail through every instant of the motion, deep depth of field front to back.\n\noverall_soundscape: REPLACE THIS with the sound of that action. The model scores this against the SLOWED timeline and H3 Audio Recover compresses it back, so describe events, not music.\n\nnon_diegetic_music: N/A",
+   "width": [
+    "115",
+    0
+   ],
+   "height": [
+    "115",
+    1
+   ],
+   "length": [
+    "306",
+    2
+   ],
+   "clip": [
+    "128",
+    0
+   ],
+   "vae": [
+    "119",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "conditioning (length = SMEARED length)"
+  }
+ },
+ "312": {
+  "class_type": "BasicGuider",
+  "inputs": {
+   "model": [
+    "127",
+    0
+   ],
+   "conditioning": [
+    "311",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "BasicGuider"
+  }
+ },
+ "313": {
+  "class_type": "SamplerCustomAdvanced",
+  "inputs": {
+   "noise": [
+    "310",
+    0
+   ],
+   "guider": [
+    "312",
+    0
+   ],
+   "sampler": [
+    "135",
+    0
+   ],
+   "sigmas": [
+    "309",
+    0
+   ],
+   "latent_image": [
+    "308",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "SamplerCustomAdvanced (regeneration)"
+  }
+ },
+ "314": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "313",
+    0
+   ],
+   "vae": [
+    "119",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "VAEDecode"
+  }
+ },
+ "315": {
+  "class_type": "VAEDecodeAudio",
+  "inputs": {
+   "samples": [
+    "313",
+    0
+   ],
+   "vae": [
+    "120",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "VAEDecodeAudio"
+  }
+ },
+ "316": {
+  "class_type": "H3ExactRecover",
+  "inputs": {
+   "images": [
+    "314",
+    0
+   ],
+   "hold_map": [
+    "306",
+    1
+   ]
+  },
+  "_meta": {
+   "title": "H3 Exact Recover"
+  }
+ },
+ "317": {
+  "class_type": "H3AudioRecover",
+  "inputs": {
+   "audio": [
+    "315",
+    0
+   ],
+   "hold_map": [
+    "306",
+    1
+   ],
+   "fps": 24,
+   "reference": [
+    "302",
+    2
+   ],
+   "reference_mix": 1.0
+  },
+  "_meta": {
+   "title": "H3 Audio Recover (mix 1.0 = keep the SOURCE track)"
+  }
+ },
+ "318": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "images": [
+    "316",
+    0
+   ],
+   "audio": [
+    "317",
+    0
+   ],
+   "fps": 24,
+   "bit_depth": 8
+  },
+  "_meta": {
+   "title": "CreateVideo (world clock)"
+  }
+ },
+ "319": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "video": [
+    "318",
+    0
+   ],
+   "filename_prefix": "video/mainodes_v2v_source_recovered",
+   "format": "auto",
+   "codec": "auto"
+  },
+  "_meta": {
+   "title": "SaveVideo (the deliverable)"
+  }
+ },
+ "320": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "images": [
+    "314",
+    0
+   ],
+   "audio": [
+    "315",
+    0
+   ],
+   "fps": 24,
+   "bit_depth": 8
+  },
+  "_meta": {
+   "title": "CreateVideo (slow, before recovery)"
+  }
+ },
+ "321": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "video": [
+    "320",
+    0
+   ],
+   "filename_prefix": "video/mainodes_v2v_source_dilated",
+   "format": "auto",
+   "codec": "auto"
+  },
+  "_meta": {
+   "title": "SaveVideo (inspection copy)"
+  }
+ },
+ "322": {
+  "class_type": "PreviewAny",
+  "inputs": {
+   "source": [
+    "302",
+    3
+   ]
+  },
+  "_meta": {
+   "title": "fit report (frames in / frames out / tokens)"
+  }
+ },
+ "323": {
+  "class_type": "H3JerkHeatmap",
+  "inputs": {
+   "images": [
+    "303",
+    0
+   ],
+   "samples": [
+    "304",
+    0
+   ],
+   "alpha": 0.55,
+   "strip_height": 96
+  },
+  "_meta": {
+   "title": "H3 Jerk Heatmap (what the oracle saw in YOUR footage)"
+  }
+ },
+ "324": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "images": [
+    "323",
+    0
+   ],
+   "fps": 24,
+   "bit_depth": 8
+  },
+  "_meta": {
+   "title": "CreateVideo (oracle overlay)"
+  }
+ },
+ "325": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "video": [
+    "324",
+    0
+   ],
+   "filename_prefix": "video/mainodes_v2v_source_oraclemap",
+   "format": "auto",
+   "codec": "auto"
+  },
+  "_meta": {
+   "title": "SaveVideo (oracle overlay)"
+  }
+ }
+}
