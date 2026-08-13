@@ -16,6 +16,7 @@ test clips; expect your content to move the numbers a little.
 | GUI editing on the node (blocks, painting, automation) | `examples/motion_pipeline_editor.json` | as targeted |
 | maximum speed for one burst in a longer clip (segment crop + splice) | `examples/motion_pipeline_editor_segment.json` | baseline + regen of window+handles only; the crop report states the ratio |
 | de-roping footage that already exists (no baseline render) | `examples/motion_pipeline_v2v_source.json` [alpha] | regen only, ~2.5x one baseline-equivalent render; there is no baseline pass |
+| the dilated pass does not fit your card (OOM, or steps balloon while weights stream) | `examples/motion_pipeline_rolling_window.json` [alpha] | peak memory scales with the biggest WINDOW, not the clip. At the budget that forces a split: ~1.4x the generated frames, and on a card at the offload cliff wall time comes back to parity because the DiT stays resident instead of streaming. Measured on a fenced 32 GB budget: 30.7 GB peak + layer streaming one-pass vs 24.6 GB resident windowed, 460 s vs 440 s |
 
 The working rhythm we recommend: iterate prompts and seeds with plain
 turbo generations to learn what a prompt gives you globally, then run
@@ -46,6 +47,7 @@ different dial than one who says "it changed my character's pose."
 | output ignores the source choreography, invents moves | `inject` is too high; come down toward 0.6 |
 | source artifacts leak into the output | `inject` is too low; go up toward 0.7 |
 | too slow / too expensive | raise `q` toward 0.85 (tighter spans); switch to the turbo graph; then the probe graph |
+| the regeneration pass OOMs, or s/step balloons partway through (the log shows `loaded partially` / `lowvram patches`) | split the pass with the rolling-window graph: `H3 Window Plan` + `H3 Window Collect`. Set `max_dilated_frames` below the dilated count your card last survived, read the plan report before rendering, queue one window per item. Leave `coverage` on `full clip` on upscale graphs or the calm spans stay at baseline resolution |
 | turbo output changes appearance (adds ornament, shifts style) | lower LoRA strength 0.8 toward 0.65; or raise `base_head` in the expert schedule so more structure forms on the base model |
 | audio feels thin | raise `reference_mix` (needs the non-probe graphs); it is happiest near 0 or 1, mid values can double misaligned impacts |
 | audio impacts feel soft | known vocoder trait; try `reference_mix: 1` for baseline foley, or accept lean |
@@ -60,6 +62,17 @@ different dial than one who says "it changed my character's pose."
 | background elements (birds, crowds, traffic) speed up during bursts | the AUTOMATIC remedies stay rejected (oracle-mask compositing popped at the boundary, blanket freeze degraded other artifacts). The manual path is new and promising: draw the keep-baseline region yourself (`show_drift` on the heatmap shows what to lasso in blue), wire it into `H3 Motion Composite` `mask` with `invert_mask` on, feather 48-64 smoothstep, and put the seam on a real edge (horizon, rooftop) where nothing moves. Use the `H3 V2V Init` `mask` freeze instead when background and subject share lighting or contact. First internal A/B (demo clip, invented flock + pagoda both removed, static seam) awaits playback ratification |
 
 ## VRAM expectations (measured)
+
+An honesty note on the peak numbers in this section: they were read
+from `nvidia-smi` on a large card, where the reading includes whatever
+the caching allocator felt like keeping, so treat them as upper bounds
+rather than requirements (we have since measured a smaller model
+peaking HIGHER than a bigger one this way). The portable units are
+latent token count for activations, and the `loaded partially` /
+`lowvram patches` lines in the ComfyUI log for whether your card is
+actually streaming weights. When the dilated pass is what does not
+fit, the rolling-window graph caps the token count per pass: see the
+table above.
 
 Weights: the int8 DiT is 20 GB, the text encoder 15 GB (offloads after
 encoding), the video VAE 4.9 GB. Activations at 1.0 MP run about 0.1 GB

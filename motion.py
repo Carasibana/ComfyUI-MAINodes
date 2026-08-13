@@ -2283,7 +2283,12 @@ class H3WindowCollect:
             "feather_frames": ("INT", {"default": 6, "min": 0, "max": 24,
                                "tooltip": "crossfade width inside COLD handles; hot seams ignore it"}),
         }, "optional": {
-            "store_dir": ("STRING", {"default": "/tmp/h3_windows"}),
+            "store_dir": ("STRING", {"default": "output/h3_windows",
+                          "tooltip": "where windows are banked between queue items. A relative "
+                                     "path lands inside the ComfyUI working directory. Avoid "
+                                     "/tmp: it is a RAM disk on most Linux installs, and the "
+                                     "whole point of banking windows is surviving a crash or "
+                                     "reboot"}),
             "baseline_audio": ("AUDIO",),
             "segment_audio": ("AUDIO", {"tooltip": "this window's track from H3 Audio Recover"}),
             "fps": ("INT", {"default": 24, "min": 1, "max": 120}),

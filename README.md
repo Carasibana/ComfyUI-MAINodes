@@ -204,6 +204,34 @@ to 31 s, and pass 2 rises from 305 s to 372 s. The cost is jerk
 removal: a soft pass 1 gives the oracle blurrier evidence, so it cuts
 less of it.
 
+[`motion_pipeline_rolling_window.json`](examples/motion_pipeline_rolling_window.json)
+(alpha) is the upscale de-rope split into budgeted windows, for cards
+that cannot hold the whole dilated pass at once. **H3 Window Plan**
+divides the clip into as many windows as your `max_dilated_frames`
+budget requires and emits one per queue item: set `window` to 0, queue,
+read the plan report (wired to a preview node; it prices every window
+and names each cut cold or hot before anything runs), then queue the
+next. **H3 Window Collect** banks each rendered window to disk
+(`output/h3_windows`, so a crash or reboot costs one window, not the
+run) and splices the full set into the baseline once the last one
+lands. On our test clip the peak window was 62 latent tokens against
+77 for the one-pass version, paid for as 1.47x the one-pass total in
+generated frames at the budget that forced the split. `coverage`
+defaults to `full clip` so calm spans get the same second-pass repaint
+as the action; `held span` is cheaper but leaves everything outside the
+held span at baseline resolution, which on this graph means visibly
+soft the moment motion calms.
+
+Measured on a simulated 32 GB card (a large card fenced down with
+`--reserve-vram`; int8 stack, 0.4 to 1.5 MP, 107 frames): the one-pass
+de-rope peaked at 30.7 GB, touched the ceiling, and streamed the DiT
+layer by layer (208 lowvram patches). Split into two windows the peaks
+were 22.5 and 24.6 GB and the DiT stayed resident, so the two windows
+together (440 s) matched the one-pass wall time (460 s) while
+generating 1.4x the frames. The lower peak is what buys the extra work
+back: on a card at the offload cliff, not streaming beats not
+splitting.
+
 [`motion_pipeline_fast_iterate.json`](examples/motion_pipeline_fast_iterate.json)
 is the same idea sized for iteration: 0.2 MP in, 0.4 MP out, about 95
 seconds end to end. Use it to find out whether the choreography lands
@@ -271,6 +299,11 @@ line is it.
 | H3 Motion Editor | timeline, brushes, lanes | | the GUI: time blocks with bracket handles, per-frame mask painting, per-block dials, automation envelopes for hold/feather/strength. Compiles to a hold map and a soft mask; state is plain JSON that agents can author without the GUI |
 | H3 Segment Crop | `handle_frames` | 12 | cut the world to the held window plus context handles; the regen chain then pays only for the window. Report output states the speedup |
 | H3 Segment Splice | `feather_frames` | 6 | reassemble after recovery: baseline outside, segment inside, video + audio crossfades inside the handles |
+| H3 Window Plan (alpha) | `max_dilated_frames` | 209 | per-window budget in smeared frames, the number that sets cost and peak memory; read your card's ceiling off a run that survived |
+| | `coverage` | full clip | `full clip` tiles windows over every frame so calm spans are repainted too (they cost 1 dilated frame each and cut cold); `held span` regenerates only where the hold map fires, cheaper, but passed-through frames keep baseline resolution on upscale graphs |
+| | `window` | 0 | which window this queue item renders; 0, queue, then 1, queue. The report output is the interface: read it |
+| H3 Window Collect (alpha) | `store_dir` | output/h3_windows | windows bank here between queue items and survive a reboot; avoid /tmp, it is a RAM disk on most Linux installs |
+| | `run_name` | window_run | keys the banked set; change it whenever the plan changes |
 | H3 Manual Hold Map | `ranges` | | manual time targeting: `start-end[:hold]` pairs, frames or seconds. Wire the oracle's hold_map in and its holds survive only inside your ranges (gate mode); leave it unwired to author holds directly. The report output prices the regeneration before you run it |
 | H3 V2V Init | `freeze_threshold` | 0 (off) | automatic background freeze, not recommended: it fixes background timing but degraded other artifacts in our playback tests. Kept for content where the trade goes the other way |
 | | `mask`, `mask_feather` | off, 0 | manual freeze region: you paint what regenerates (`invert_mask` to paint the frozen background instead). Static union over time, so the boundary never moves. Default is hard latent cells (each ~16 px cell fully frozen or fully live; the decode smooths the edge); raise `mask_feather` for a pixel-space ramp pooled to fractional cells if a seam shows |
