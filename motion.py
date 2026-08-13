@@ -1950,6 +1950,387 @@ class H3SegmentSplice:
                 {"waveform": torch.zeros(1, 2, 1), "sample_rate": 32000})
 
 
+def _cut_is_cold(holds, s, handle):
+    """A cut at world frame s (window k ends at s-1, window k+1 starts at s)
+    is COLD when the whole handle band around it is at hold 1: both handles
+    are then genuine real-time baseline context and the splice crossfade
+    blends regenerated against baseline exactly as the shipped single-window
+    path does. Anything else is a HOT cut, inside a burst."""
+    lo = max(0, s - handle)
+    hi = min(len(holds) - 1, s + handle - 1)
+    return all(int(h) == 1 for h in holds[lo:hi + 1])
+
+
+def _plan_windows(holds, n, budget, handle, snap):
+    """Greedy left-to-right window plan. Budget is counted in DILATED
+    frames (the thing that actually sets cost and VRAM), the cut is snapped
+    to the best boundary within `snap` frames of the largest feasible one,
+    and cold cuts / token starts / hold plateaus are preferred in that order
+    so no cut lands inside a ramp shoulder if any alternative exists."""
+    pre = [0] * (n + 1)
+    for f in range(n):
+        pre[f + 1] = pre[f] + int(holds[f])
+
+    def hsum(x, y):                                   # inclusive, world holds
+        return pre[y + 1] - pre[x] if y >= x else 0
+
+    def span(c0, c1):
+        return max(0, c0 - handle), min(n - 1, c1 + handle)
+
+    def cost(c0, c1, hot_lo, hot_hi):
+        a, b = span(c0, c1)
+        lead = hsum(a, c0 - 1) if hot_lo else (c0 - a)
+        trail = hsum(c1 + 1, b) if hot_hi else (b - c1)
+        raw = hsum(c0, c1) + lead + trail
+        return raw, _legal_ceil(raw)
+
+    held = [i for i, h in enumerate(holds) if int(h) > 1]
+    if not held:
+        a, b = 0, n - 1
+        raw, dil = 0 + n, _legal_ceil(n)
+        return [{"k": 0, "core": (0, n - 1), "span": (a, b), "raw": n,
+                 "dilated": dil, "hot_lo": False, "hot_hi": False,
+                 "cut_at": None, "cut": None, "residual": dil - n}], held
+
+    budget = max(_legal_ceil(1), int(budget))         # 39 is the grid floor
+    out, c0, hot_lo = [], held[0], False
+    while True:
+        best_c1 = None
+        for c1 in range(c0, held[-1] + 1):
+            last = c1 >= held[-1]
+            hot_hi = (not last) and not _cut_is_cold(holds, c1 + 1, handle)
+            if cost(c0, c1, hot_lo, hot_hi)[1] <= budget:
+                best_c1 = c1
+        assert best_c1 is not None, (
+            f"max_dilated_frames={budget} is below the smallest possible "
+            f"window ({cost(c0, c0, hot_lo, False)[1]} dilated frames at "
+            f"handle_frames={handle}); raise the budget or cut the handles")
+        if best_c1 >= held[-1]:
+            c1, kind, hot_hi = held[-1], None, False
+        else:
+            lo = max(c0, best_c1 - int(snap))
+            ranked = []
+            for c in range(lo, best_c1 + 1):
+                s = c + 1
+                cold = _cut_is_cold(holds, s, handle)
+                tok = _is_tok_start(s)
+                flat = int(holds[s - 1]) == int(holds[s])   # not a ramp shoulder
+                ranked.append((4 * cold + 2 * tok + flat, c, cold))
+            score, c1, cold = max(ranked)
+            kind, hot_hi = ("cold" if cold else "hot"), (not cold)
+        a, b = span(c0, c1)
+        raw, dil = cost(c0, c1, hot_lo, hot_hi)
+        out.append({"k": len(out), "core": (c0, c1), "span": (a, b),
+                    "raw": raw, "dilated": dil, "hot_lo": hot_lo,
+                    "hot_hi": hot_hi, "cut_at": (c1 + 1) if kind else None,
+                    "cut": kind, "residual": dil - raw})
+        if c1 >= held[-1]:
+            break
+        c0, hot_lo = c1 + 1, hot_hi
+    return out, held
+
+
+class H3WindowPlan:
+    """Split one hold map into N windows that each fit a dilated-frame
+    budget, and emit window k's crop. The requeue pair's front half."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-12; the classic pipeline nodes are unchanged.\n\n"
+        "Rolling-window regeneration for cards that cannot hold the whole "
+        "dilated pass. H3 Segment Crop cuts ONE window around the held span; "
+        "this splits that span into as many windows as your budget needs and "
+        "hands you window k. Set 'window' to 0, queue, then 1, queue (or use "
+        "ComfyUI's queue-batch to increment it) and feed each recovered "
+        "window into H3 Window Collect, which reassembles once all N exist. "
+        "Every window is an independent queue item, so an OOM on window 3 "
+        "does not cost you windows 1 and 2.\n\n"
+        "THE BUDGET IS IN DILATED FRAMES, not world frames: the dilated "
+        "length is what sets both the bill and the VRAM peak. Read your "
+        "single-window number off H3 Segment Crop's report and set "
+        "max_dilated_frames below whatever your card survived.\n\n"
+        "Seam policy. A COLD cut is a boundary where the whole handle band "
+        "is at hold 1: both handles are real baseline context and the splice "
+        "crossfade behaves exactly as the shipped single-window path does. "
+        "The plan snaps cuts to cold boundaries, then to token starts, then "
+        "to hold plateaus, so a cut never lands inside a ramp shoulder if "
+        "anything else is available. A HOT cut (inside a burst) is the case "
+        "with real risk: the handles there inherit the world hold instead of "
+        "1 so both sides are repaired at the same rate, the crossfade is "
+        "turned OFF and the seam becomes a hard cut at a pinned frame "
+        "(pin-and-trim: the overlap is generated as context, then thrown "
+        "away by the next window overwriting it). Two independent samples of "
+        "the same frames cross-faded is a dissolve, not a cut, and on audio "
+        "it doubles or smears a percussive hit. Splice windows in ASCENDING "
+        "k order, which H3 Window Collect does for you.\n\n"
+        "The report is the price tag before anything runs: window count, "
+        "each window's world span and dilated frames, and which cuts came "
+        "out cold versus hot. If the report says a cut is hot, consider "
+        "raising the budget, or lowering d_max on the oracle instead: "
+        "de-roping a burst at 2x with no seam at all often beats a visible "
+        "join in the middle of the action.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "images": ("IMAGE", {"tooltip": "baseline frames, world clock"}),
+            "hold_map": ("STRING", {"default": "", "forceInput": True,
+                         "tooltip": "from the oracle, H3 Manual Hold Map, or H3 Motion Editor"}),
+            "max_dilated_frames": ("INT", {"default": 209, "min": 39, "max": 3600,
+                                   "tooltip": "budget per window in SMEARED frames (17k+5). "
+                                              "209 = 17x12+5, 62 tokens"}),
+            "window": ("INT", {"default": 0, "min": 0, "max": 64,
+                       "tooltip": "which window to emit this queue item; clamped to the plan"}),
+            "handle_frames": ("INT", {"default": 12, "min": 2, "max": 48,
+                              "tooltip": "context frames kept each side, same meaning as H3 Segment Crop"}),
+        }, "optional": {
+            "snap_search": ("INT", {"default": 24, "min": 0, "max": 96,
+                            "tooltip": "how far back from the largest feasible cut to look for a "
+                                       "cold one / a token start. 0 = always cut at the budget limit"}),
+            "grid_align": ("BOOLEAN", {"default": True,
+                           "tooltip": "grow a hold-1 handle so sum(holds) lands on the 17k+5 grid "
+                                      "exactly, instead of letting H3 Time Smear freeze the "
+                                      "window's last frame. Interior seams multiply that freeze "
+                                      "by N-1, so it is on by default here"}),
+            **_cost_widgets(with_fps=True),
+        }}
+
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "IMAGE", "IMAGE", "INT",
+                    "INT", "STRING")
+    RETURN_NAMES = ("images", "hold_map", "splice_map", "first_frame",
+                    "last_frame", "window_count", "dilated_frames", "report")
+    FUNCTION = "plan"
+    CATEGORY = "image/minimax/motion"
+
+    def plan(self, images, hold_map, max_dilated_frames=209, window=0,
+             handle_frames=12, snap_search=24, grid_align=True, fps=24,
+             s_per_step=0.0, est_steps=18, overhead_s=OVERHEAD_S):
+        images = images.detach().cpu()
+        holds = [int(h) for h in json.loads(hold_map)["holds"]]
+        n = images.shape[0]
+        assert len(holds) == n, f"hold map covers {len(holds)}, clip has {n}"
+
+        plan, held = _plan_windows(holds, n, max_dilated_frames,
+                                   handle_frames, snap_search)
+        if grid_align:
+            # grow EVERY window, not just the emitted one, so the plan the
+            # report states does not depend on which k you happen to be on
+            for x in plan:
+                xa, xb, x["residual"] = _grid_grow(
+                    holds, *x["span"], *x["core"], n, x["hot_lo"], x["hot_hi"])
+                x["span"] = (xa, xb)
+                x["raw"] = sum(_seg_holds(holds, xa, xb, *x["core"],
+                                          x["hot_lo"], x["hot_hi"]))
+        k = max(0, min(int(window), len(plan) - 1))
+        w = plan[k]
+        c0, c1 = w["core"]
+        a, b = w["span"]
+        seg_holds = _seg_holds(holds, a, b, c0, c1, w["hot_lo"], w["hot_hi"])
+        seg = images[a:b + 1]
+        splice = json.dumps({
+            "start": a, "end": b, "world_len": n,
+            # pin-and-trim: a hot side gets NO crossfade. The next window
+            # overwrites it, which is the hard cut at the pinned frame.
+            "handle_in": 0 if w["hot_lo"] else c0 - a,
+            "handle_out": 0 if w["hot_hi"] else b - c1,
+            "window": k, "window_count": len(plan), "hot_in": w["hot_lo"],
+            "hot_out": w["hot_hi"]})
+
+        dil_full = _legal_ceil(sum(holds))
+        tot = sum(x["dilated"] for x in plan)
+        cold = sum(1 for x in plan if x["cut"] == "cold")
+        hot = sum(1 for x in plan if x["cut"] == "hot")
+        lines = [f"plan: {len(plan)} window(s) over "
+                 f"{'f%d-f%d' % (held[0], held[-1]) if held else 'NOTHING'} "
+                 f"of {n}f, budget {max_dilated_frames} dilated frames, "
+                 f"handles {handle_frames}"]
+        hot_handle = 0
+        for x in plan:
+            sa, sb = x["span"]
+            xc0, xc1 = x["core"]
+            cut = (f"cut at f{x['cut_at']} {x['cut'].upper()}"
+                   if x["cut"] else "ends at the held span")
+            core_d = sum(holds[xc0:xc1 + 1])
+            hot_h = ((sum(holds[sa:xc0]) if x["hot_lo"] else 0)
+                     + (sum(holds[xc1 + 1:sb + 1]) if x["hot_hi"] else 0))
+            hot_handle += hot_h
+            sides = [s for s, on in (("in", x["hot_lo"]), ("out", x["hot_hi"])) if on]
+            lines.append(
+                f"  w{x['k']}: f{sa}-f{sb} ({sb - sa + 1}f, core f{xc0}-f{xc1})"
+                f" -> {x['dilated']}f dilated / {_token_count(x['dilated'])} "
+                f"tok; {cut}"
+                + (f"; hot handle {'+'.join(sides)} at world holds, "
+                   f"{hot_h}f of the {x['raw']}f" if sides else "")
+                + (f"; tail freeze {x['residual']}f" if x["residual"] else ""))
+        lines.append(f"  cuts: {cold} cold, {hot} hot"
+                     + ("; HOT cuts sit inside a burst: no cold boundary fit "
+                        "the budget. Hard cut at a pinned frame, no "
+                        "crossfade. Raise max_dilated_frames or lower d_max"
+                        if hot else ""))
+        if hot_handle > 0.4 * sum(x["raw"] for x in plan):
+            lines.append(f"  WARNING: {hot_handle}f of dilated frames, "
+                         f"{hot_handle / sum(x['raw'] for x in plan):.0%} of "
+                         f"the total, is hot-cut handle context that gets "
+                         f"regenerated twice and then thrown away. "
+                         f"handle_frames costs handle x hold at a hot cut, "
+                         f"so {handle_frames} handles at hold "
+                         f"{max(holds)} is {handle_frames * max(holds)}f per "
+                         f"side. Fewer, larger windows (raise "
+                         f"max_dilated_frames) or shorter handles is the fix")
+        if not held:
+            lines.append("  WARNING: the hold map holds nothing, so there is "
+                         "nothing to regenerate; one pass-through window")
+        lines.append("  " + _cost_report(n, dil_full, fps, s_per_step,
+                                         est_steps, overhead_s,
+                                         tail="the whole clip in one pass"))
+        biggest = max(x["dilated"] for x in plan)
+        lines.append(f"  peak window {biggest}f vs {dil_full}f in one pass "
+                     f"({(_token_count(dil_full) / _token_count(biggest)) ** COST_EXP:.1f}x "
+                     f"less work per step at the peak); {tot}f of dilated "
+                     f"frames generated in total, "
+                     f"{tot / max(dil_full, 1):.2f}x the one-pass total "
+                     f"(above 1.0 the excess is duplicated handle context; "
+                     f"below 1.0 the windows are also skipping quiet frames "
+                     f"the one-pass number pays for)")
+        lines.append(f"  emitting window {k} of {len(plan)}: f{a}-f{b}, "
+                     f"{sum(seg_holds)} smeared frames")
+        return (seg, json.dumps({"holds": seg_holds, "world_len": b - a + 1}),
+                splice, seg[:1].clone(), seg[-1:].clone(), len(plan),
+                int(w["dilated"]), "\n".join(lines))
+
+
+class H3WindowCollect:
+    """The requeue pair's back half: bank window k on disk, and once all N
+    windows exist, replay the chained splice into the baseline."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-12; the classic pipeline nodes are unchanged.\n\n"
+        "Collects the windows H3 Window Plan hands out. Each queue item "
+        "writes its recovered window (and its retimed audio) to "
+        "store_dir/run_name/wNNN.pt, then checks whether all window_count "
+        "windows are on disk yet. Until they are, the outputs pass the "
+        "baseline through unchanged and the report says which windows are "
+        "still missing. On the queue item that completes the set, the "
+        "windows are spliced into the baseline in ASCENDING k order (which "
+        "is what makes a hot cut a hard cut: the later window overwrites the "
+        "earlier one's discarded overlap) and the finished clip comes out.\n\n"
+        "The ComfyUI queue is the loop driver, which is the whole point: "
+        "every window is an independent queue item, so an OOM or a bad seam "
+        "on window 3 costs you window 3 and nothing else. Requeue that one "
+        "window with a different seed and the collect picks up the new file. "
+        "Set write=false to reassemble from disk without re-banking.\n\n"
+        "run_name keys the set. Change it whenever you change the plan: "
+        "windows from two different budgets do not tile the same world and "
+        "the collect cannot tell them apart.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "baseline": ("IMAGE", {"tooltip": "the full world clip, world clock"}),
+            "segment": ("IMAGE", {"tooltip": "this window, recovered (H3 Exact Recover)"}),
+            "splice_map": ("STRING", {"default": "", "forceInput": True,
+                           "tooltip": "from H3 Window Plan, same queue item"}),
+            "window_count": ("INT", {"default": 0, "min": 0, "max": 64,
+                             "tooltip": "wire H3 Window Plan's window_count output; typed by "
+                                        "hand it is the N this run is waiting for"}),
+            "run_name": ("STRING", {"default": "window_run",
+                         "tooltip": "keys the set on disk; change it when the plan changes"}),
+            "feather_frames": ("INT", {"default": 6, "min": 0, "max": 24,
+                               "tooltip": "crossfade width inside COLD handles; hot seams ignore it"}),
+        }, "optional": {
+            "store_dir": ("STRING", {"default": "/tmp/h3_windows"}),
+            "baseline_audio": ("AUDIO",),
+            "segment_audio": ("AUDIO", {"tooltip": "this window's track from H3 Audio Recover"}),
+            "fps": ("INT", {"default": 24, "min": 1, "max": 120}),
+            "write": ("BOOLEAN", {"default": True,
+                      "tooltip": "off: reassemble from what is already on disk, bank nothing"}),
+            "store_dtype": (["float32 (exact)", "float16 (half the disk)"],
+                            {"default": "float32 (exact)",
+                             "tooltip": "float16 costs ~1/2048 of a level, below 8-bit output "
+                                        "quantization, and halves a multi-hundred-MB window"}),
+        }}
+
+    RETURN_TYPES = ("IMAGE", "AUDIO", "INT", "BOOLEAN", "STRING")
+    RETURN_NAMES = ("images", "audio", "windows_on_disk", "complete", "report")
+    FUNCTION = "collect"
+    CATEGORY = "image/minimax/motion"
+
+    def collect(self, baseline, segment, splice_map, window_count, run_name,
+                feather_frames=6, store_dir="/tmp/h3_windows",
+                baseline_audio=None, segment_audio=None, fps=24, write=True,
+                store_dtype="float32 (exact)"):
+        import glob
+        import os
+
+        baseline = baseline.detach().float().cpu()
+        sp = json.loads(splice_map)
+        k = int(sp.get("window", 0))
+        n_win = max(int(window_count), k + 1)
+        root = os.path.join(store_dir, run_name)
+        os.makedirs(root, exist_ok=True)
+        path = os.path.join(root, f"w{k:03d}.pt")
+
+        if write:
+            seg = segment.detach().cpu()
+            if store_dtype.startswith("float16"):
+                seg = seg.to(torch.float16)
+            aud = None
+            if segment_audio is not None:
+                aud = {"waveform": segment_audio["waveform"].detach().cpu(),
+                       "sample_rate": int(segment_audio["sample_rate"])}
+            torch.save({"segment": seg, "splice_map": splice_map,
+                        "audio": aud}, path)
+
+        banked = {}
+        for p in sorted(glob.glob(os.path.join(root, "w*.pt"))):
+            i = int(os.path.basename(p)[1:4])
+            banked[i] = p
+        have = sorted(banked)
+        missing = [i for i in range(n_win) if i not in banked]
+
+        lines = [f"run '{run_name}': {len(have)} of {n_win} windows banked in "
+                 f"{root}"]
+        mb = 0.0
+        for i in have:
+            d = torch.load(banked[i], weights_only=False)
+            s = json.loads(d["splice_map"])
+            mb += os.path.getsize(banked[i]) / 1e6
+            kind = ("hot" if s.get("hot_in") else "cold") + " in / " + \
+                   ("hot" if s.get("hot_out") else "cold") + " out"
+            lines.append(f"  w{i}: f{s['start']}-f{s['end']} "
+                         f"({d['segment'].shape[0]}f, {kind})"
+                         + ("" if d.get("audio") else ", video only"))
+        lines.append(f"  {mb:.0f} MB on disk")
+
+        if missing:
+            lines.append(f"  waiting on window(s) "
+                         f"{', '.join(str(i) for i in missing)}: set "
+                         f"H3 Window Plan's 'window' to the next one and "
+                         f"queue again. Baseline passed through unchanged")
+            audio = baseline_audio if baseline_audio is not None else \
+                {"waveform": torch.zeros(1, 2, 1), "sample_rate": 32000}
+            return (baseline, audio, len(have), False, "\n".join(lines))
+
+        splicer = H3SegmentSplice()
+        out, audio = baseline, baseline_audio
+        for i in range(n_win):
+            d = torch.load(banked[i], weights_only=False)
+            seg = d["segment"].float()
+            if baseline_audio is not None and d.get("audio") is not None:
+                out, audio = splicer.splice(out, seg, d["splice_map"],
+                                            feather_frames, audio,
+                                            d["audio"], fps)
+            else:
+                out, _ = splicer.splice(out, seg, d["splice_map"],
+                                        feather_frames, None, None, fps)
+        lines.append(f"  COMPLETE: {n_win} windows spliced into the baseline "
+                     f"in ascending order"
+                     + ("" if baseline_audio is not None else
+                        "; video only, no baseline_audio wired"))
+        if audio is None:
+            audio = {"waveform": torch.zeros(1, 2, 1), "sample_rate": 32000}
+        return (out, audio, len(have), True, "\n".join(lines))
+
+
 class _AnyType(str):
     def __ne__(self, other):
         return False
@@ -2010,6 +2391,8 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3MotionEditor": H3MotionEditor,
     "H3SegmentCrop": H3SegmentCrop,
     "H3SegmentSplice": H3SegmentSplice,
+    "H3WindowPlan": H3WindowPlan,
+    "H3WindowCollect": H3WindowCollect,
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3VideoFit": "H3 Video Fit (source clip -> 17k+5 frames) [alpha]",
@@ -2030,4 +2413,6 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3MotionEditor": "H3 Motion Editor (timeline, masks, automation) [alpha]",
     "H3SegmentCrop": "H3 Segment Crop (regen only the window) [alpha]",
     "H3SegmentSplice": "H3 Segment Splice (crossfade reassembly) [alpha]",
+    "H3WindowPlan": "H3 Window Plan (split the pass into N windows) [alpha]",
+    "H3WindowCollect": "H3 Window Collect (bank windows, splice when full) [alpha]",
 }

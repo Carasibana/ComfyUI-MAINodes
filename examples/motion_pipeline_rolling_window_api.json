@@ -1,0 +1,643 @@
+{
+  "119": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3/minimax_h3_video_vae_fp16.safetensors"
+    },
+    "_meta": {
+      "title": "VAELoader"
+    }
+  },
+  "120": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3/minimax_h3_audio_vae_fp32.safetensors"
+    },
+    "_meta": {
+      "title": "VAELoader"
+    }
+  },
+  "121": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": {
+      "samples": [
+        "125",
+        0
+      ],
+      "vae": [
+        "120",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "VAEDecodeAudio"
+    }
+  },
+  "122": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "125",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "VAEDecode"
+    }
+  },
+  "125": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "129",
+        0
+      ],
+      "guider": [
+        "126",
+        0
+      ],
+      "sampler": [
+        "135",
+        0
+      ],
+      "sigmas": [
+        "124",
+        0
+      ],
+      "latent_image": [
+        "131",
+        1
+      ]
+    },
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "126": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "127",
+        0
+      ],
+      "conditioning": [
+        "131",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "BasicGuider"
+    }
+  },
+  "129": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 20260813
+    },
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "128": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "minimax_h3/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "_meta": {
+      "title": "CLIPLoader"
+    }
+  },
+  "127": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "minimax_h3/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "_meta": {
+      "title": "UNETLoader"
+    }
+  },
+  "130": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "fps": 24,
+      "bit_depth": 8,
+      "images": [
+        "122",
+        0
+      ],
+      "audio": [
+        "121",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "CreateVideo"
+    }
+  },
+  "92": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "filename_prefix": "video/mainodes_window_baseline",
+      "format": "auto",
+      "codec": "auto",
+      "video": [
+        "130",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "SaveVideo"
+    }
+  },
+  "131": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "inputs": {
+      "prompt": "integrated_multimodal_description: [Shot 1] 2D anime, cel-shaded, cinematic, a medium-wide shot frames a young battle-mage swordswoman alone on a stone platform before a great vermilion torii gate at a cliff edge above a rolling sea of dawn clouds, warm gold light breaking across the platform, small white seabirds far below. She has raven-black hair in two long twin-tails tied with white ribbons that hang to her waist. She wears a sleeveless crimson and white shrine-battle outfit with a bare back and shoulders, a short pleated white skirt with a long open crimson half-skirt trailing behind her knees, white ribbon tassels at both hips, fingerless long black gloves, and lace-topped white thigh-high stockings with red cord ties; she carries a curved crimson-lacquered blade trailing two long white streamers from its hilt. She snaps her free hand up and four translucent spectral swords of pale golden light materialize around her, orbiting her body in a fast level ring at waist height, each trailing thin light. As the ring spins she launches sideways into a one-handed cartwheel directly through the orbit, her legs sweeping overhead in turn, twin-tails, ribbons, half-skirt and streamers whipping through the gaps between the circling spectral blades, and lands back on both feet without breaking the ring's spin. She then drops low and whirls her real blade in a rising diagonal cut; the four spectral swords break from their orbit, streak outward away from her in four directions, and shatter against the stone floor of the platform into brief showers of golden petals of light that fade where they fall. She finishes upright with the blade raised before the torii gate, streamers and twin-tails swinging once and settling. The camera holds a Static Shot at chest height for the whole clip; the platform and gate stay fixed while only the swordswoman, her blade, the spectral swords, her hair, ribbons, skirts and streamers, and the golden petals move. Every frame is crisp and sharp as if shot at a very high shutter speed, her limbs, each ribbon, streamer and skirt pleat held in fine clean detail through every instant of the motion, deep depth of field front to back.\n\noverall_soundscape: A bright ringing shimmer as the four spectral swords materialize and orbit with a low circling hum, the sharp rustle and snap of ribbons, pleats and streamers through the cartwheel, both soles landing on stone with a clean double tap, a hard whoosh with the rising cut, four quick glassy bursts as the spectral blades shatter into petals, and a soft high wind over the sea of clouds with distant seabird cries.\n\nnon_diegetic_music: N/A",
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "132",
+        1
+      ],
+      "clip": [
+        "128",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "MiniMaxH3ImageToVideo"
+    }
+  },
+  "124": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "scheduler": "simple",
+      "steps": 25,
+      "denoise": 1,
+      "model": [
+        "127",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "BasicScheduler"
+    }
+  },
+  "133": {
+    "class_type": "PrimitiveFloat",
+    "inputs": {
+      "value": 5.0
+    },
+    "_meta": {
+      "title": "Float (duration)"
+    }
+  },
+  "132": {
+    "class_type": "ComfyMathExpression",
+    "inputs": {
+      "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17",
+      "values.a": [
+        "133",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "ComfyMathExpression"
+    }
+  },
+  "115": {
+    "class_type": "ResolutionSelector",
+    "inputs": {
+      "aspect_ratio": "1:1 (Square)",
+      "megapixels": 1.0,
+      "multiple": 32
+    },
+    "_meta": {
+      "title": "ResolutionSelector"
+    }
+  },
+  "135": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "res_multistep"
+    },
+    "_meta": {
+      "title": "KSamplerSelect"
+    }
+  },
+  "200": {
+    "class_type": "H3JerkOracle",
+    "inputs": {
+      "samples": [
+        "125",
+        0
+      ],
+      "length": [
+        "132",
+        1
+      ],
+      "q": 0.75,
+      "d_max": 4,
+      "ramp": true
+    }
+  },
+  "201": {
+    "class_type": "H3TimeSmear",
+    "inputs": {
+      "images": [
+        "240",
+        0
+      ],
+      "dilation": 4,
+      "hold_map": [
+        "240",
+        1
+      ]
+    }
+  },
+  "202": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "201",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    }
+  },
+  "203": {
+    "class_type": "H3V2VInit",
+    "inputs": {
+      "samples": [
+        "202",
+        0
+      ]
+    }
+  },
+  "204": {
+    "class_type": "H3InjectSchedule",
+    "inputs": {
+      "model": [
+        "127",
+        0
+      ],
+      "scheduler": "simple",
+      "total_steps": 25,
+      "inject": 0.7
+    }
+  },
+  "205": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 20260899
+    }
+  },
+  "206": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "inputs": {
+      "prompt": "integrated_multimodal_description: [Shot 1] 2D anime, cel-shaded, cinematic, a medium-wide shot frames a young battle-mage swordswoman alone on a stone platform before a great vermilion torii gate at a cliff edge above a rolling sea of dawn clouds, warm gold light breaking across the platform, small white seabirds far below. She has raven-black hair in two long twin-tails tied with white ribbons that hang to her waist. She wears a sleeveless crimson and white shrine-battle outfit with a bare back and shoulders, a short pleated white skirt with a long open crimson half-skirt trailing behind her knees, white ribbon tassels at both hips, fingerless long black gloves, and lace-topped white thigh-high stockings with red cord ties; she carries a curved crimson-lacquered blade trailing two long white streamers from its hilt. She snaps her free hand up and four translucent spectral swords of pale golden light materialize around her, orbiting her body in a fast level ring at waist height, each trailing thin light. As the ring spins she launches sideways into a one-handed cartwheel directly through the orbit, her legs sweeping overhead in turn, twin-tails, ribbons, half-skirt and streamers whipping through the gaps between the circling spectral blades, and lands back on both feet without breaking the ring's spin. She then drops low and whirls her real blade in a rising diagonal cut; the four spectral swords break from their orbit, streak outward away from her in four directions, and shatter against the stone floor of the platform into brief showers of golden petals of light that fade where they fall. She finishes upright with the blade raised before the torii gate, streamers and twin-tails swinging once and settling. The camera holds a Static Shot at chest height for the whole clip; the platform and gate stay fixed while only the swordswoman, her blade, the spectral swords, her hair, ribbons, skirts and streamers, and the golden petals move. Every frame is crisp and sharp as if shot at a very high shutter speed, her limbs, each ribbon, streamer and skirt pleat held in fine clean detail through every instant of the motion, deep depth of field front to back.\n\noverall_soundscape: A bright ringing shimmer as the four spectral swords materialize and orbit with a low circling hum, the sharp rustle and snap of ribbons, pleats and streamers through the cartwheel, both soles landing on stone with a clean double tap, a hard whoosh with the rising cut, four quick glassy bursts as the spectral blades shatter into petals, and a soft high wind over the sea of clouds with distant seabird cries.\n\nnon_diegetic_music: N/A",
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "201",
+        2
+      ],
+      "clip": [
+        "128",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    }
+  },
+  "207": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "127",
+        0
+      ],
+      "conditioning": [
+        "206",
+        0
+      ]
+    }
+  },
+  "208": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "205",
+        0
+      ],
+      "guider": [
+        "207",
+        0
+      ],
+      "sampler": [
+        "135",
+        0
+      ],
+      "sigmas": [
+        "204",
+        0
+      ],
+      "latent_image": [
+        "203",
+        0
+      ]
+    }
+  },
+  "209": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "208",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    }
+  },
+  "210": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": {
+      "samples": [
+        "208",
+        0
+      ],
+      "vae": [
+        "120",
+        0
+      ]
+    }
+  },
+  "211": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "209",
+        0
+      ],
+      "audio": [
+        "210",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": 8
+    }
+  },
+  "212": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": [
+        "211",
+        0
+      ],
+      "filename_prefix": "video/mainodes_window_dilated",
+      "format": "auto",
+      "codec": "auto"
+    }
+  },
+  "213": {
+    "class_type": "H3ExactRecover",
+    "inputs": {
+      "images": [
+        "209",
+        0
+      ],
+      "hold_map": [
+        "201",
+        1
+      ]
+    }
+  },
+  "214": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "221",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": 8,
+      "audio": [
+        "241",
+        1
+      ]
+    }
+  },
+  "215": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": [
+        "214",
+        0
+      ],
+      "filename_prefix": "video/mainodes_window_final",
+      "format": "auto",
+      "codec": "auto"
+    }
+  },
+  "216": {
+    "class_type": "H3JerkHeatmap",
+    "inputs": {
+      "images": [
+        "122",
+        0
+      ],
+      "samples": [
+        "125",
+        0
+      ],
+      "alpha": 0.55,
+      "strip_height": 96
+    }
+  },
+  "217": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "216",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": 8
+    }
+  },
+  "218": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": [
+        "217",
+        0
+      ],
+      "filename_prefix": "video/mainodes_window_oraclemap",
+      "format": "auto",
+      "codec": "auto"
+    }
+  },
+  "219": {
+    "class_type": "H3AudioRecover",
+    "inputs": {
+      "audio": [
+        "210",
+        0
+      ],
+      "hold_map": [
+        "201",
+        1
+      ],
+      "fps": 24,
+      "reference": [
+        "121",
+        0
+      ],
+      "reference_mix": 0.0
+    }
+  },
+  "230": {
+    "class_type": "H3MotionEditor",
+    "inputs": {
+      "images": [
+        "122",
+        0
+      ],
+      "editor_state": "",
+      "samples": [
+        "125",
+        0
+      ],
+      "oracle_hold_map": [
+        "200",
+        0
+      ],
+      "fps": 24,
+      "ramp": true,
+      "bridge": 8,
+      "invert_mask": false,
+      "outside_blocks": "baseline",
+      "paint_res": 512
+    },
+    "_meta": {
+      "title": "H3 Motion Editor: queue once to load the filmstrip, then drag blocks / paint / automate here and queue again"
+    }
+  },
+  "221": {
+    "class_type": "H3MotionComposite",
+    "inputs": {
+      "regenerated": [
+        "241",
+        0
+      ],
+      "baseline": [
+        "122",
+        0
+      ],
+      "mask": [
+        "230",
+        1
+      ],
+      "mask_is_soft": true,
+      "threshold": 0.35,
+      "grow": 0,
+      "feather": 0
+    },
+    "_meta": {
+      "title": "editor mask composite (soft passthrough: feathering already baked by the editor)"
+    }
+  },
+  "240": {
+    "class_type": "H3WindowPlan",
+    "inputs": {
+      "images": [
+        "122",
+        0
+      ],
+      "hold_map": [
+        "230",
+        0
+      ],
+      "max_dilated_frames": 209,
+      "window": 0,
+      "handle_frames": 12,
+      "snap_search": 24,
+      "grid_align": true,
+      "fps": 24,
+      "s_per_step": 0.0,
+      "est_steps": 18,
+      "overhead_s": 6.7
+    },
+    "_meta": {
+      "title": "[ALPHA] H3 Window Plan: split the pass into N windows. Set 'window' to 0, queue, then 1, queue ... read the report first"
+    }
+  },
+  "241": {
+    "class_type": "H3WindowCollect",
+    "inputs": {
+      "baseline": [
+        "122",
+        0
+      ],
+      "segment": [
+        "213",
+        0
+      ],
+      "splice_map": [
+        "240",
+        2
+      ],
+      "window_count": [
+        "240",
+        5
+      ],
+      "run_name": "window_run",
+      "feather_frames": 6,
+      "store_dir": "/tmp/h3_windows",
+      "baseline_audio": [
+        "121",
+        0
+      ],
+      "segment_audio": [
+        "219",
+        0
+      ],
+      "fps": 24,
+      "write": true,
+      "store_dtype": "float32 (exact)"
+    },
+    "_meta": {
+      "title": "[ALPHA] H3 Window Collect: banks each window on disk and splices them all once the last one lands"
+    }
+  }
+}

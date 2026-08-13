@@ -24,6 +24,21 @@ WEB_DIRECTORY = "./web"
 NODE_CLASS_MAPPINGS = dict(TIMESMEAR_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS = dict(TIMESMEAR_DISPLAY_MAPPINGS)
 
+# Rolling-window drivers (alpha, 2026-08-12). Three implementations of the
+# same idea, deliberately shipped side by side while they are compared on
+# real renders: the requeue pair lives in motion.py, the other two in their
+# own modules. They share the seam policy and the window planner's rules but
+# not its code. Expect at most one of them to survive.
+for _mod in ("window_loop", "window_expand"):
+    try:
+        _m = __import__(f"{__name__}.{_mod}", fromlist=["*"])
+    except Exception as _e:                       # an alpha module must never
+        print(f"[MAINodes] {_mod} not loaded: "   # take the whole pack down
+              f"{type(_e).__name__}: {_e}")
+        continue
+    NODE_CLASS_MAPPINGS.update(getattr(_m, "NODE_CLASS_MAPPINGS", {}))
+    NODE_DISPLAY_NAME_MAPPINGS.update(getattr(_m, "NODE_DISPLAY_NAME_MAPPINGS", {}))
+
 for _cls in (H3ContactSheet, H3ContactSheetDecode):
     _schema = _cls.GET_SCHEMA()
     NODE_CLASS_MAPPINGS[_schema.node_id] = _cls
