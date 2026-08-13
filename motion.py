@@ -1961,12 +1961,19 @@ def _cut_is_cold(holds, s, handle):
     return all(int(h) == 1 for h in holds[lo:hi + 1])
 
 
-def _plan_windows(holds, n, budget, handle, snap):
+def _plan_windows(holds, n, budget, handle, snap, cover=False):
     """Greedy left-to-right window plan. Budget is counted in DILATED
     frames (the thing that actually sets cost and VRAM), the cut is snapped
     to the best boundary within `snap` frames of the largest feasible one,
     and cold cuts / token starts / hold plateaus are preferred in that order
-    so no cut lands inside a ramp shoulder if any alternative exists."""
+    so no cut lands inside a ramp shoulder if any alternative exists.
+
+    cover=False plans over the held span only; frames outside it pass
+    through as baseline at splice time. cover=True tiles the WHOLE clip:
+    calm frames cost 1 dilated frame each and cut cold by construction, and
+    every frame gets the pass-2 repaint. That matters whenever the baseline
+    wire is not already at target quality (the upscale recipes), where a
+    passed-through frame keeps baseline resolution."""
     pre = [0] * (n + 1)
     for f in range(n):
         pre[f + 1] = pre[f] + int(holds[f])
@@ -1985,19 +1992,21 @@ def _plan_windows(holds, n, budget, handle, snap):
         return raw, _legal_ceil(raw)
 
     held = [i for i, h in enumerate(holds) if int(h) > 1]
-    if not held:
+    if not held and not cover:
         a, b = 0, n - 1
         raw, dil = 0 + n, _legal_ceil(n)
         return [{"k": 0, "core": (0, n - 1), "span": (a, b), "raw": n,
                  "dilated": dil, "hot_lo": False, "hot_hi": False,
                  "cut_at": None, "cut": None, "residual": dil - n}], held
 
+    lo = 0 if cover else held[0]
+    hi = n - 1 if cover else held[-1]
     budget = max(_legal_ceil(1), int(budget))         # 39 is the grid floor
-    out, c0, hot_lo = [], held[0], False
+    out, c0, hot_lo = [], lo, False
     while True:
         best_c1 = None
-        for c1 in range(c0, held[-1] + 1):
-            last = c1 >= held[-1]
+        for c1 in range(c0, hi + 1):
+            last = c1 >= hi
             hot_hi = (not last) and not _cut_is_cold(holds, c1 + 1, handle)
             if cost(c0, c1, hot_lo, hot_hi)[1] <= budget:
                 best_c1 = c1
@@ -2005,8 +2014,8 @@ def _plan_windows(holds, n, budget, handle, snap):
             f"max_dilated_frames={budget} is below the smallest possible "
             f"window ({cost(c0, c0, hot_lo, False)[1]} dilated frames at "
             f"handle_frames={handle}); raise the budget or cut the handles")
-        if best_c1 >= held[-1]:
-            c1, kind, hot_hi = held[-1], None, False
+        if best_c1 >= hi:
+            c1, kind, hot_hi = hi, None, False
         else:
             lo = max(c0, best_c1 - int(snap))
             ranked = []
@@ -2024,7 +2033,7 @@ def _plan_windows(holds, n, budget, handle, snap):
                     "raw": raw, "dilated": dil, "hot_lo": hot_lo,
                     "hot_hi": hot_hi, "cut_at": (c1 + 1) if kind else None,
                     "cut": kind, "residual": dil - raw})
-        if c1 >= held[-1]:
+        if c1 >= hi:
             break
         c0, hot_lo = c1 + 1, hot_hi
     return out, held
@@ -2048,6 +2057,15 @@ class H3WindowPlan:
         "length is what sets both the bill and the VRAM peak. Read your "
         "single-window number off H3 Segment Crop's report and set "
         "max_dilated_frames below whatever your card survived.\n\n"
+        "Coverage. 'full clip' (default) tiles windows over every frame, "
+        "so calm spans are repainted too; they are cheap (1 dilated frame "
+        "per frame, cold cuts by construction). 'held span' regenerates "
+        "only where the hold map fires and splices into the baseline "
+        "everywhere else, which is cheaper but has a trap on the upscale "
+        "recipes: the passed-through frames keep BASELINE resolution, so "
+        "the clip visibly goes soft the moment motion calms down. Pick "
+        "'held span' only when the baseline wire is already at the same "
+        "resolution as pass 2.\n\n"
         "Seam policy. A COLD cut is a boundary where the whole handle band "
         "is at hold 1: both handles are real baseline context and the splice "
         "crossfade behaves exactly as the shipped single-window path does. "
@@ -2083,6 +2101,15 @@ class H3WindowPlan:
             "handle_frames": ("INT", {"default": 12, "min": 2, "max": 48,
                               "tooltip": "context frames kept each side, same meaning as H3 Segment Crop"}),
         }, "optional": {
+            "coverage": (["full clip", "held span"],
+                         {"default": "full clip",
+                          "tooltip": "'full clip' tiles windows over EVERY frame, so calm spans "
+                                     "also get the pass-2 repaint (cheap: they cost 1 dilated "
+                                     "frame each and cut cold). 'held span' regenerates only "
+                                     "where the hold map fires; frames outside it pass through "
+                                     "as baseline. On an upscale recipe passed-through frames "
+                                     "keep BASELINE resolution, which reads as the clip going "
+                                     "soft the moment motion calms down"}),
             "snap_search": ("INT", {"default": 24, "min": 0, "max": 96,
                             "tooltip": "how far back from the largest feasible cut to look for a "
                                        "cold one / a token start. 0 = always cut at the budget limit"}),
@@ -2102,15 +2129,17 @@ class H3WindowPlan:
     CATEGORY = "image/minimax/motion"
 
     def plan(self, images, hold_map, max_dilated_frames=209, window=0,
-             handle_frames=12, snap_search=24, grid_align=True, fps=24,
-             s_per_step=0.0, est_steps=18, overhead_s=OVERHEAD_S):
+             handle_frames=12, coverage="full clip", snap_search=24,
+             grid_align=True, fps=24, s_per_step=0.0, est_steps=18,
+             overhead_s=OVERHEAD_S):
         images = images.detach().cpu()
         holds = [int(h) for h in json.loads(hold_map)["holds"]]
         n = images.shape[0]
         assert len(holds) == n, f"hold map covers {len(holds)}, clip has {n}"
 
+        cover = coverage == "full clip"
         plan, held = _plan_windows(holds, n, max_dilated_frames,
-                                   handle_frames, snap_search)
+                                   handle_frames, snap_search, cover)
         if grid_align:
             # grow EVERY window, not just the emitted one, so the plan the
             # report states does not depend on which k you happen to be on
@@ -2139,8 +2168,11 @@ class H3WindowPlan:
         tot = sum(x["dilated"] for x in plan)
         cold = sum(1 for x in plan if x["cut"] == "cold")
         hot = sum(1 for x in plan if x["cut"] == "hot")
-        lines = [f"plan: {len(plan)} window(s) over "
-                 f"{'f%d-f%d' % (held[0], held[-1]) if held else 'NOTHING'} "
+        span_txt = (f"the FULL clip f0-f{n - 1} (held span "
+                    + (f"f{held[0]}-f{held[-1]})" if held else "empty)")
+                    if cover else
+                    ('f%d-f%d' % (held[0], held[-1]) if held else 'NOTHING'))
+        lines = [f"plan: {len(plan)} window(s) over {span_txt} "
                  f"of {n}f, budget {max_dilated_frames} dilated frames, "
                  f"handles {handle_frames}"]
         hot_handle = 0
@@ -2148,7 +2180,8 @@ class H3WindowPlan:
             sa, sb = x["span"]
             xc0, xc1 = x["core"]
             cut = (f"cut at f{x['cut_at']} {x['cut'].upper()}"
-                   if x["cut"] else "ends at the held span")
+                   if x["cut"] else
+                   ("runs to the clip end" if cover else "ends at the held span"))
             core_d = sum(holds[xc0:xc1 + 1])
             hot_h = ((sum(holds[sa:xc0]) if x["hot_lo"] else 0)
                      + (sum(holds[xc1 + 1:sb + 1]) if x["hot_hi"] else 0))
@@ -2178,7 +2211,20 @@ class H3WindowPlan:
                          f"max_dilated_frames) or shorter handles is the fix")
         if not held:
             lines.append("  WARNING: the hold map holds nothing, so there is "
-                         "nothing to regenerate; one pass-through window")
+                         "nothing to dilate; "
+                         + ("windows are a straight repaint at hold 1"
+                            if cover else "one pass-through window"))
+        if not cover:
+            pa, pb = plan[0]["span"][0], plan[-1]["span"][1]
+            gaps = [g for g in (f"f0-f{pa - 1}" if pa > 0 else "",
+                                f"f{pb + 1}-f{n - 1}" if pb < n - 1 else "")
+                    if g]
+            if gaps:
+                lines.append(
+                    f"  NOTE: {' and '.join(gaps)} pass through as baseline, "
+                    f"unregenerated. On an upscale recipe those frames keep "
+                    f"BASELINE resolution and the clip goes soft there; set "
+                    f"coverage to 'full clip' to repaint them")
         lines.append("  " + _cost_report(n, dil_full, fps, s_per_step,
                                          est_steps, overhead_s,
                                          tail="the whole clip in one pass"))
