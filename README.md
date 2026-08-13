@@ -208,10 +208,12 @@ less of it.
 (alpha) is the upscale de-rope split into budgeted windows, for cards
 that cannot hold the whole dilated pass at once. **H3 Window Plan**
 divides the clip into as many windows as your `max_dilated_frames`
-budget requires and emits one per queue item: set `window` to 0, queue,
-read the plan report (wired to a preview node; it prices every window
-and names each cut cold or hot before anything runs), then queue the
-next. **H3 Window Collect** banks each rendered window to disk
+budget requires and emits one per queue item: queue once, read the plan
+report (wired to a preview node; it prices every window and names each
+cut cold or hot before anything runs), then set the queue batch count
+to the window count and queue once more -- the `window` widget
+increments itself per batch item, seed-widget style, so the whole set
+renders from one click. **H3 Window Collect** banks each rendered window to disk
 (`output/h3_windows`, so a crash or reboot costs one window, not the
 run) and splices the full set into the baseline once the last one
 lands. On our test clip the peak window was 62 latent tokens against

@@ -2048,9 +2048,12 @@ class H3WindowPlan:
         "Rolling-window regeneration for cards that cannot hold the whole "
         "dilated pass. H3 Segment Crop cuts ONE window around the held span; "
         "this splits that span into as many windows as your budget needs and "
-        "hands you window k. Set 'window' to 0, queue, then 1, queue (or use "
-        "ComfyUI's queue-batch to increment it) and feed each recovered "
-        "window into H3 Window Collect, which reassembles once all N exist. "
+        "hands you window k. The one-click flow: queue once, read the plan "
+        "report for the window count, then set the queue BATCH COUNT to that "
+        "number and queue once more; the 'window' widget increments itself "
+        "per batch item (its control defaults to 'increment', exactly like a "
+        "seed widget). Each recovered window feeds H3 Window Collect, which "
+        "reassembles once all N exist. "
         "Every window is an independent queue item, so an OOM on window 3 "
         "does not cost you windows 1 and 2.\n\n"
         "THE BUDGET IS IN DILATED FRAMES, not world frames: the dilated "
@@ -2097,7 +2100,11 @@ class H3WindowPlan:
                                    "tooltip": "budget per window in SMEARED frames (17k+5). "
                                               "209 = 17x12+5, 62 tokens"}),
             "window": ("INT", {"default": 0, "min": 0, "max": 64,
-                       "tooltip": "which window to emit this queue item; clamped to the plan"}),
+                       "control_after_generate": True,
+                       "tooltip": "which window to emit this queue item; clamped to the plan. "
+                                  "Leave the control on 'increment', set the queue batch "
+                                  "count to the report's window count, and queue ONCE: "
+                                  "each batch item renders the next window"}),
             "handle_frames": ("INT", {"default": 12, "min": 2, "max": 48,
                               "tooltip": "context frames kept each side, same meaning as H3 Segment Crop"}),
         }, "optional": {
