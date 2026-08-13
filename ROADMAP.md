@@ -127,15 +127,37 @@ say so and rename the thing.
   (`seamless_extension_derope.json`, 2026-08-12) already wraps the de-rope
   chain in a segment loop for a different purpose and is worth reading
   before designing ours.
-  Worth flagging because it inverts the obvious intuition: this may not be
-  the slow option. At the measured superlinear exponent above, splitting one
-  span into N windows costs roughly N^-0.75 of the single-window time, so
-  four windows is about a third of the compute before per-window VAE
-  overhead and duplicated handle frames eat into it. That is arithmetic on a
-  measured exponent, not a measurement, and the overheads are exactly the
-  part it ignores. Success: peak VRAM flat in clip length, seams invisible
-  in playback. Cheapest first measurement: run the shipped crop/splice pair
-  over two adjacent windows of one clip and look at the join.
+  It is also not the slow option, though by less than the bare exponent
+  suggests. Naive arithmetic says N windows cost N^-0.75 of the single-window
+  time, four windows for about a third. Fitting 266 corpus runs and then
+  charging for duplicated handle frames and grid padding gives **0.69x at 300
+  dilated frames, 0.45x at 600 and 0.37x at 1000**: real, and roughly half
+  the advertised saving. Handle duplication, not per-window overhead, is what
+  eats it, and it turns back into a loss somewhere around 8 to 12 windows.
+  The same fit found the step-independent cost is not constant either, it
+  scales at t^1.66 against the step's t^1.70, so it splits along with
+  everything else.
+  Two things are already true that this item assumed were missing. Chaining
+  `H3 Segment Splice` so each output becomes the next one's baseline
+  reconstructs the world to 6e-8 today, with no new code, so N-window
+  reassembly is not the gap. And core's graph-expansion API means owning the
+  iteration does not require a fat node that swallows the sampler.
+  The real difficulty is the seam, and specifically the HOT cut, a window
+  boundary landing inside a burst, which is exactly the case the feature is
+  requested for. Handle frames are forced to hold 1, so a crossfade there
+  blends repaired against un-repaired content at peak motion, and the audio
+  problem is worse: two independent foley takes of one impact, which no
+  crossfade width fixes. Cold cuts, where the boundary sits at hold 1, are
+  just the shipped single-window path N times and carry no new risk.
+  Success: peak VRAM flat in clip length, seams invisible in playback. Note
+  we cannot currently measure the first half of that, `peak_vram_mb` in our
+  own telemetry is flat at 55-62 GB from 5 to 294 frames. Cheapest first
+  measurement: run the shipped crop/splice pair over two adjacent windows of
+  one clip and look at the join. That needs no new code at all.
+  Worth saying plainly: two cheaper answers to "I OOM" already ship, lowering
+  `d_max` or raising `q`, and `H3 Segment Crop` as it stands. Rolling windows
+  only win for someone insisting on full `d_max` on a burst larger than their
+  card, and nobody has produced that clip yet.
 - **A ceiling on dilated frames** (field request, 2026-08-12). A max-length
   option that drops lower-priority frames to keep people off the OOM rail
   while the highest-priority ones still reach pass 2. In our terms a hard
