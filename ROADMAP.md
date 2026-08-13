@@ -112,6 +112,39 @@ say so and rename the thing.
   frame ratios. The practical consequence is counter-intuitive and worth
   repeating: many small windows can be cheaper than one large one, so
   pass-count is the wrong unit for comparing any of these approaches.
+- **Rolling-window regeneration, for cards that OOM on the dilated pass.**
+  What runs people out of memory is not the clip, it is the dilated span: a
+  5 s action clip regenerates as 11 to 13 s of frame data, so peak VRAM
+  tracks the burst budget rather than the runtime. Field reports put the
+  wall around 1 MP past 10 s on a 3090, 128 GB of system RAM
+  notwithstanding. Sliding a fixed-size window across world time,
+  regenerating each window and splicing, turns peak memory into a knob
+  instead of a consequence: the user sets the window, and clip length stops
+  mattering. `H3 Segment Crop` and `H3 Segment Splice` already do exactly
+  this for one window, with context handles and video plus sample-accurate
+  audio crossfades, so what is missing is orchestration and a seam policy
+  across N windows, not new machinery. A community continuation graph
+  (`seamless_extension_derope.json`, 2026-08-12) already wraps the de-rope
+  chain in a segment loop for a different purpose and is worth reading
+  before designing ours.
+  Worth flagging because it inverts the obvious intuition: this may not be
+  the slow option. At the measured superlinear exponent above, splitting one
+  span into N windows costs roughly N^-0.75 of the single-window time, so
+  four windows is about a third of the compute before per-window VAE
+  overhead and duplicated handle frames eat into it. That is arithmetic on a
+  measured exponent, not a measurement, and the overheads are exactly the
+  part it ignores. Success: peak VRAM flat in clip length, seams invisible
+  in playback. Cheapest first measurement: run the shipped crop/splice pair
+  over two adjacent windows of one clip and look at the join.
+- **A ceiling on dilated frames** (field request, 2026-08-12). A max-length
+  option that drops lower-priority frames to keep people off the OOM rail
+  while the highest-priority ones still reach pass 2. In our terms a hard
+  cap on the dilated budget, filled greedily from the top of the jerk
+  profile, so the pass fits the card and the hottest spans keep their holds.
+  Small change at the `_compile_hold_map` seam. The blocker sits upstream of
+  the cap: at today's false-positive rate a budget can be spent entirely on
+  a camera pan, so this wants the detector work in section 2 first, or it
+  will confidently protect the wrong frames.
 - **Spatial crop regeneration.** Time targeting and segment crop reduce
   FLOPs; spatial masks do not, they only blend. A spatial crop analog of
   segment crop would make "foveated" literal. Risks are context loss and
