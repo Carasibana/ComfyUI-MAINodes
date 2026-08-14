@@ -1171,16 +1171,19 @@ class H3AudioRecover:
             "fps": ("INT", {"default": 24, "min": 1, "max": 120}),
         }, "optional": {
             "reference": ("AUDIO", {"tooltip": "baseline clip audio (already real-time)"}),
-            "reference_mix": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0,
+            "reference_mix": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0,
                                         "step": 0.05,
-                                        "tooltip": "0 = regenerated foley only (lean), 1 = reference only (dense)"}),
+                                        "tooltip": "1 = the pass-1 reference track intact (default: regenerated "
+                                                   "audio quality varies, especially with turbo passes), "
+                                                   "0 = regenerated foley only (leaner, one performance). "
+                                                   "Mid values blend two takes and are happiest near the ends"}),
         }}
 
     RETURN_TYPES = ("AUDIO",)
     FUNCTION = "recover"
     CATEGORY = "audio/minimax/motion"
 
-    def recover(self, audio, hold_map, fps=24, reference=None, reference_mix=0.0):
+    def recover(self, audio, hold_map, fps=24, reference=None, reference_mix=1.0):
         import math
 
         import torchaudio  # noqa: F401  (phase_vocoder)

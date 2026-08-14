@@ -279,7 +279,7 @@ other edits. Each node's info button documents its inputs.
 | H3 V2V Init | `length` | 0 (auto) | wraps the encoded init as H3's joint AV latent; audio regenerates with the video |
 | H3 Exact Recover | | | drops held frames per the hold map; recovery is frame selection, not resampling |
 | H3 Audio Recover | `fps` | 24 | retimes the regenerated audio to the original clock with the same hold map, pitch preserved, so the recovered video keeps its own foley |
-| | `reference_mix` | 0 | thickness dial: the regenerated foley is scored for the slowed take and comes back leaner (arguably more realistic); blend the baseline's denser full-speed track back in, 0 to 1. The two performances drift slightly in timing, so mid values can double misaligned impacts; the dial is happiest near its ends |
+| | `reference_mix` | 1 | whose track survives: 1 = the pass-1 baseline audio intact (default; regenerated audio quality varies, especially off turbo passes), 0 = the regenerated foley (leaner, one performance). The two performances are different takes, so mid values blend them; the dial is happiest near its ends |
 | H3 Jerk Heatmap | `alpha`, `strip_height` | 0.55, 96 | the oracle-watching overlay from the demo clip, as a node |
 | H3 Probe Schedule | `probe_steps` | 6 | run only the head of the baseline; the early x0 feeds the oracle and the init. Raise it if the init loses choreography |
 | H3 Expert Schedule | `base_head` | 2 | split the injected schedule: base-model head for structure, turbo tail for refinement (tail defaults to turbo's native 4 steps) |
