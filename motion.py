@@ -1263,7 +1263,9 @@ class H3AudioRecover:
         window = torch.hann_window(n_fft)
         phase_adv = torch.linspace(0, math.pi * hop, n_fft // 2 + 1)[..., None]
         spf = sr / float(fps)                            # samples per frame
-        segs, cursor = [], 0.0
+        xfade = max(1, int(round(0.005 * sr)))           # 5 ms, 160 @ 32 kHz
+        segs, joins, cursor = [], [], 0.0
+        prev_tgt = 0
         for h, count in runs:
             src = h * count * spf
             # exact world-clock samples this run must occupy. The vocoder's
@@ -1274,22 +1276,47 @@ class H3AudioRecover:
             tgt = int(round(count * spf))
             s0, s1 = int(round(cursor)), int(round(cursor + src))
             cursor += src
-            seg = x[:, s0:min(s1, n)]
+            # pre-roll for the crossfade into the previous run: f output
+            # samples cost f*h source samples, taken from BEFORE s0, so both
+            # sides of the join carry the same material at their own rate and
+            # nothing is dropped. It lands ON TOP of the previous segment's
+            # tail, so the output length is exactly sum(tgt) either way.
+            f = 0 if not segs else min(xfade, tgt, prev_tgt, s0 // max(h, 1))
+            prev_tgt = tgt
+            seg = x[:, s0 - f * h:min(s1, n)]
             if seg.shape[1] == 0:
                 # source exhausted: hold the clock with silence instead of
                 # silently shortening every later segment's position
                 segs.append(torch.zeros(x.shape[0], tgt))
+                joins.append(0)
                 continue
             if h > 1:
                 spec = torch.stft(seg, n_fft, hop, window=window,
                                   return_complex=True)
                 spec = torchaudio.functional.phase_vocoder(spec, float(h),
                                                            phase_adv)
-                seg = torch.istft(spec, n_fft, hop, window=window)
-            if seg.shape[1] < tgt:
-                seg = torch.nn.functional.pad(seg, (0, tgt - seg.shape[1]))
-            segs.append(seg[:, :tgt])
-        y = torch.cat(segs, dim=1)
+                # length= is load-bearing: without it istft returns a
+                # hop-multiple that falls short of the target and the pad
+                # below appends digital silence at every held run's tail --
+                # an audible click on the 512-sample lattice.
+                seg = torch.istft(spec, n_fft, hop, window=window,
+                                  length=f + tgt)
+            if seg.shape[1] < f + tgt:
+                seg = torch.nn.functional.pad(seg, (0, f + tgt - seg.shape[1]))
+            segs.append(seg[:, :f + tgt])
+            joins.append(f)
+        parts = []
+        for seg, f in zip(segs, joins):
+            if f:
+                # equal-power crossfade: the two takes of this material are
+                # retimed at different rates, so they sum incoherently
+                t = torch.arange(1, f + 1, dtype=seg.dtype) / f
+                prev = parts[-1].clone()                 # never write into x
+                prev[:, -f:] = (prev[:, -f:] * torch.cos(t * (math.pi / 2))
+                                + seg[:, :f] * torch.sin(t * (math.pi / 2)))
+                parts[-1] = prev
+            parts.append(seg[:, f:])
+        y = torch.cat(parts, dim=1)
         if reference is None and reference_mix > 0:
             print(f"[H3AudioRecover] reference_mix={reference_mix} but no "
                   "reference audio is wired: the mix does NOTHING and the "
