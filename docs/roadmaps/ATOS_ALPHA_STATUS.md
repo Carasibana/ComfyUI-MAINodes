@@ -55,12 +55,19 @@ Companions: `ROADMAP.md` (methods under investigation), `TESTING_ALPHA.md`
    on the way out closes it.
 5. **Cost model calibration.** The superlinear per-step exponent was fitted
    at a single dilation; the exponent is untested elsewhere.
-6. **SAM-based subject targeting: NEXT UP (design under review,
-   2026-08-13).** Human-seeded subject selection driving the existing
-   Manual Hold Map / Motion Composite / V2V freeze machinery, so "fix my
-   subject, leave the background alone" stops requiring hand-drawn masks.
-   Selection persistence across motion is the hard part; a mask alone is
-   not an identity.
+6. **SAM-based subject targeting: NEXT UP (design reviewed 2026-08-13).**
+   Human-seeded subject selection driving the existing Manual Hold Map /
+   Motion Composite / V2V freeze machinery, so "fix my subject, leave the
+   background alone" stops requiring hand-drawn masks. Design review
+   findings that now shape the build: (a) the first enabler is a
+   TIME-VARYING freeze mask in `H3 V2V Init`, which today unions any mask
+   over time into one static plane; the latent `noise_mask` is already
+   shaped `(1, 1, t_lat, h, w)`, so this is tractable; (b) any tracking
+   state must name which clock its masks live on (world frames, dilated
+   latent frames, or segment-local frames; three clocks are in play);
+   (c) video segmenters' documented weak spot is thin fast-moving objects
+   and long occlusions, exactly this tool's regime, so mid-clip re-seeding
+   is a design requirement, not a fallback.
 7. **Adaptive compute / spatial foveation: the standing research thread.**
    Per-step cost is superlinear in token count (measured exponent ~1.7),
    so genuine spatial token reduction pays more than proportionally. The

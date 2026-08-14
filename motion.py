@@ -921,7 +921,7 @@ class H3V2VInit:
     CATEGORY = "latent/minimax/motion"
 
     def build(self, samples, length=0, oracle_samples=None, freeze_threshold=0.0,
-              freeze_grow=2, mask=None, mask_feather=32, invert_mask=False):
+              freeze_grow=2, mask=None, mask_feather=0, invert_mask=False):
         import torch.nn.functional as F
 
         import comfy.nested_tensor

@@ -267,6 +267,22 @@ Kept here so nobody re-derives them:
   rejected: it produced boundary stutter, and the root cause was traced to
   chunked VAE decode on rate-warped content. Content-level slowdown on a
   uniform model clock is the approach that survived.
+
+  **Reopened as a narrower question, 2026-08-13.** Two facts sharpen it.
+  First, verified by executing `comfy/ldm/minimax/model.py:_video_t_grid`:
+  H3's MM-RoPE time coordinate is already PHYSICAL, 5/3 RoPE units per
+  world frame (token spans 5/3 x (1, 4, 4, 4, 4)), so the positional
+  clock is a frame clock, not a token index. That means content dilation
+  currently misreports time to the model: a dilated pass gets RoPE time
+  proportional to dilated frames, and the model is generating what it
+  believes is a longer clip rather than slow motion. Second, the original
+  rejection was rooted in the decode path, not in RoPE itself, so it does
+  not settle this. The narrow experiment now on the table: keep content
+  dilation exactly as shipped, divide the RoPE t-grid by the local hold
+  density so the time axis reports TRUE world time, decode normally
+  (nothing rate-warped reaches the decoder), and A/B against the shipped
+  pipeline for beat duplication, which is the failure this would most
+  plausibly dissolve. Proposed, not run.
 - **Automatic spatial masks.** Rejected in playback. Automatic
   oracle-heat-driven compositing degraded other artifacts even where it
   fixed background timing. Hand-authored masks are a different question and
