@@ -108,7 +108,16 @@ measured on one card (peaks are torch-allocated for the whole process):
 | 5 s at 1.0 MP | 29 min | 43.8 GB | ~28 GB peak, ~20 GB sustained |
 
 The last column is what consumer cards see: without `--gpu-only` the
-text encoder leaves VRAM after encoding, which is default behavior. So
+text encoder leaves VRAM after encoding, which is default behavior.
+The first column is the one **H3 Conditioning Bank** attacks: it banks
+the encoded conditioning to disk and takes its `conditioning` input
+lazily, so a queue item that hits the bank never executes the encode
+node and the text encoder is not loaded at all. Wire it on any flow
+that re-runs one prompt: rolling windows, seed hunts, extension chains.
+Requeueing an unchanged graph does not need it (ComfyUI's node cache
+already serves the conditioning); queueing a second workflow in
+between, restarting, or editing anything upstream of the encode does,
+and that is the normal shape of a session. So
 a 5 s, 1.0 MP de-rope fits a 32 GB card with a few GB of headroom (the
 28 GB figure is a brief spike, under a minute total), and 3 s clips run
 comfortably. Resolution barely moves the peak (0.4 to 0.7 MP added less

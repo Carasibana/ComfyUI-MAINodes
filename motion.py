@@ -2653,6 +2653,181 @@ class H3WindowCollect:
         return (out, audio, len(have), True, "\n".join(lines))
 
 
+def _cond_to_cpu(obj):
+    """Deep copy a CONDITIONING onto the CPU, tensors detached.
+
+    CONDITIONING is a list of [tensor, dict]; the dict can nest lists and
+    dicts (H3 puts its keyframe/reference condition latents there). Anything
+    that is not a tensor or a plain container is returned as-is, and the
+    caller checks picklability before it writes.
+    """
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().to("cpu").clone()
+    if isinstance(obj, dict):
+        return {k: _cond_to_cpu(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        out = [_cond_to_cpu(v) for v in obj]
+        return tuple(out) if isinstance(obj, tuple) else out
+    return obj
+
+
+def _cond_shape_report(cond):
+    """One line per conditioning entry: the tensor shapes that matter."""
+    lines = []
+    for i, c in enumerate(cond):
+        t = c[0]
+        extra = []
+        for k, v in sorted(c[1].items()):
+            if isinstance(v, torch.Tensor):
+                extra.append(f"{k}{tuple(v.shape)}")
+            elif isinstance(v, (list, tuple)):
+                extra.append(f"{k}[{len(v)}]")
+        lines.append(f"  cond[{i}]: "
+                     + (f"{tuple(t.shape)} {t.dtype}" if isinstance(t, torch.Tensor)
+                        else type(t).__name__)
+                     + (", " + ", ".join(extra) if extra else ""))
+    return lines
+
+
+class H3ConditioningBank:
+    """Bank one encoded CONDITIONING to disk and serve it back without the
+    text encoder. The `conditioning` input is LAZY, so on a bank hit the
+    encode node (and the CLIP loader behind it) never executes."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-14.\n\n"
+        "Caches an encoded prompt on disk so a queue item can reuse it "
+        "without loading the text encoder. Wire it between the encode node "
+        "(MiniMax H3 Image to Video / Reference to Video) and the guider. "
+        "The first item encodes and banks; every later item that asks for "
+        "the same bank_key reads the tensors off disk, and because the "
+        "conditioning input is LAZY the encode node and its CLIP loader are "
+        "not executed at all. On this stack the H3 text encoder is a ~15 GB "
+        "resident model (21.2 GB peak measured on the 16 GB-simulated card), "
+        "which is the largest single thing a small card has to make room "
+        "for, and it has nothing to do with what you are generating.\n\n"
+        "WHAT THIS DOES AND DOES NOT FIX. Inside one ComfyUI process, "
+        "requeueing the SAME graph with only a downstream widget changed "
+        "(the rolling-window flow: H3 Window Plan's 'window') already hits "
+        "ComfyUI's own node cache, so the prompt is not re-encoded and this "
+        "node changes nothing. What flushes that cache is everything else: "
+        "queueing a different workflow in between (the default cache keeps "
+        "only what the CURRENT prompt uses), restarting ComfyUI, or editing "
+        "anything upstream of the encode. The bank survives all three, and "
+        "it is shared across graphs: a window run, a seed hunt and an "
+        "extension chain on one prompt encode once between them.\n\n"
+        "STALENESS is the price. The key is yours to manage: wire the same "
+        "STRING that feeds the encode node into 'prompt' and its hash "
+        "joins the filename, so editing the prompt misses the bank and "
+        "re-encodes instead of silently serving the old take. Nothing else "
+        "is fingerprinted - change the reference image, the canvas or the "
+        "clip length and you must change bank_key or set mode to refresh. "
+        "Conditioning is banked on the CPU and the model moves it to the "
+        "GPU itself, so a bank written under one VRAM mode loads under any "
+        "other.")
+
+    MODES = ["use bank if present (default)", "refresh (re-encode, overwrite)"]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "conditioning": ("CONDITIONING", {"lazy": True,
+                             "tooltip": "from the encode node; on a bank hit this link is "
+                                        "never evaluated, so the text encoder never loads"}),
+            "bank_key": ("STRING", {"default": "run",
+                         "tooltip": "names the bank. One key per (prompt, reference, canvas, "
+                                    "length): nothing but the prompt is fingerprinted for you"}),
+            "store_dir": ("STRING", {"default": "output/h3_conditioning",
+                          "tooltip": "a relative path lands inside the ComfyUI working "
+                                     "directory. Avoid /tmp: it is a RAM disk on most Linux "
+                                     "installs and the bank is meant to survive a reboot"}),
+            "mode": (cls.MODES, {"default": cls.MODES[0]}),
+        }, "optional": {
+            "prompt": ("STRING", {"forceInput": True, "multiline": True,
+                       "tooltip": "wire the same text that feeds the encode node; its hash "
+                                  "joins the filename so an edited prompt cannot be served "
+                                  "a stale bank"}),
+        }}
+
+    RETURN_TYPES = ("CONDITIONING", "STRING")
+    RETURN_NAMES = ("conditioning", "report")
+    FUNCTION = "bank"
+    CATEGORY = "conditioning/minimax"
+
+    # ---- keying -----------------------------------------------------------
+
+    @staticmethod
+    def _path(store_dir, bank_key, prompt):
+        import hashlib
+        import os
+        import re
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(bank_key)) or "run"
+        if prompt is not None:
+            h = hashlib.sha1(str(prompt).encode("utf-8")).hexdigest()[:8]
+            safe = f"{safe}__{h}"
+        return os.path.join(store_dir, f"{safe}.cond.pt")
+
+    # ---- lazy gate: this is the whole point of the node --------------------
+
+    def check_lazy_status(self, bank_key, store_dir, mode,
+                          conditioning=None, prompt=None):
+        """Ask for the conditioning input ONLY when the bank cannot serve it.
+
+        Returning an empty list tells ComfyUI everything needed is present,
+        and the executor then never stages the encode node (execution.py
+        make_input_strong_link is only called for the names returned here).
+        """
+        import os
+        if conditioning is not None:
+            return []
+        if mode.startswith("refresh"):
+            return ["conditioning"]
+        p = self._path(store_dir, bank_key, prompt)
+        try:
+            ok = os.path.getsize(p) > 0
+        except OSError:
+            ok = False
+        return [] if ok else ["conditioning"]
+
+    # ---- run --------------------------------------------------------------
+
+    def bank(self, conditioning=None, bank_key="run",
+             store_dir="output/h3_conditioning", mode=MODES[0], prompt=None):
+        import os
+        path = self._path(store_dir, bank_key, prompt)
+
+        if conditioning is None:                  # bank hit: TE never loaded
+            payload = torch.load(path, map_location="cpu", weights_only=False)
+            cond = payload["conditioning"]
+            mb = os.path.getsize(path) / 1e6
+            lines = [f"bank HIT: {path} ({mb:.1f} MB), text encoder not "
+                     f"loaded for this item"]
+            lines += _cond_shape_report(cond)
+            if payload.get("prompt_head"):
+                lines.append(f"  banked from prompt: {payload['prompt_head']}")
+            return (cond, "\n".join(lines))
+
+        # miss (or refresh): the encode ran, so bank it for the next item
+        lines = [("bank REFRESH: re-encoded and overwriting "
+                  if mode.startswith("refresh") else "bank MISS: encoded and "
+                  "writing ") + path]
+        lines += _cond_shape_report(conditioning)
+        try:
+            os.makedirs(store_dir or ".", exist_ok=True)
+            tmp = path + ".tmp"
+            torch.save({"conditioning": _cond_to_cpu(conditioning),
+                        "prompt_head": (str(prompt)[:120] if prompt else ""),
+                        "format": 1}, tmp)
+            os.replace(tmp, path)                 # atomic: no half-written bank
+            lines.append(f"  {os.path.getsize(path) / 1e6:.1f} MB banked; the "
+                         f"next queue item on this key skips the text encoder")
+        except Exception as e:                    # a cache must never kill a run
+            lines.append(f"  NOT BANKED ({type(e).__name__}: {e}); the "
+                         f"conditioning passes through unchanged and every "
+                         f"item will keep re-encoding")
+        return (conditioning, "\n".join(lines))
+
+
 class _AnyType(str):
     def __ne__(self, other):
         return False
@@ -2716,6 +2891,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3SegmentSplice": H3SegmentSplice,
     "H3WindowPlan": H3WindowPlan,
     "H3WindowCollect": H3WindowCollect,
+    "H3ConditioningBank": H3ConditioningBank,
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3VideoFit": "H3 Video Fit (source clip -> 17k+5 frames) [alpha]",
@@ -2739,4 +2915,5 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3SegmentSplice": "H3 Segment Splice (crossfade reassembly) [alpha]",
     "H3WindowPlan": "H3 Window Plan (split the pass into N windows) [alpha]",
     "H3WindowCollect": "H3 Window Collect (bank windows, splice when full) [alpha]",
+    "H3ConditioningBank": "H3 Conditioning Bank (encode once, no TE per item) [alpha]",
 }
