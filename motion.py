@@ -165,6 +165,66 @@ def _token_count(frames):
     return (_legal_ceil(frames) - 5) // LEGAL_STEP * 5 + 2
 
 
+# ---------------------------------------------------------------- true clock
+# MM-RoPE's temporal coordinate is PHYSICAL: 5/3 RoPE units per WORLD frame,
+# token spans 5/3 x (1,4,4,4,4) [SRC comfy/ldm/minimax/model.py:30-91]. A
+# de-roped (time-smeared) clip therefore misreports itself: N world frames
+# smeared to M dilated frames read as an M-frame clip, i.e. a LONGER take, not
+# slow motion. The functions below rebuild the per-token t-spans so each
+# dilated frame advances time at its WORLD rate (1/hold of a world frame), so
+# the clip's total RoPE duration equals its WORLD duration.
+#
+# CLOCK/ORIGIN (mechanics section 8): input `holds` are indexed by WORLD frame
+# (origin = world frame 0); the returned spans are indexed by LATENT TOKEN of
+# the DILATED clip (origin = dilated frame 0, which is world frame 0); units
+# are RoPE units, ROPE_UNITS_PER_FRAME per world frame.
+ROPE_UNITS_PER_FRAME = 5.0 / 3.0
+
+
+def _snap_holds(holds):
+    """H3TimeSmear's legal-snap, replayed: the 17k+5 tail pad lives in the
+    LAST hold (motion.py H3TimeSmear.smear, `holds[-1] += target - sum`).
+
+    So padding frames are extra copies of the last WORLD frame, and under the
+    true clock they carry 1/holds[-1] world-frames each like every other copy
+    in that group: the pad costs no extra world time, the final world frame is
+    simply held longer. Idempotent on a hold map that is already snapped."""
+    holds = [int(h) for h in holds]
+    holds[-1] += _legal_ceil(sum(holds)) - sum(holds)
+    return holds
+
+
+def true_clock_spans(holds):
+    """Density-corrected per-token RoPE t-spans for a smeared clip.
+
+    holds: per-world-frame integer hold counts (H3TimeSmear's hold_map_used).
+    Returns a list of float spans, one per latent token of the dilated clip,
+    drop-in for comfy.ldm.minimax.model._video_t_spans(t_lat).
+
+    Each dilated frame is one of h copies of a world frame, so it advances
+    1/h world frames; a token's span is ROPE_UNITS_PER_FRAME x the world time
+    its covered dilated frames represent. Consequences that the unit test
+    pins: the spans sum to len(holds) x ROPE_UNITS_PER_FRAME (world duration,
+    exactly, pad included), they are all positive (so the grid is strictly
+    increasing), and holds all-1 returns the stock grid unchanged."""
+    holds = _snap_holds(holds)
+    length = sum(holds)
+    per_frame = [1.0 / h for h in holds for _ in range(h)]   # world frames/frame
+    t_lat = (length - 5) // LEGAL_STEP * 5 + 2
+    return [ROPE_UNITS_PER_FRAME * float(sum(per_frame[a:b + 1]))
+            for a, b in _token_frame_spans(t_lat)]
+
+
+def true_clock_grid(holds):
+    """Origin-0 token t-coordinates: exclusive cumsum of true_clock_spans,
+    mirroring comfy.ldm.minimax.model._video_t_grid(n, 0)."""
+    out, cur = [], 0.0
+    for s in true_clock_spans(holds):
+        out.append(cur)
+        cur += s
+    return out
+
+
 # Fixed per-render cost that is NOT sampling: model/LoRA setup, VAE encode and
 # decode, node overhead. Measured 2026-08-12, 1.5 MP pass 2 on GPU1, warm:
 # 124.8 s at 1 step, 209.9 / 212.8 at 2, 293.6 at 3 — a straight line of
@@ -881,6 +941,105 @@ class H3ExactRecover:
             cur += h
         assert cur == images.shape[0], (cur, images.shape[0])
         return (images[torch.tensor(starts)],)
+
+
+_TRUE_CLOCK = {"spans": None}   # armed per run; never left set (see _wrap)
+
+
+def _install_true_clock_patch():
+    """Chain a density-corrected override onto _video_t_spans, once.
+
+    Same sanctioned mechanism as h3-motion-lab's H3LocalRate
+    (custom_nodes/h3-motion-lab/__init__.py:139-153): the packed layout is
+    built in extra_conds BEFORE sampler.sample runs, so the override lives in
+    module state, is armed at node-execution time and disarmed in a finally.
+    We chain whatever is currently bound (so loading order with h3-motion-lab
+    does not matter and both warps compose) and guard on exact token count, so
+    reference-video blocks and any other call keep the stock grid."""
+    import comfy.ldm.minimax.model as _mm
+    if getattr(_mm._video_t_spans, "_h3_true_clock", False):
+        return
+    prev = _mm._video_t_spans
+
+    def patched(n):
+        spans = _TRUE_CLOCK["spans"]
+        if spans is not None and len(spans) == n:   # exact-length guard
+            return list(spans)
+        return prev(n)
+
+    patched._h3_true_clock = True
+    _mm._video_t_spans = patched
+
+
+class _TrueClockSampler:
+    def __init__(self, inner, spans):
+        self.inner = inner
+        self.spans = spans
+
+    def max_denoise(self, model_wrap, sigmas):
+        return self.inner.max_denoise(model_wrap, sigmas)
+
+    def sample(self, *args, **kwargs):
+        _TRUE_CLOCK["spans"] = self.spans      # belt; layout is usually prebuilt
+        try:
+            return self.inner.sample(*args, **kwargs)
+        finally:
+            _TRUE_CLOCK["spans"] = None        # never leak the clock into later runs
+
+
+class H3TrueClock:
+    """EXPERIMENTAL: tell the model the smeared clip's true world duration.
+
+    Divides the RoPE t-grid by the local hold density from H3 Time Smear's
+    hold map, so a de-roped clip occupies its WORLD duration on the physical
+    time axis instead of its dilated one. Wraps a SAMPLER, scoped to one run.
+    """
+
+    DESCRIPTION = (
+        "EXPERIMENTAL, default-off, off-distribution: the model was trained "
+        "on uniform time grids and has never seen the one this node builds. "
+        "Expect it to be able to make things worse.\n\n"
+        "What it does: H3's RoPE time axis is physical (5/3 units per world "
+        "frame), so a time-smeared clip reads to the model as a LONGER take "
+        "rather than as slow motion — which is why unfrozen background agents "
+        "(gulls, crowds) animate on through the held frames and come out "
+        "ACCELERATED after H3 Exact Recover. This node divides each latent "
+        "token's RoPE span by the local hold density, so the dilated clip's "
+        "total RoPE duration equals its world duration and held copies share "
+        "one world frame's worth of time.\n\n"
+        "Wire H3 Time Smear's hold_map_used straight in (the tail pad it "
+        "folded into the last hold rides along: pad frames are extra copies "
+        "of the final world frame and cost no extra world time). Wire the "
+        "same sampler you would otherwise pass to SamplerCustomAdvanced. "
+        "Judged on: does world-speed hold for background agents, and does "
+        "beat duplication drop.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "sampler": ("SAMPLER",),
+            "hold_map": ("STRING", {"default": "", "forceInput": True,
+                         "tooltip": "hold_map_used from the H3 Time Smear that made this clip"}),
+        }}
+
+    RETURN_TYPES = ("SAMPLER",)
+    RETURN_NAMES = ("sampler",)
+    FUNCTION = "wrap"
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    @classmethod
+    def IS_CHANGED(cls, *a, **k):
+        # The layout is prebuilt in extra_conds BEFORE sampler.sample runs, so
+        # the override must be armed at node-execution time — and the node must
+        # re-execute every run or a cached hit leaves it disarmed.
+        return float("nan")
+
+    def wrap(self, sampler, hold_map):
+        holds = json.loads(hold_map)["holds"]
+        spans = true_clock_spans(holds)
+        _install_true_clock_patch()
+        _TRUE_CLOCK["spans"] = spans   # armed NOW, before extra_conds builds the layout
+        return (_TrueClockSampler(sampler, spans),)
 
 
 class H3V2VInit:
@@ -2541,6 +2700,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3ManualHoldMap": H3ManualHoldMap,
     "H3TimeSmear": H3TimeSmear,
     "H3ExactRecover": H3ExactRecover,
+    "H3TrueClock": H3TrueClock,
     "H3V2VInit": H3V2VInit,
     "H3InjectSchedule": H3InjectSchedule,
     "H3JerkHeatmap": H3JerkHeatmap,
@@ -2563,6 +2723,7 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3ManualHoldMap": "H3 Manual Hold Map (ranges to holds, gate) [alpha]",
     "H3TimeSmear": "H3 Time Smear (integer holds)",
     "H3ExactRecover": "H3 Exact Recover (24fps frame selection)",
+    "H3TrueClock": "H3 True Clock (density-corrected RoPE t-grid) [experimental]",
     "H3V2VInit": "H3 V2V Init (nested AV latent)",
     "H3InjectSchedule": "H3 Inject Schedule (v2v sigmas, 0.70)",
     "H3JerkHeatmap": "H3 Jerk Heatmap (oracle overlay tile)",
