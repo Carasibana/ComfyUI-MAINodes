@@ -1,0 +1,247 @@
+{
+ "plan_version": 0,
+ "id": "fixture0000uniform25000000000000",
+ "revision": 0,
+ "clip": {
+  "path": "clip_uniform.mp4",
+  "frames": 124,
+  "fps": 24.0,
+  "width": 1152,
+  "height": 640
+ },
+ "lanes": [
+  {
+   "id": "lane0000uniform2500000000000000",
+   "type": "generation_density",
+   "enabled": true,
+   "proposer": "fixture",
+   "ceiling": 4.0,
+   "envelope": [
+    [
+     0,
+     2.5
+    ],
+    [
+     123,
+     2.5
+    ]
+   ]
+  }
+ ],
+ "settings": {
+  "intent": {
+   "regen_strength": 0.45,
+   "prompt": "",
+   "hold_expansion_to_clip_end": true
+  },
+  "constraints": {
+   "max_regen_seconds": 0.0,
+   "context_seconds": 0.5
+  },
+  "execution_preferences": {
+   "seed": 1,
+   "steps": 25,
+   "backend": {}
+  },
+  "delivery": {
+   "output_prefix": "video/fixture_25",
+   "sync_policy": "exact_trim"
+  }
+ },
+ "provenance": {
+  "proposed_by": "fixture",
+  "edited": false,
+  "created": "2026-08-14T18:50:34",
+  "history": [],
+  "fixture_note": "flat fractional density: mixed integer holds"
+ },
+ "compiled": {
+  "h3": {
+   "fingerprint": "bf0a8c5d3b7f5b72dee703cbdd95899b84288ce139461cfd99e9921442331776",
+   "backend": "h3",
+   "versions": {
+    "model_spec": "h3-1.0",
+    "recipe_profile": "h3-recipe-2026-08-14",
+    "compiler": "h3-compile-0.1"
+   },
+   "semantic_hash": "c9845013318449a5537e446a0c4f2cdf6c5e0ca6d38cdb71e3ff1981a3b54cf3",
+   "derived_from": {
+    "plan_id": "fixture0000uniform25000000000000",
+    "revision": 0,
+    "semantic_hash": "c9845013318449a5537e446a0c4f2cdf6c5e0ca6d38cdb71e3ff1981a3b54cf3"
+   },
+   "artifact": {
+    "window": {
+     "start": 0,
+     "len": 124
+    },
+    "hold_map": {
+     "holds": [
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3,
+      2,
+      3
+     ],
+     "world_len": 124
+    },
+    "dilated_frames": 311,
+    "tokens": {
+     "world": 37,
+     "dilated": 92
+    },
+    "guide_dilated_idx": 308,
+    "added_frames": 187,
+    "drawn_average_density": 2.5,
+    "achieved_average_density": 2.5080645161290325,
+    "expand_note": null,
+    "graph_sha256": "b2e254f33a14cd1d6dfd4a34b5bc5568e8913af5913ae3985f06a7417df14dbc",
+    "equivalent_clip_time_x": 4.103538
+   },
+   "receipt": {
+    "graph_path": null,
+    "estimate": {
+     "geometry": {
+      "work_units_plan": 92.0,
+      "work_units_plain": 37.0,
+      "steps": 11,
+      "frames_plan": 311,
+      "frames_plain": 124,
+      "fps": 24.0,
+      "pixels": 737280,
+      "note": "window 124f = 37 tokens of the clip's 37; the head/tail frames are not regenerated at all"
+     },
+     "equivalent_clip_time_x": 4.103538005725413,
+     "seconds": null,
+     "seconds_why": "no calibration runs on record; anchor-only reference: scaled from anchor 32 units -> 4.97 s/step (t2c_c gate-1 render 2026-08-14 21:55 (15 sampled steps, 4.97 s/it mean, 107f dilated window))",
+     "vram_fit": "unknown",
+     "vram_fit_why": "no flight-recorder history for this device/model yet \u2014 the fit line calibrates on your first run"
+    },
+    "warnings": [
+     "dilated length 311 is not audio-exact (nearest exact lengths (39, 90, 141, 192, 243); error 8.3 ms). sync_policy=exact_trim handles it for a single clip; do not CHAIN this segment until pad/resample/conform_at_end exist [TODO T2]"
+    ],
+    "sync_policy": "exact_trim",
+    "compiled_at": "2026-08-14T18:50:34"
+   }
+  }
+ }
+}

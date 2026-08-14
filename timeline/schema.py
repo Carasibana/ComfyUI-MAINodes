@@ -532,9 +532,46 @@ def save(plan, path):
     return path
 
 
-def load(path):
+def load(path, migrate_in_place=True):
     with open(path) as fh:
-        return json.load(fh)
+        plan = json.load(fh)
+    return migrate(plan) if migrate_in_place else plan
+
+
+def migrate(plan):
+    """Bring an older v0 document up to the current v0 shape, in memory.
+
+    v0 IS EXPERIMENTAL and moved twice on 2026-08-14: the density lane was
+    briefly called "temporal", settings were flat before they were grouped,
+    and semantic objects did not carry ids. All three are mechanical, so a
+    plan written that morning still opens. It does NOT bump the revision:
+    migration is not an edit to the artist's intent.
+
+    Note that filling in a missing id CHANGES the semantic hash, which is
+    correct — an object that had no identity is not the same document as one
+    that has it — so a migrated plan recompiles rather than trusting a cache
+    keyed to the old shape.
+    """
+    if not isinstance(plan, dict):
+        return plan
+    plan.setdefault("id", new_id())
+    plan.setdefault("revision", 0)
+    for lane in plan.get("lanes") or []:
+        if not isinstance(lane, dict):
+            continue
+        lane.setdefault("id", new_id())
+        t = lane.get("type")
+        if t in LANE_TYPE_ALIASES:
+            lane["type"] = LANE_TYPE_ALIASES[t]
+        region = lane.get("region")
+        if isinstance(region, dict):
+            region.setdefault("id", new_id())
+    s = plan.get("settings")
+    if isinstance(s, dict) and not any(g in s for g in SETTING_GROUPS):
+        flat, plan["settings"] = dict(s), _blank_settings()
+        for k, v in flat.items():
+            set_setting(plan, k, v)
+    return plan
 
 
 def put_compiled(plan, backend_id, artifact, receipt=None, versions=None):

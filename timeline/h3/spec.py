@@ -96,11 +96,16 @@ class H3ModelSpec(object):
                      if self.audio_is_exact(n))
 
     def audio_error_ms(self, frames):
-        """How far off an inexact length is, in milliseconds of audio."""
+        """How far off an inexact length is, in milliseconds of audio.
+
+        frames*40/24 audio-latent frames: the remainder is in 1/24ths of a
+        latent frame, and a latent frame is 1/40 s. Hence the two divisions
+        — dropping either one is how you get a plausible-looking 200 ms.
+        """
         num, den = self.audio_latent_frames(frames)
         rem = num % den
         off = min(rem, den - rem) if rem else 0
-        return off / float(self.audio_latent_fps) * 1000.0
+        return off / float(den) / float(self.audio_latent_fps) * 1000.0
 
 
 SPEC = H3ModelSpec()

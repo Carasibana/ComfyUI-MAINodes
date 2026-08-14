@@ -24,8 +24,9 @@ from .h3.gridlaw import motion as _motion
 
 ANY = _motion.ANY
 
-DEFAULT_PLAN_DIR = "/mnt/work/ai/apps/ComfyUI/output/timeline"
-DEFAULT_GRAPH_DIR = "/mnt/work/ai/apps/ComfyUI-ModelCatalog/workflows"
+DEFAULT_PLAN_DIR = os.environ.get("H3_TIMELINE_PLAN_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "output", "timeline"))
+DEFAULT_GRAPH_DIR = os.environ.get("H3_TIMELINE_GRAPH_DIR", DEFAULT_PLAN_DIR)
 
 
 def _strip(plan, compiled=None, height=160, width=None):
@@ -227,9 +228,11 @@ class H3TimelineRender:
                                          "port": int(port),
                                          "recorder_path": recorder_path})
         schema.save(plan, plan_path)
-        cmd = ("/mnt/work/ai/venvs/comfyui-cu132/bin/python "
+        launcher = os.environ.get("H3_TIMELINE_QUEUE_CMD",
+               "/mnt/work/ai/venvs/comfyui-cu132/bin/python "
                "/mnt/work/ai/apps/ComfyUI-ModelCatalog/benchmarks/scripts/"
-               f"queue_scene.py {graph_path} --tag timeline --port {int(port)}")
+               "queue_scene.py")
+        cmd = f"{launcher} {graph_path} --tag timeline --port {int(port)}"
         report = "\n".join([
             f"plan {plan.get('id', '?')[:8]} rev {plan.get('revision', 0)} "
             f"({'recompiled after an edit' if stale else 'cache was current'})",
@@ -252,15 +255,19 @@ class H3RecordStart:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {"anything": (ANY, {}),
-                             "key": ("STRING", {"default": "default"})}}
+                             "key": ("STRING", {"default": "default"})},
+                "optional": {"log_path": ("STRING", {"default": "",
+                             "tooltip": "ComfyUI's log file, if you have one. "
+                             "Its size is noted NOW so the streamed flag can "
+                             "only be read from lines this run wrote"})}}
 
     RETURN_TYPES = (ANY,)
     RETURN_NAMES = ("anything",)
     FUNCTION = "go"
     CATEGORY = "latent/minimax/timeline"
 
-    def go(self, anything, key="default"):
-        recorder.start(key)
+    def go(self, anything, key="default", log_path=""):
+        recorder.start(key, log_path=log_path or None)
         return (anything,)
 
 

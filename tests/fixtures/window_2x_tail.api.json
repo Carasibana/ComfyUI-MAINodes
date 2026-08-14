@@ -1,0 +1,409 @@
+{
+ "127": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "minimax_h3/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+   "weight_dtype": "default"
+  },
+  "_meta": {
+   "title": "base model"
+  }
+ },
+ "128": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "minimax_h3/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+   "type": "minimax",
+   "device": "default"
+  },
+  "_meta": {
+   "title": "text encoder"
+  }
+ },
+ "119": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "minimax_h3/minimax_h3_video_vae_fp16.safetensors"
+  },
+  "_meta": {
+   "title": "video VAE"
+  }
+ },
+ "300": {
+  "class_type": "PathchSageAttentionKJ",
+  "inputs": {
+   "model": [
+    "127",
+    0
+   ],
+   "sage_attention": "auto",
+   "allow_compile": false
+  },
+  "_meta": {
+   "title": "sage attention"
+  }
+ },
+ "301": {
+  "class_type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
+  "inputs": {
+   "model": [
+    "300",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "H3 sage patch"
+  }
+ },
+ "302": {
+  "class_type": "MiniMaxChunkFeedForward",
+  "inputs": {
+   "model": [
+    "301",
+    0
+   ],
+   "chunks": 2,
+   "seq_threshold": 65536
+  },
+  "_meta": {
+   "title": "chunked FF"
+  }
+ },
+ "135": {
+  "class_type": "KSamplerSelect",
+  "inputs": {
+   "sampler_name": "gradient_estimation"
+  },
+  "_meta": {
+   "title": "sampler"
+  }
+ },
+ "400": {
+  "class_type": "LoadVideo",
+  "inputs": {
+   "file": "seedhunt_20260963_00001_.mp4"
+  },
+  "_meta": {
+   "title": "world clip: 124f 1152x640 24.0fps"
+  }
+ },
+ "401": {
+  "class_type": "GetVideoComponents",
+  "inputs": {
+   "video": [
+    "400",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "components"
+  }
+ },
+ "402": {
+  "class_type": "H3VideoFit",
+  "inputs": {
+   "images": [
+    "401",
+    0
+   ],
+   "mode": "trim tail (default)",
+   "max_frames": 0,
+   "fps": [
+    "401",
+    2
+   ],
+   "audio": [
+    "401",
+    1
+   ]
+  },
+  "_meta": {
+   "title": "fit to 17k+5"
+  }
+ },
+ "410": {
+  "class_type": "ImageFromBatch",
+  "inputs": {
+   "image": [
+    "402",
+    0
+   ],
+   "batch_index": 68,
+   "length": 56
+  },
+  "_meta": {
+   "title": "WINDOW crop world frames 68..123 (68 on the 17-phase; 56 legal)"
+  }
+ },
+ "403": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "410",
+    0
+   ],
+   "vae": [
+    "119",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "encode the 56f window"
+  }
+ },
+ "404": {
+  "class_type": "H3TemporalInsert",
+  "inputs": {
+   "samples": [
+    "403",
+    0
+   ],
+   "hold_map": "{\"holds\": [1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2], \"world_len\": 56}",
+   "init_mode": "lerp",
+   "length": 0,
+   "noise_seed": 0,
+   "expand_to_end": false
+  },
+  "_meta": {
+   "title": "compiled hold map, window-local: [1]*5+[2]*51 = 107f. expand_to_end already applied by the compiler, so the node must not rewrite it again"
+  }
+ },
+ "522": {
+  "class_type": "H3InjectSchedule",
+  "inputs": {
+   "model": [
+    "302",
+    0
+   ],
+   "scheduler": "beta",
+   "total_steps": 25,
+   "inject": 0.45,
+   "preset": "custom"
+  },
+  "_meta": {
+   "title": "inject = plan settings.regen_strength"
+  }
+ },
+ "523": {
+  "class_type": "RandomNoise",
+  "inputs": {
+   "noise_seed": 20260817
+  },
+  "_meta": {
+   "title": "seed from the plan"
+  }
+ },
+ "524": {
+  "class_type": "MiniMaxH3ImageToVideo",
+  "inputs": {
+   "clip": [
+    "128",
+    0
+   ],
+   "vae": [
+    "119",
+    0
+   ],
+   "prompt": "",
+   "width": 1152,
+   "height": 640,
+   "length": 107
+  },
+  "_meta": {
+   "title": "conditioning only; length = DILATED 107 so AddGuide resolves on the dilated clock"
+  }
+ },
+ "405": {
+  "class_type": "ImageFromBatch",
+  "inputs": {
+   "image": [
+    "402",
+    0
+   ],
+   "batch_index": 123,
+   "length": 1
+  },
+  "_meta": {
+   "title": "TAIL GUIDE source: world frame 123 (window-local 55)"
+  }
+ },
+ "406": {
+  "class_type": "MiniMaxH3AddGuide",
+  "inputs": {
+   "positive": [
+    "524",
+    0
+   ],
+   "vae": [
+    "119",
+    0
+   ],
+   "latent": [
+    "524",
+    1
+   ],
+   "image": [
+    "405",
+    0
+   ],
+   "frame_idx": 105
+  },
+  "_meta": {
+   "title": "tail guide at dilated 105 = the prefix sum of the hold map up to the final world frame (content-exact placement)"
+  }
+ },
+ "525": {
+  "class_type": "BasicGuider",
+  "inputs": {
+   "model": [
+    "302",
+    0
+   ],
+   "conditioning": [
+    "406",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "guider"
+  }
+ },
+ "526": {
+  "class_type": "SamplerCustomAdvanced",
+  "inputs": {
+   "noise": [
+    "523",
+    0
+   ],
+   "guider": [
+    "525",
+    0
+   ],
+   "sampler": [
+    "135",
+    0
+   ],
+   "sigmas": [
+    "522",
+    0
+   ],
+   "latent_image": [
+    "404",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "only the inserted token-times are denoised"
+  }
+ },
+ "530": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "526",
+    0
+   ],
+   "vae": [
+    "119",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "decode the DILATED 107f window"
+  }
+ },
+ "531": {
+  "class_type": "H3ExactRecover",
+  "inputs": {
+   "images": [
+    "530",
+    0
+   ],
+   "hold_map": [
+    "404",
+    2
+   ]
+  },
+  "_meta": {
+   "title": "recover: 107f -> 56f world clock"
+  }
+ },
+ "413": {
+  "class_type": "H3TimeSmear",
+  "inputs": {
+   "images": [
+    "531",
+    0
+   ],
+   "dilation": 1,
+   "hold_map": "",
+   "fps": 24
+  },
+  "_meta": {
+   "title": "IDENTITY: H3TimeSmear returns CPU images so ImageBatch can cat the decode onto the untouched head"
+  }
+ },
+ "411": {
+  "class_type": "ImageFromBatch",
+  "inputs": {
+   "image": [
+    "402",
+    0
+   ],
+   "batch_index": 0,
+   "length": 68
+  },
+  "_meta": {
+   "title": "HEAD: original frames 0..67, untouched pixels"
+  }
+ },
+ "412": {
+  "class_type": "ImageBatch",
+  "inputs": {
+   "image1": [
+    "411",
+    0
+   ],
+   "image2": [
+    "413",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "SPLICE head + window at frame 68 (17-phase cut)"
+  }
+ },
+ "540": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "images": [
+    "412",
+    0
+   ],
+   "audio": [
+    "402",
+    2
+   ],
+   "fps": 24,
+   "bit_depth": 8
+  },
+  "_meta": {
+   "title": "world clock 124f + the SOURCE clip's own audio -> in sync"
+  }
+ },
+ "541": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "video": [
+    "540",
+    0
+   ],
+   "format": "auto",
+   "codec": "auto",
+   "filename_prefix": "video/fixture_window2x"
+  },
+  "_meta": {
+   "title": "compiled from a timeline plan"
+  }
+ }
+}

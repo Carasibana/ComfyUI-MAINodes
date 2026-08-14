@@ -17,7 +17,7 @@ Profiles version; code does not. Add a new profile, do not edit history.
 Stdlib only.
 """
 
-RECIPE_VERSION = "h3-recipe-2026-08-14"
+RECIPE_VERSION = "h3-recipe-2026-08-14b"
 
 CONFIDENCE = ("ratified",      # operator ruled on it
               "measured",      # a run says so, reproduced

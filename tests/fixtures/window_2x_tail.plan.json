@@ -1,0 +1,187 @@
+{
+ "plan_version": 0,
+ "id": "fixture0000window2x0000000000000",
+ "revision": 0,
+ "clip": {
+  "path": "seedhunt_20260963_00001_.mp4",
+  "frames": 124,
+  "fps": 24.0,
+  "width": 1152,
+  "height": 640
+ },
+ "lanes": [
+  {
+   "id": "lane0000window2x0000000000000000",
+   "type": "generation_density",
+   "enabled": true,
+   "proposer": "fixture",
+   "ceiling": 4.0,
+   "envelope": [
+    [
+     0,
+     1.0
+    ],
+    [
+     72,
+     1.0
+    ],
+    [
+     73,
+     2.0
+    ],
+    [
+     123,
+     2.0
+    ]
+   ]
+  }
+ ],
+ "settings": {
+  "intent": {
+   "regen_strength": 0.45,
+   "prompt": "",
+   "hold_expansion_to_clip_end": true
+  },
+  "constraints": {
+   "max_regen_seconds": 0.0,
+   "context_seconds": 0.5
+  },
+  "execution_preferences": {
+   "seed": 20260817,
+   "steps": 25,
+   "backend": {}
+  },
+  "delivery": {
+   "output_prefix": "video/fixture_window2x",
+   "sync_policy": "exact_trim"
+  }
+ },
+ "provenance": {
+  "proposed_by": "fixture",
+  "edited": false,
+  "created": "2026-08-14T18:50:34",
+  "history": [],
+  "fixture_note": "the v3.1 windowed recipe said semantically; compiles to the same execution as workflows/t2c_w45e_v001.api.json"
+ },
+ "compiled": {
+  "h3": {
+   "fingerprint": "02739154ce643429d92a42769e0bedc179f0d984ce80906620a739535255fa3e",
+   "backend": "h3",
+   "versions": {
+    "model_spec": "h3-1.0",
+    "recipe_profile": "h3-recipe-2026-08-14",
+    "compiler": "h3-compile-0.1"
+   },
+   "semantic_hash": "f459a579b3cfd8be2347153103a1d26eaca73d550cbcc5ccaa5bf8666ed243eb",
+   "derived_from": {
+    "plan_id": "fixture0000window2x0000000000000",
+    "revision": 0,
+    "semantic_hash": "f459a579b3cfd8be2347153103a1d26eaca73d550cbcc5ccaa5bf8666ed243eb"
+   },
+   "artifact": {
+    "window": {
+     "start": 68,
+     "len": 56
+    },
+    "hold_map": {
+     "holds": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+     ],
+     "world_len": 56
+    },
+    "dilated_frames": 107,
+    "tokens": {
+     "world": 17,
+     "dilated": 32
+    },
+    "guide_dilated_idx": 105,
+    "added_frames": 51,
+    "drawn_average_density": 1.9107142857142858,
+    "achieved_average_density": 1.9107142857142858,
+    "expand_note": null,
+    "graph_sha256": "e42caf040d1a36aa61c901ffc5ea7ceaaecb1ed321a46bcab4f396b5a3141fbd",
+    "equivalent_clip_time_x": 0.798491
+   },
+   "receipt": {
+    "graph_path": null,
+    "estimate": {
+     "geometry": {
+      "work_units_plan": 32.0,
+      "work_units_plain": 37.0,
+      "steps": 11,
+      "frames_plan": 107,
+      "frames_plain": 124,
+      "fps": 24.0,
+      "pixels": 737280,
+      "note": "window 56f = 17 tokens of the clip's 37; the head/tail frames are not regenerated at all"
+     },
+     "equivalent_clip_time_x": 0.7984905746160049,
+     "seconds": null,
+     "seconds_why": "no calibration runs on record; anchor-only reference: scaled from anchor 32 units -> 4.97 s/step (t2c_c gate-1 render 2026-08-14 21:55 (15 sampled steps, 4.97 s/it mean, 107f dilated window))",
+     "vram_fit": "unknown",
+     "vram_fit_why": "no flight-recorder history for this device/model yet \u2014 the fit line calibrates on your first run"
+    },
+    "warnings": [
+     "dilated length 107 is not audio-exact (nearest exact lengths (39, 90, 141, 192, 243); error 8.3 ms). sync_policy=exact_trim handles it for a single clip; do not CHAIN this segment until pad/resample/conform_at_end exist [TODO T2]"
+    ],
+    "sync_policy": "exact_trim",
+    "compiled_at": "2026-08-14T18:50:34"
+   }
+  }
+ }
+}

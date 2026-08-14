@@ -28,7 +28,7 @@ from . import gridlaw as G
 from .recipe import PROFILE
 from .spec import SPEC
 
-COMPILER_VERSION = "h3-compile-0.1"
+COMPILER_VERSION = "h3-compile-0.2"   # 0.2: artifact/receipt split, density rename
 
 EPS = 1e-6
 
