@@ -202,6 +202,80 @@ def _snap_holds(holds):
     return holds
 
 
+# Longest rate-1 tail expand_to_end will treat as an end jump. One whole
+# group (LEGAL_STEP = 17 world frames); anything longer is intended rest.
+MAX_END_TAIL = LEGAL_STEP
+
+
+def _hold_runs(holds):
+    """Run-length view of a hold map, for logs: [(rate, count), ...]."""
+    runs = []
+    for h in holds:
+        if runs and runs[-1][0] == h:
+            runs[-1][1] += 1
+        else:
+            runs.append([int(h), 1])
+    return [(r, c) for r, c in runs]
+
+
+def _hold_runs_str(holds):
+    return "+".join(f"[{r}]*{c}" for r, c in _hold_runs(holds))
+
+
+def expand_hold_map_to_end(holds):
+    """The expand_to_end rewrite: make the final expansion span run through
+    the last world frame.
+
+    Fires ONLY on the end-jump shape — a SHORT trailing run of rate-1 frames
+    that follows a higher-rate span. A map that already ends inside an
+    expansion (uniform dilation included) and a map that is rate-1 all the
+    way are returned unchanged, so existing graphs stay bit-identical.
+
+    TAIL GUARD (operator ruling 2026-08-14): a rate-1 tail longer than
+    MAX_END_TAIL = LEGAL_STEP = 17 world frames, one whole group, is
+    intended REST, not an end jump, and passes through unchanged. Adaptive
+    oracle maps routinely put a long quiet run after a mid-clip burst
+    (measured: a 124f oracle map ending in [1]*39 would otherwise be
+    rewritten from 250 to 294 dilated frames), and turning that rest into
+    slow motion is neither the fix nor the bill anyone asked for.
+
+    When it fires: the trailing rate-1 run is lifted to the rate r of the
+    span in front of it, and the resulting length is put back on the 17k+5
+    grid by _legal_ceil. The deficit is spent INSIDE that same span+tail
+    region, as evenly as possible with the remainder on the LAST frames, so
+    rates only ever rise toward the end (the 0.45 round's
+    [1]*34+[2]*10+[3]*12 shape). Never removes expansion the caller asked
+    for, and the output is already legal, so the tail pad in H3TimeSmear /
+    _snap_holds becomes a no-op.
+
+    Returns (holds_out, note) where note is None when nothing was rewritten.
+    """
+    holds = [int(h) for h in holds]
+    assert holds and min(holds) >= 1, "hold counts are >= 1"
+    n = len(holds)
+    tail = 0
+    while tail < n and holds[n - 1 - tail] == 1:
+        tail += 1
+    if tail == 0 or tail == n or tail > MAX_END_TAIL:
+        return holds, None            # to the end already / no expansion / rest
+    start = n - tail - 1              # last frame of the span that stops short
+    r = holds[start]
+    while start > 0 and holds[start - 1] == r:
+        start -= 1                    # the whole contiguous rate-r span
+    out = holds[:start] + [r] * (n - start)
+    m = n - start
+    q, rem = divmod(_legal_ceil(sum(out)) - sum(out), m)
+    for i in range(start, n):
+        out[i] += q
+    for i in range(n - rem, n):
+        out[i] += 1
+    note = (f"expand_to_end: rewrote the hold map so the final expansion "
+            f"span runs to world frame {n - 1}. "
+            f"{_hold_runs_str(holds)} ({sum(holds)}f) -> "
+            f"{_hold_runs_str(out)} ({sum(out)}f)")
+    return out, note
+
+
 def true_clock_spans(holds):
     """Density-corrected per-token RoPE t-spans for a smeared clip.
 
@@ -1418,6 +1492,14 @@ class H3TimeSmear:
         "jerk-hot spans get held, quiet spans stay real-time — cheaper and "
         "preserves the clip's natural beat contrast ('motion beauty'), at a "
         "small artifact risk where the hold curve dips inside a burst.\n\n"
+        "expand_to_end (default ON): if the map ends in a rate-1 tail behind "
+        "an expansion span, that tail reads as a little jump back to real "
+        "time at the clip end. With the toggle on, the span is run through "
+        "the last world frame instead and the length is put back on the "
+        "17k+5 grid inside the same span. Uniform maps, maps that already "
+        "end inside an expansion, rate-1-only maps, and rest tails longer "
+        "than 17 world frames are left alone. The console and the report "
+        "say so whenever a map is rewritten.\n\n"
         "Output length is snapped up to the H3-legal 17k+5 grid by extending "
         "the final hold. ALWAYS pass hold_map_used to H3 Exact Recover — it "
         "records exactly what happened so recovery is lossless.\n\n"
@@ -1438,6 +1520,8 @@ class H3TimeSmear:
         }, "optional": {
             "hold_map": ("STRING", {"default": "",
                                     "tooltip": "from H3JerkOracle — per-frame integer holds"}),
+            "expand_to_end": ("BOOLEAN", {"default": True,
+                              "tooltip": "when the map ends in a SHORT rate-1 tail (<= 17 frames) after an expansion span, run that span through the last frame instead (kills the end jump). Uniform maps and longer rest tails are untouched"}),
             **_cost_widgets(with_fps=True),
         }}
 
@@ -1446,13 +1530,18 @@ class H3TimeSmear:
     FUNCTION = "smear"
     CATEGORY = "image/minimax/motion"
 
-    def smear(self, images, dilation, hold_map="", fps=24, s_per_step=0.0,
-              est_steps=18, overhead_s=OVERHEAD_S):
+    def smear(self, images, dilation, hold_map="", expand_to_end=True, fps=24,
+              s_per_step=0.0, est_steps=18, overhead_s=OVERHEAD_S):
         images = images.detach().cpu()  # keep the (possibly huge) held batch off VRAM
         n = images.shape[0]
         holds = (json.loads(hold_map)["holds"] if hold_map.strip()
                  else [dilation] * n)
         assert len(holds) == n, f"hold map covers {len(holds)} frames, batch has {n}"
+        note = None
+        if expand_to_end:
+            holds, note = expand_hold_map_to_end(holds)
+            if note:
+                print("[MAINodes] H3TimeSmear " + note)
         target = _legal_ceil(sum(holds))
         n_held = sum(1 for h in holds if h > 1)   # count before the tail pad
         holds = list(holds)
@@ -1463,6 +1552,8 @@ class H3TimeSmear:
                 else "adaptive, {} of {} frames held".format(n_held, n))
         report = _cost_report(n, target, fps, s_per_step, est_steps,
                               overhead_s, tail=mode)
+        if note:
+            report += "\n" + note
         return (images[idx], used, int(target), report)
 
 
@@ -1880,6 +1971,15 @@ class H3TemporalInsert:
         "folds into the last hold), and hold_map is passed through already "
         "snapped for H3 True Clock and the recover nodes - wire THAT output, "
         "not the original map.\n\n"
+        "expand_to_end (default ON): a map that ends in a rate-1 tail behind "
+        "an expansion span jumps back to real time at the clip end. With the "
+        "toggle on, that span is run through the last world frame and the "
+        "length is put back on the 17k+5 grid inside the same span (rates "
+        "rise toward the end when legality asks for it). Uniform maps, maps "
+        "already ending inside an expansion, and rate-1-only maps are "
+        "untouched, and so is any rate-1 tail longer than 17 world frames "
+        "(that is rest, not an end jump); a rewrite is logged to the "
+        "console and named in the report.\n\n"
         "init_mode: 'lerp' (default) linearly blends the bracketing base "
         "tokens - measured corr 0.888 against the encode of the pixel-"
         "smeared clip, and token-times that land on a base token centre are "
@@ -1905,6 +2005,8 @@ class H3TemporalInsert:
             "init_mode": (["lerp", "noise"], {"default": "lerp",
                           "tooltip": "lerp: blend the bracketing base tokens (T2a: corr 0.888, fancier variants buy nothing). noise: unit noise, pure inpainting"}),
         }, "optional": {
+            "expand_to_end": ("BOOLEAN", {"default": True,
+                              "tooltip": "when the map ends in a SHORT rate-1 tail (<= 17 frames) after an expansion span, run that span through the last frame instead (kills the end jump). Uniform maps and longer rest tails are untouched"}),
             "length": ("INT", {"default": 0, "min": 0, "max": 3600,
                        "tooltip": "0 = derive the base length from the latent (recommended); nonzero asserts this exact base length"}),
             "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
@@ -1916,7 +2018,8 @@ class H3TemporalInsert:
     FUNCTION = "insert"
     CATEGORY = "latent/minimax/motion"
 
-    def insert(self, samples, hold_map, init_mode="lerp", length=0, noise_seed=0):
+    def insert(self, samples, hold_map, init_mode="lerp", expand_to_end=True,
+               length=0, noise_seed=0):
         import comfy.nested_tensor
 
         parsed = json.loads(hold_map)
@@ -1933,6 +2036,12 @@ class H3TemporalInsert:
         if length:
             assert length == len(holds_in), (
                 f"length {length} but the hold map covers {len(holds_in)} frames")
+
+        note = None
+        if expand_to_end:
+            holds_in, note = expand_hold_map_to_end(holds_in)
+            if note:
+                print("[MAINodes] H3TemporalInsert " + note)
 
         holds, dilated, t_base, t_dil, plan = temporal_insert_map(holds_in)
         assert video.shape[2] == t_base, (
@@ -2005,6 +2114,8 @@ class H3TemporalInsert:
             "0.305); the mask reaches the sampler through the samples output "
             "itself - the noise_mask output is the same mask, for inspection",
         ]
+        if note:
+            rep.insert(1, note)
         used = json.dumps({"holds": holds, "world_len": len(holds)})
         return (out, {"samples": nm}, used, "\n".join(rep))
 

@@ -69,6 +69,10 @@ FAILS = []
 
 # The T2a probe's retime: 124 world frames, hold 2 on frames 85..118 (34
 # frames, starting on a 17-multiple). 158 = 17*9+5 is legal, no tail pad.
+# NOTE: this map has the end-jump shape (a rate-1 tail behind a rate-2
+# span), so every call below passes expand_to_end=False: the T2a probe's
+# worked example is what this suite pins, and the toggle would rewrite it.
+# The toggle itself is pinned by tests/test_expand_to_end.py.
 T2A_HOLDS = [1] * 85 + [2] * 34 + [1] * 5
 T2A_MAP = json_map = '{"holds": %s, "world_len": 124}' % T2A_HOLDS
 
@@ -125,7 +129,8 @@ def main():
     lat = base_latent()
     v0 = lat["samples"]
     out, mask_out, used, rep = node.insert(samples=lat, hold_map=T2A_MAP,
-                                           init_mode="lerp")
+                                           init_mode="lerp",
+                                           expand_to_end=False)
     ov, oa = out["samples"].unbind()
     mv, ma = out["noise_mask"].unbind()
     check("the video latent is expanded along t only",
@@ -167,8 +172,8 @@ def main():
         n = len(hm)
         img = torch.zeros(n, 4, 4, 3)
         _, used_smear, length_smear, _ = smear.smear(
-            images=img, dilation=1, hold_map=_json.dumps({"holds": hm,
-                                                          "world_len": n}))
+            images=img, dilation=1, expand_to_end=False,
+            hold_map=_json.dumps({"holds": hm, "world_len": n}))
         h2, dil2, tb2, td2, _p = motion.temporal_insert_map(hm)
         s = _json.loads(used_smear)
         check(f"snap parity, {name}",
@@ -180,7 +185,8 @@ def main():
     # ---- 5. noise mode
     lat2 = base_latent()
     nout, _nm, _u, nrep = node.insert(samples=lat2, hold_map=T2A_MAP,
-                                      init_mode="noise", noise_seed=11)
+                                      init_mode="noise", noise_seed=11,
+                                      expand_to_end=False)
     nv = nout["samples"].unbind()[0]
     worst_n = max(float((nv[:, :, n] - v0[:, :, plan[n][4]]).abs().max())
                   for n in T2A_EXACT)
@@ -191,11 +197,13 @@ def main():
           not torch.equal(nv[:, :, 26], ov[:, :, 26]),
           f"std {float(nv[:, :, ins].std()):.4f}")
     again, _, _, _ = node.insert(samples=base_latent(), hold_map=T2A_MAP,
-                                 init_mode="noise", noise_seed=11)
+                                 init_mode="noise", noise_seed=11,
+                                 expand_to_end=False)
     check("noise mode is reproducible from noise_seed",
           torch.equal(again["samples"].unbind()[0], nv))
     diff, _, _, _ = node.insert(samples=base_latent(), hold_map=T2A_MAP,
-                                init_mode="noise", noise_seed=12)
+                                init_mode="noise", noise_seed=12,
+                                expand_to_end=False)
     check("...and a different seed gives a different init",
           not torch.equal(diff["samples"].unbind()[0], nv))
 
@@ -205,7 +213,8 @@ def main():
     audio_ref = audio_in.clone()
     Nested = sys.modules["comfy.nested_tensor"].NestedTensor
     av = {"samples": Nested([base_latent()["samples"], audio_in])}
-    aout, _am, _au, arep = node.insert(samples=av, hold_map=T2A_MAP)
+    aout, _am, _au, arep = node.insert(samples=av, hold_map=T2A_MAP,
+                                       expand_to_end=False)
     av_v, av_a = aout["samples"].unbind()
     check("nested AV: the audio comes out bit-exact",
           torch.equal(av_a, audio_ref) and tuple(av_a.shape) == (1, 32, 2, 207),
@@ -236,7 +245,7 @@ def main():
         check(f"report says {frag!r}", frag in rep)
     check("the report flags an OFF-anchor hold span",
           "OFF the 17-multiple phase" in node.insert(
-              samples=base_latent(),
+              samples=base_latent(), expand_to_end=False,
               hold_map=_json.dumps({"holds": [1] * 80 + [2] * 39 + [1] * 5,
                                     "world_len": 124}))[3])
     check("the nested-AV report states the audio is on the BASE clock",

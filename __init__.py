@@ -29,7 +29,11 @@ NODE_DISPLAY_NAME_MAPPINGS = dict(TIMESMEAR_DISPLAY_MAPPINGS)
 # real renders: the requeue pair lives in motion.py, the other two in their
 # own modules. They share the seam policy and the window planner's rules but
 # not its code. Expect at most one of them to survive.
-for _mod in ("window_loop", "window_expand"):
+#
+# timeline (alpha, 2026-08-14) is loaded the same guarded way: it is the
+# plan-document surface, and a broken plan schema must not cost anyone the
+# de-roping nodes.
+for _mod in ("window_loop", "window_expand", "timeline.nodes"):
     try:
         _m = __import__(f"{__name__}.{_mod}", fromlist=["*"])
     except Exception as _e:                       # an alpha module must never

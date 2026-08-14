@@ -268,6 +268,59 @@ batches reintroduce the moving-boundary pop and need harder feather
 and a playback check. The two-pass rhythm for the targeted graph is
 queue once, read `mainodes_targeted_oraclemap`, type ranges, requeue.
 
+## When the expansion stops before the clip does (expand_to_end)
+
+A hold map that expands a burst and then drops back to rate 1 for the
+last few world frames reads as a small jump at the end of the shot: the
+picture is in slow motion and then, a beat before the cut, it is not.
+`H3 Time Smear` and `H3 Temporal Insert` both carry an `expand_to_end`
+toggle, default ON, for exactly that shape.
+
+What it does when it fires: the trailing rate-1 run is lifted to the
+rate of the span in front of it, and the resulting length is put back
+on the 17k+5 grid inside that same span, spending the deficit on the
+LAST frames so rates only rise toward the end. The t2c fight window
+`[1]*17+[2]*34+[1]*5` (56 world frames, 90 dilated) becomes
+`[1]*17+[2]*27+[3]*12` (107 dilated); the same shape with the burst
+later, `[1]*34+[2]*17+[1]*5`, becomes `[1]*34+[2]*10+[3]*12` (90
+dilated). Mixed rates are the normal outcome, not a fallback: the added
+frame count has to be a multiple of 17 and a single rate rarely lands
+there.
+
+What it never touches: uniform dilation, a map that already ends inside
+an expansion, a map that is rate 1 all the way, and any rate-1 tail
+longer than 17 world frames. That last one is the tail guard: one whole
+group of frames or more of real time at the end of a shot is intended
+rest, not an end jump, and adaptive oracle maps produce it constantly
+(a 124-frame map ending in 39 quiet frames would otherwise go from 250
+to 294 dilated frames to slow down a section nobody asked to slow
+down). Those come back bit-identical, so existing graphs keep their
+results. It also never
+lowers a hold, so the user never loses expansion they asked for, and it
+does not move where the expansion begins: only the tail is rewritten.
+A rewrite prints one line to the console with the before and after map
+and repeats it in the node's report, so nobody has to guess whether it
+fired. `expand_to_end` off is the old behaviour exactly.
+
+Cost warning worth saying out loud before turning it on: running the
+span to the end usually buys frames. 90 to 107 dilated frames is about
+19% more frame data and more than that in time, because per-step cost
+is superlinear in tokens. The report output prices it.
+
+Two traps that cost a round each while this was being built:
+
+1. `H3 Inject Schedule`'s `preset` overrides the `inject` knob unless
+   it is set to `custom`. Typing 0.45 into `inject` and leaving the
+   preset at "balanced 0.70" renders 0.70, silently.
+2. `H3 Time Smear` pads any segment under 39 frames. `_legal_ceil`
+   floors at 39, so a 20-frame window smeared at rate 2 comes out at 39
+   frames with the whole pad folded into the final hold, which is a
+   long freeze on the last frame. With `expand_to_end` on, that pad is
+   absorbed by the expansion instead (`[1]*5+[2]*10+[1]*5` becomes
+   `[1]*5+[2]*11+[3]*4`, still 39 frames, no freeze). Either way, do
+   not hand a sub-39-frame window to the smear and expect the length
+   you asked for.
+
 ## Source footage instead of a baseline render (alpha)
 
 `examples/motion_pipeline_v2v_source.json` swaps the first pass for a file
