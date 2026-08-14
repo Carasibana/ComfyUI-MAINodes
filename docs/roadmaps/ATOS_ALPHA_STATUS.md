@@ -55,9 +55,18 @@ Companions: `ROADMAP.md` (methods under investigation), `TESTING_ALPHA.md`
    on the way out closes it.
 5. **Cost model calibration.** The superlinear per-step exponent was fitted
    at a single dilation; the exponent is untested elsewhere.
-6. **SAM-based temporal and spatial targeting**, joining the Manual Hold
-   Map / Motion Composite lineage.
-7. **Continuation and temporal-inpainting UX.** The clock discipline above
+6. **SAM-based subject targeting: NEXT UP (design under review,
+   2026-08-13).** Human-seeded subject selection driving the existing
+   Manual Hold Map / Motion Composite / V2V freeze machinery, so "fix my
+   subject, leave the background alone" stops requiring hand-drawn masks.
+   Selection persistence across motion is the hard part; a mask alone is
+   not an identity.
+7. **Adaptive compute / spatial foveation: the standing research thread.**
+   Per-step cost is superlinear in token count (measured exponent ~1.7),
+   so genuine spatial token reduction pays more than proportionally. The
+   spatial sibling of the rolling window. Probes will follow the same
+   measure-then-mint loop as the temporal work.
+8. **Continuation and temporal-inpainting UX.** The clock discipline above
    is the prerequisite and is done.
 
 ## Recently retired
