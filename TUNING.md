@@ -122,6 +122,29 @@ somewhat slower per clip than int8 (29 vs low-20s minutes for the 5 s
 case); on a 32 GB card that is the wrong comparison, because int8 does
 not fit and offload-thrash costs far more.
 
+## Chained clips and the audio clock
+
+H3's video runs at 24 fps but its audio latent runs a 40 Hz clock, and
+the two only agree on durations that are multiples of 1/8 s. Of the
+legal `17k+5` frame counts, only k = 2, 5, 8, 11 ... (39, 90, 141, 192
+frames) land exactly; every other length ships an audio stream up to
+12.5 ms longer or shorter than its video (124 frames: audio 8.3 ms
+long; 107: 8.3 ms short). One clip: harmless. Concatenate segments for
+a long continuation and the error compounds into audible A/V drift --
+we have watched a 10-minute extension from another tool visibly
+separate by the end.
+
+What to do about it:
+- for anything destined for chaining, prefer the aligned lengths
+  (90 / 141 / 192 frames);
+- when assembling segments, trim or pad each segment's audio to exactly
+  `frames / 24` seconds before concatenation, so no segment exports its
+  rounding error to the next;
+- inside this pack you are already covered: H3 Audio Recover, H3
+  Segment Splice, and H3 Window Collect place and size audio on the
+  absolute world clock (sample-exact per segment), so seams do not
+  accumulate error.
+
 ### Known-good environment (this works for me)
 
 Every number in this document was measured on this exact stack, on
