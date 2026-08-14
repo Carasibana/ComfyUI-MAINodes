@@ -313,6 +313,33 @@ node's audio output carries nothing and that link must be removed.
 - Cost scales with the burst span, not the clip length. A long clip with
   one short burst is cheap to fix.
 
+## Trying the indecision oracle (experimental)
+
+`H3 Indecision Oracle` is a second signal for the same hold map: the
+model's own x0 jitter instead of the clip's jerk. It is not on by
+default and nothing else moved for it.
+
+- Cost: free if pass 1 already ran through `X0 Tap` with two steps
+  dumped. It reads files, it does not sample.
+- Compare, do not switch. Put it where the jerk oracle sits, flip `mode`
+  between `indecision`, `jerk passthrough` and `blend max` with
+  everything else fixed, and judge in playback. `jerk passthrough` is
+  the same numbers the jerk oracle produces, so the only variable is
+  the signal.
+- Keep `q`, `d_max`, `ramp` and `bridge` matched across the arms. They
+  feed the same compiler, and an unmatched knob turns the A/B into a
+  comparison of two hold-map compilers.
+- The `comparison` output is the measurement, not the vibe: whole-map
+  Spearman, top-decile IoU, and the token-times where the two sources
+  disagree most. Look at those token-times in playback first, since
+  that is where the choice actually shows.
+- If the map looks like a rectangle rather than like the picture, check
+  the report for the degeneracy line. Masked and repaint runs pin token
+  rows to exactly zero jitter and the oracle then draws the mask.
+- Expected failure mode: fast small props. Jitter under-ranks them
+  relative to frame-diff, which is the argument for `blend max` over
+  `indecision` alone.
+
 ## Defaults, and why
 
 `q 0.75, d_max 4, ramp on, bridge 8, inject 0.70` is the playback-ratified

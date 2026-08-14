@@ -5,6 +5,9 @@ Pipeline (all defaults = measured best values, 2026-08-08):
                     grid, audio cut to match, length for the oracle
   H3JerkOracle      latent -> jerk profile, window, LocalRate segments,
                     per-frame integer hold map (C1 ramps)
+  H3IndecisionOracle (experimental, alternative signal) two X0 Tap dumps ->
+                    the same outputs, off the model's own x0 jitter; mode
+                    switches indecision / jerk passthrough / blend
   H3TimeSmear       frames + hold map -> smeared frames on a 17k+5 grid
   (VAEEncode)       smeared frames -> video latent
   H3V2VInit         video latent -> nested AV latent for injection
@@ -622,38 +625,8 @@ class H3JerkOracle:
                                  tail=f"abstained, profile contrast "
                                       f"{contrast:.2f} < {abstain_below:g}"))
 
-        thr = np.quantile(prof, q)
-        tok_d = np.where(prof >= thr, d_max, 1).astype(int)
-        if bridge:
-            # production rule (measured): never let the plateau dip between
-            # peaks of the same burst — the dip is where mid-burst artifacts
-            # come back (4 of 5 in the v1 map). Fill short valleys at d_max.
-            hot = np.where(tok_d == d_max)[0]
-            for a, b in zip(hot[:-1], hot[1:]):
-                if 1 < b - a <= bridge:
-                    tok_d[a:b + 1] = d_max
-        if ramp:
-            for _ in range(d_max - 1):            # relax until |Δd| <= 1
-                left = np.concatenate([[1], tok_d[:-1]])
-                right = np.concatenate([tok_d[1:], [1]])
-                tok_d = np.maximum(tok_d, np.maximum(left, right) - 1)
-
-        holds = [int(tok_d[_frame_token(f, t_lat)]) for f in range(length)]
-
-        segs, t0 = [], 0
-        for t in range(1, t_lat + 1):
-            if t == t_lat or tok_d[t] != tok_d[t0]:
-                if tok_d[t0] > 1:
-                    segs.append(f"{t0}:{t}:{int(tok_d[t0])}")
-                t0 = t
-        hot = np.where(tok_d > 1)[0]
-        if len(hot):
-            w0 = (_tok_start_frame(int(hot.min())) // 17) * 17
-            w1 = min(length, _tok_start_frame(min(int(hot.max()) + 1, t_lat - 1)) + 4)
-            wlen = _legal_ceil(w1 - w0)
-            wlen = min(wlen, length - w0) if w0 + wlen > length else wlen
-        else:
-            w0, wlen = 0, length
+        holds, segs_str, w0, wlen, tok_d = _profile_to_plan(
+            prof, length, q, d_max, ramp, bridge)
 
         hold_map = json.dumps({"holds": holds, "world_len": length})
         profile = " ".join(f"{v:.2f}" for v in prof)
@@ -662,7 +635,52 @@ class H3JerkOracle:
             length, _legal_ceil(sum(holds)), fps, s_per_step, est_steps,
             overhead_s,
             tail=f"{n_held} of {length} frames held, peak x{int(tok_d.max())}")
-        return (hold_map, ",".join(segs), int(w0), int(wlen), profile, report)
+        return (hold_map, segs_str, int(w0), int(wlen), profile, report)
+
+
+def _profile_to_plan(prof, length, q, d_max, ramp, bridge):
+    """Per-token profile -> (holds, segments string, window_start, window_len,
+    per-token hold counts).
+
+    Extracted verbatim out of H3JerkOracle.read so a second oracle can compile
+    its own profile through EXACTLY the same rules: an A/B between two signals
+    has to differ in the signal, not in the compiler that turns it into holds.
+    """
+    prof = np.asarray(prof, dtype=np.float64)
+    t_lat = len(prof)
+    thr = np.quantile(prof, q)
+    tok_d = np.where(prof >= thr, d_max, 1).astype(int)
+    if bridge:
+        # production rule (measured): never let the plateau dip between
+        # peaks of the same burst — the dip is where mid-burst artifacts
+        # come back (4 of 5 in the v1 map). Fill short valleys at d_max.
+        hot = np.where(tok_d == d_max)[0]
+        for a, b in zip(hot[:-1], hot[1:]):
+            if 1 < b - a <= bridge:
+                tok_d[a:b + 1] = d_max
+    if ramp:
+        for _ in range(d_max - 1):            # relax until |Δd| <= 1
+            left = np.concatenate([[1], tok_d[:-1]])
+            right = np.concatenate([tok_d[1:], [1]])
+            tok_d = np.maximum(tok_d, np.maximum(left, right) - 1)
+
+    holds = [int(tok_d[_frame_token(f, t_lat)]) for f in range(length)]
+
+    segs, t0 = [], 0
+    for t in range(1, t_lat + 1):
+        if t == t_lat or tok_d[t] != tok_d[t0]:
+            if tok_d[t0] > 1:
+                segs.append(f"{t0}:{t}:{int(tok_d[t0])}")
+            t0 = t
+    hot = np.where(tok_d > 1)[0]
+    if len(hot):
+        w0 = (_tok_start_frame(int(hot.min())) // 17) * 17
+        w1 = min(length, _tok_start_frame(min(int(hot.max()) + 1, t_lat - 1)) + 4)
+        wlen = _legal_ceil(w1 - w0)
+        wlen = min(wlen, length - w0) if w0 + wlen > length else wlen
+    else:
+        w0, wlen = 0, length
+    return holds, ",".join(segs), int(w0), int(wlen), tok_d
 
 
 def _compile_hold_map(frame_holds, length, ramp, bridge):
@@ -699,6 +717,538 @@ def _compile_hold_map(frame_holds, length, ramp, bridge):
                 segs.append(f"{t0}:{t}:{int(tok_d[t0])}")
             t0 = t
     return holds, ",".join(segs), t_lat
+
+
+# ------------------------------------------------------- indecision oracle
+# EXPERIMENTAL (2026-08-14). A second, independent oracle: instead of reading
+# the clip's motion out of a finished latent, read the MODEL'S OWN UNCERTAINTY
+# out of two x0 taps taken mid-schedule.
+#
+#   J(a->b)[t,y,x] = avgpool2x2( mean_over_24_channels |x0_b - x0_a| )
+#
+# High J = tokens whose predicted clean latent is still moving between denoise
+# steps, i.e. where the model has not made up its mind.
+#
+# The math below is PORTED VERBATIM from the desk study that validated it,
+# /mnt/work/ai/apps/ComfyUI-ModelCatalog/benchmarks/scripts/indecision/
+# x0_jitter.py; tests/test_indecision_oracle.py asserts parity against that
+# file so the two cannot drift. What the study found (RESULTS.md, 7 scenes):
+#
+#   - the map is NOT a re-derivation of the jerk oracle. Controlling for pixel
+#     motion it still correlates +0.41 with static detail energy; on the
+#     quietest third of token-times it correlates +0.51 with detail while
+#     frame-diff has nothing to say.
+#   - it is also NOT a superset: on kitsune_dash token 21 a fast swinging
+#     ofuda reads motion rank 0.974 and jitter rank 0.040. The two oracles
+#     disagree in BOTH directions, which is why this node ships with blend
+#     modes and why nothing else in the pack changed its defaults.
+#   - the cheap pair 0->1 is degenerate: on 6 of 7 fresh runs it correlates at
+#     or below zero with anything in the picture, because it is dominated by
+#     the (1,4,4,4,4) chunk-phase ramp. Use 6->12 on a 25-step run.
+#   - mask-composited / pinned / repaint runs produce a picture of the MASK,
+#     not of the model (pr15375 arms: 12 of 22 token rows exactly zero). The
+#     degeneracy check below fires on that.
+
+def _x0_token_count(frames):
+    """Latent time tokens for a 17k+5 pixel length (x0_jitter.token_count)."""
+    return (frames - 5) // LEGAL_STEP * 5 + 2
+
+
+def _x0_step_path(dump_dir, step):
+    import os
+    return os.path.join(dump_dir, f"x0_step{int(step):03d}.pt")
+
+
+def _x0_available_steps(dump_dir):
+    """Step indices actually dumped in a dump_dir, sorted."""
+    import os
+    import re
+    out = []
+    try:
+        names = os.listdir(dump_dir)
+    except OSError:
+        return out
+    for n in names:
+        m = re.fullmatch(r"x0_step(\d+)\.pt", n)
+        if m:
+            out.append(int(m.group(1)))
+    return sorted(out)
+
+
+def _load_x0(dump_dir, step, frames, h_pix, w_pix):
+    """-> torch [24, T_lat, h_lat, w_lat] float32 (video part of the flat dump).
+
+    X0TapSampler writes payload["video"]; on H3 that can arrive already shaped
+    or as the flat cat(video.ravel(), audio.ravel()), so this reads it flat and
+    slices the video prefix, exactly as x0_jitter.load_x0 does.
+    """
+    p = _x0_step_path(dump_dir, step)
+    payload = torch.load(p, weights_only=True)
+    flat = payload["video"].reshape(-1).float()
+    T, h, w = _x0_token_count(frames), h_pix // 16, w_pix // 16
+    n_vid = 24 * T * h * w
+    if flat.numel() < n_vid:
+        raise ValueError(f"{p}: {flat.numel()} elems < video {n_vid} "
+                         f"(length/width/height wrong?)")
+    rem = flat.numel() - n_vid
+    if rem % 64:
+        raise ValueError(f"{p}: audio remainder {rem} not divisible by 64 "
+                         f"(length/width/height wrong?)")
+    return flat[:n_vid].reshape(24, T, h, w)
+
+
+def _jitter_map(za, zb):
+    """[24,T,h,w] x2 -> [T, h/2, w/2] token-grid jitter (float32 numpy)."""
+    d = (zb - za).abs().mean(0)                       # [T,h,w]
+    tok = torch.nn.functional.avg_pool2d(d.unsqueeze(1), 2).squeeze(1)
+    return tok.numpy().astype(np.float32)
+
+
+def _detrend_phase(J):
+    """Subtract the (1,4,4,4,4) chunk-phase ramp so cross-time comparisons are
+    about content. Per-map SPATIAL ranking is unaffected; only the temporal
+    axis moves — which is the axis the hold map is compiled from."""
+    J = J.copy()
+    T = J.shape[0]
+    for m in range(5):
+        idx = np.arange(m, T, 5)
+        if len(idx):
+            J[idx] -= J[idx].mean(axis=0, keepdims=True) - J.mean()
+    return J
+
+
+def _map_normalize(J, mode="rank"):
+    """Per-run normalization so maps from different sources are comparable."""
+    if mode == "rank":
+        flat = J.ravel()
+        r = np.empty_like(flat)
+        r[np.argsort(flat)] = np.linspace(0.0, 1.0, flat.size)
+        return r.reshape(J.shape)
+    if mode == "z":
+        return (J - J.mean()) / (J.std() + 1e-9)
+    if mode == "none":
+        return J.astype(np.float32)
+    raise ValueError(mode)
+
+
+def _degeneracy_check(J):
+    """pr15375-style trap: composited/pinned token rows read as exactly 0
+    jitter, so the map is the noise MASK, not the model's mind."""
+    per_t = J.reshape(J.shape[0], -1).mean(1)
+    zero_rows = [int(i) for i, v in enumerate(per_t) if v < 1e-6]
+    frac_zero = float((J == 0).mean())
+    return {"zero_token_rows": zero_rows, "frac_exact_zero": frac_zero,
+            "degenerate": bool(zero_rows)}
+
+
+def _jerk_spatial_map(z):
+    """Per-token SPATIAL jerk on the same (1,2,2) token grid the jitter map
+    uses, so the two oracles are comparable cell for cell. Same map
+    H3JerkHeatmap draws (|Δ³| over time, clamp-padded, phase-normalized),
+    then average-pooled 2x2 like the patchifier."""
+    v = z.detach().float().cpu().numpy()              # (1, 24, T, h, w)
+    t_lat = v.shape[2]
+    jmap = np.abs(np.diff(v, n=3, axis=2)).mean(axis=(0, 1))   # (T-3, h, w)
+    if jmap.shape[0] == 0:                            # < 4 tokens: no Δ³
+        jmap = np.zeros((1,) + v.shape[3:], dtype=np.float64)
+    tok = np.stack([jmap[min(max(k - 1, 0), jmap.shape[0] - 1)]
+                    for k in range(t_lat)])
+    for ph in range(5):
+        m = tok[ph::5].mean()
+        if m > 0:
+            tok[ph::5] /= m
+    t = torch.from_numpy(np.ascontiguousarray(tok)).float().unsqueeze(1)
+    return torch.nn.functional.avg_pool2d(t, 2).squeeze(1).numpy().astype(np.float32)
+
+
+SPATIAL_REDUCE = ("mean (matches the jerk oracle)", "top-decile mean", "max")
+
+
+def _map_to_profile(M, reduce="mean (matches the jerk oracle)"):
+    """Token map [T,h,w] -> per-token profile [T]. The jerk oracle's profile is
+    a spatial MEAN, so mean is the default: it keeps the two profiles
+    comparable. The other two are more selective about a small hot region."""
+    flat = M.reshape(M.shape[0], -1)
+    if reduce.startswith("max"):
+        return flat.max(axis=1).astype(np.float64)
+    if reduce.startswith("top-decile"):
+        k = max(1, int(round(flat.shape[1] * 0.1)))
+        part = np.sort(flat, axis=1)[:, -k:]
+        return part.mean(axis=1).astype(np.float64)
+    return flat.mean(axis=1).astype(np.float64)
+
+
+def _rank_flat(a):
+    return np.argsort(np.argsort(a.ravel())).astype(np.float64)
+
+
+def _spearman(a, b):
+    ra, rb = _rank_flat(a), _rank_flat(b)
+    if ra.std() < 1e-12 or rb.std() < 1e-12:
+        return float("nan")
+    return float(np.corrcoef(ra, rb)[0, 1])
+
+
+def _top_decile_iou(a, b, q=0.90):
+    am, bm = a >= np.quantile(a, q), b >= np.quantile(b, q)
+    u = np.logical_or(am, bm).sum()
+    return float(np.logical_and(am, bm).sum() / u) if u else 1.0
+
+
+INDECISION_MODES = ("indecision", "jerk passthrough", "blend max",
+                    "blend weighted w")
+
+
+def _blend_maps(mode, Jn, Kn, w):
+    """Combine two ALREADY rank-normalized token maps."""
+    if mode == "blend max":
+        return np.maximum(Jn, Kn)
+    if mode == "blend weighted w":
+        return (w * Jn + (1.0 - w) * Kn).astype(np.float32)
+    raise ValueError(mode)
+
+
+def _norm01(M, lo_q=0.05, hi_q=0.995):
+    lo, hi = np.quantile(M, lo_q), np.quantile(M, hi_q)
+    return np.clip((M - lo) / (hi - lo + 1e-9), 0, 1)
+
+
+def _heat_tiles(M, tile=48, cols=8, label_row=True):
+    """Token map [T,h,w] -> a single preview IMAGE (1, H, W, 3), one tile per
+    token-time, red/yellow on black. Used when no frames are wired, so the map
+    is always previewable in-graph."""
+    T = M.shape[0]
+    n = _norm01(M)
+    t = torch.from_numpy(n).float().unsqueeze(1)
+    t = torch.nn.functional.interpolate(t, size=(tile, tile), mode="nearest")
+    t = t.squeeze(1)                                          # (T, tile, tile)
+    rows = []
+    for r in range(0, T, cols):
+        chunk = [t[i] for i in range(r, min(r + cols, T))]
+        while len(chunk) < cols:
+            chunk.append(torch.zeros(tile, tile))
+        row = torch.cat([_heat_rgb(c) for c in chunk], dim=1)
+        if label_row:
+            row[:1, :] = 0.25
+            row[:, ::tile] = 0.25
+        rows.append(row)
+    return torch.cat(rows, dim=0)[None]
+
+
+def _heat_rgb(hm):
+    """0..1 map -> red/yellow RGB, the H3JerkHeatmap ramp."""
+    return torch.stack([hm,
+                        hm * (0.3 + 0.7 * (1 - hm)),
+                        torch.zeros_like(hm)], -1)
+
+
+def _heat_overlay(images, M, alpha):
+    """Frames + token map -> per-frame overlay, mirroring H3JerkHeatmap."""
+    images = images.detach().float().cpu()
+    n, H, W, _ = images.shape
+    t_lat = M.shape[0]
+    heat = torch.nn.functional.interpolate(
+        torch.from_numpy(_norm01(M)).float()[None], size=(H, W),
+        mode="bilinear", align_corners=False)[0]              # (T, H, W)
+    out = []
+    for f in range(n):
+        k = min(_frame_token(f, t_lat), t_lat - 1)
+        hm = heat[k]
+        a = (hm * alpha)[..., None]
+        color = torch.stack([torch.ones_like(hm),
+                             0.3 + 0.7 * (1 - hm),
+                             torch.zeros_like(hm)], -1)
+        out.append(images[f] * (1 - a) + color * a)
+    return torch.stack(out)
+
+
+def _hot_cell(M_t):
+    y, x = np.unravel_index(int(np.argmax(M_t)), M_t.shape)
+    return int(x), int(y)
+
+
+def _comparison_report(Jn, Kn, n_top=4):
+    """Per-token-time top regions for each source + overlap/divergence stats.
+    Both inputs must already be rank-normalized so the numbers compare."""
+    T = Jn.shape[0]
+    lines = [f"COMPARISON  indecision vs jerk, token grid "
+             f"{T}x{Jn.shape[1]}x{Jn.shape[2]} (rank-normalized both sides)",
+             f"  whole-map Spearman rho = {_spearman(Jn, Kn):+.3f}; "
+             f"top-decile IoU = {_top_decile_iou(Jn, Kn):.3f}"]
+    jp = Jn.reshape(T, -1).mean(1)
+    kp = Kn.reshape(T, -1).mean(1)
+    lines.append(f"  per-token profile Spearman rho = {_spearman(jp, kp):+.3f}")
+    for tag, prof, other in (("indecision", jp, kp), ("jerk", kp, jp)):
+        order = np.argsort(prof)[::-1][:n_top]
+        bits = []
+        for t in order:
+            src = Jn if tag == "indecision" else Kn
+            x, y = _hot_cell(src[t])
+            bits.append(f"tok {int(t)} (frame {_tok_start_frame(int(t))}) "
+                        f"cell ({x},{y}) J={Jn[t, y, x]:.3f} K={Kn[t, y, x]:.3f}")
+        lines.append(f"  hottest token-times by {tag}: " + "; ".join(bits))
+    D = Jn - Kn
+    div = np.abs(D).reshape(T, -1).mean(1)
+    order = np.argsort(div)[::-1][:n_top]
+    bits = []
+    for t in order:
+        jy, jx = np.unravel_index(int(np.argmax(D[t])), D[t].shape)
+        my, mx = np.unravel_index(int(np.argmin(D[t])), D[t].shape)
+        bits.append(f"tok {int(t)} |dR|={div[t]:.3f} "
+                    f"J>K ({jx},{jy}) {Jn[t, jy, jx]:.3f}/{Kn[t, jy, jx]:.3f} "
+                    f"K>J ({mx},{my}) {Jn[t, my, mx]:.3f}/{Kn[t, my, mx]:.3f}")
+    lines.append("  biggest disagreements: " + "; ".join(bits))
+    lines.append(f"  cells where indecision leads jerk by >0.5 rank: "
+                 f"{float((D > 0.5).mean()):.1%}; the other way: "
+                 f"{float((D < -0.5).mean()):.1%}")
+    lines.append("  NOTE: neither source is a superset of the other. The desk "
+                 "study found a fast prop the jitter map missed entirely "
+                 "(motion rank 0.97 / jitter rank 0.04); blend max is the "
+                 "recommended experiment, not indecision alone.")
+    return "\n".join(lines)
+
+
+class H3IndecisionOracle:
+    """The INDECISION oracle: read the model's own uncertainty off two x0 taps
+    and compile it through the jerk oracle's exact hold-map rules, so either
+    signal (or a blend) can drive the same pipeline from one widget.
+
+    EXPERIMENTAL. Nothing else in the pack changed its defaults; this node has
+    to earn its place on real renders first."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL second oracle (2026-08-14). Instead of reading a clip's "
+        "MOTION out of a finished latent, this reads the model's own "
+        "UNCERTAINTY out of two X0 Tap dumps: J = |x0_b - x0_a| per latent "
+        "channel, pooled to the (1,2,2) token grid. High J = tokens the model "
+        "has not made up its mind about.\n\n"
+        "Outputs mirror H3 Jerk Oracle exactly (hold_map / segments / window / "
+        "profile / report) and compile through the SAME threshold, bridge and "
+        "ramp code, so an A/B between the two differs in the signal and "
+        "nothing else. Two extra outputs: comparison (a text A/B) and heat (a "
+        "previewable map).\n\n"
+        "WHAT IT NEEDS: pass 1 must have run through X0 Tap with BOTH steps "
+        "dumped. The validated pair is 6->12 on a 25-step schedule. 0->1 is "
+        "DEGENERATE — it carries the (1,4,4,4,4) chunk-phase ramp, not "
+        "content, and correlated at or below zero with the picture on 6 of 7 "
+        "test scenes. Several shipped graphs tap 0,1,12,24 only; there 12->24 "
+        "is the usable pair (the node lists what it found and can fall back "
+        "for you).\n\n"
+        "WHAT IT IS NOT: a replacement for the jerk oracle. Measured over 7 "
+        "scenes it carries genuinely independent signal (partial rho +0.41 "
+        "with static detail after removing motion, +0.51 on the quietest "
+        "third of token-times) but it MISSES things motion catches — a fast "
+        "swinging prop read motion rank 0.97 and jitter rank 0.04. The two "
+        "disagree in both directions. 'blend max' is the recommended "
+        "experiment.\n\n"
+        "MASKED / REPAINT / PINNED RUNS: composited token rows read as exactly "
+        "zero jitter, so the map becomes a picture of the noise MASK. The "
+        "report shouts if more than 30% of token rows are exactly zero. Do "
+        "not use this oracle on such a run.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "dump_dir": ("STRING", {"default": "/tmp/x0_tap",
+                         "tooltip": "X0 Tap dump_dir from PASS 1 — the same path "
+                                    "you gave the X0 Tap (SAMPLER wrapper)"}),
+            "length": ("INT", {"default": 124, "min": 5, "max": 3600, "step": 17,
+                       "tooltip": "world frames of the tapped clip (17k+5)"}),
+            "width": ("INT", {"default": 1024, "min": 32, "max": 8192, "step": 32}),
+            "height": ("INT", {"default": 1024, "min": 32, "max": 8192, "step": 32}),
+            "step_a": ("INT", {"default": 6, "min": 0, "max": 999,
+                       "tooltip": "first tapped step. 6->12 is the validated pair on a "
+                                  "25-step run; 0->1 is degenerate (phase ramp, not content)"}),
+            "step_b": ("INT", {"default": 12, "min": 0, "max": 999,
+                       "tooltip": "second tapped step, later than step_a"}),
+            "mode": (list(INDECISION_MODES), {"default": "indecision",
+                     "tooltip": "which signal drives the hold map. 'jerk passthrough' needs "
+                                "samples wired and reproduces H3 Jerk Oracle exactly (same "
+                                "knobs, same code) so the A/B is one widget. Blends operate "
+                                "AFTER per-source rank normalization."}),
+            "q": ("FLOAT", {"default": 0.75, "min": 0.5, "max": 0.99, "step": 0.01,
+                            "tooltip": "same quantile knob as the jerk oracle"}),
+            "d_max": ("INT", {"default": 4, "min": 2, "max": 8,
+                              "tooltip": "peak hold count; 4 = the jerk oracle's measured sweet spot"}),
+            "ramp": ("BOOLEAN", {"default": True,
+                                 "tooltip": "C1 ramp shoulders — keep ON"}),
+        }, "optional": {
+            "samples": ("LATENT", {"tooltip": "the same latent H3 Jerk Oracle reads. "
+                        "REQUIRED for 'jerk passthrough' and the blends; optional in "
+                        "'indecision' mode, where wiring it only fills in the comparison "
+                        "report and the second heat panel"}),
+            "images": ("IMAGE", {"tooltip": "optional frames to overlay the heat on. "
+                        "Without them the heat output is a tile atlas of the token map"}),
+            "normalization": (["rank", "z", "none"], {"default": "rank",
+                       "tooltip": "per-source normalization before blending; rank is what "
+                                  "the desk study validated and is the only one that makes "
+                                  "the two scales comparable"}),
+            "blend_w": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
+                       "tooltip": "'blend weighted w': weight on INDECISION (1-w on jerk)"}),
+            "detrend_phase": ("BOOLEAN", {"default": True,
+                       "tooltip": "remove the (1,4,4,4,4) chunk-phase ramp from the temporal "
+                                  "axis. Spatial ranking is unaffected either way, but the "
+                                  "hold map is compiled from the temporal axis, so keep ON"}),
+            "spatial_reduce": (list(SPATIAL_REDUCE), {"default": SPATIAL_REDUCE[0],
+                       "tooltip": "how the token map collapses to a per-token profile. "
+                                  "mean matches the jerk oracle's spatial mean"}),
+            "bridge": ("INT", {"default": 8, "min": 0, "max": 20,
+                       "tooltip": "same valley-bridging rule as the jerk oracle; "
+                                  "keep it matched when you A/B the two"}),
+            "auto_fallback": ("BOOLEAN", {"default": True,
+                       "tooltip": "if a requested step was not dumped, use the nearest pair "
+                                  "that WAS (loudly, in the report) instead of failing the "
+                                  "render. Turn OFF to hard-fail on a mis-tapped graph"}),
+            "alpha": ("FLOAT", {"default": 0.55, "min": 0.0, "max": 1.0, "step": 0.05,
+                       "tooltip": "heat overlay strength when images are wired"}),
+            **_cost_widgets(with_fps=True),
+        }}
+
+    RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "STRING", "STRING",
+                    "STRING", "IMAGE")
+    RETURN_NAMES = ("hold_map", "segments", "window_start", "window_len",
+                    "profile", "report", "comparison", "heat")
+    FUNCTION = "read"
+    CATEGORY = "latent/minimax/motion"
+
+    def read(self, dump_dir, length, width, height, step_a, step_b, mode, q,
+             d_max, ramp, samples=None, images=None, normalization="rank",
+             blend_w=0.5, detrend_phase=True,
+             spatial_reduce=SPATIAL_REDUCE[0], auto_fallback=True, alpha=0.55,
+             bridge=8, fps=24, s_per_step=0.0, est_steps=18,
+             overhead_s=OVERHEAD_S):
+        notes = []
+        need_jerk = mode != "indecision"
+        need_jitter = mode != "jerk passthrough"
+        assert samples is not None or not need_jerk, (
+            f"mode '{mode}' needs the LATENT wired to `samples` (the same one "
+            f"you give H3 Jerk Oracle)")
+
+        Kmap = _jerk_spatial_map(_video_component(samples)) if samples is not None else None
+
+        Jmap = None
+        if need_jitter:
+            a, b, pick_note = self._resolve_pair(dump_dir, step_a, step_b,
+                                                 auto_fallback)
+            if pick_note:
+                notes.append(pick_note)
+            za = _load_x0(dump_dir, a, length, height, width)
+            zb = _load_x0(dump_dir, b, length, height, width)
+            Jmap = _jitter_map(za, zb)
+            deg = _degeneracy_check(Jmap)
+            frac_rows = len(deg["zero_token_rows"]) / max(1, Jmap.shape[0])
+            if frac_rows > 0.30:
+                notes.append(
+                    f"*** DEGENERATE: {len(deg['zero_token_rows'])} of "
+                    f"{Jmap.shape[0]} token rows are EXACTLY zero "
+                    f"({frac_rows:.0%}, frac_exact_zero="
+                    f"{deg['frac_exact_zero']:.2f}). This is a masked / "
+                    f"pinned / repaint run: the map you are looking at is a "
+                    f"picture of the NOISE MASK, not of the model's mind. Do "
+                    f"not drive a hold map off it. ***")
+            elif deg["zero_token_rows"]:
+                notes.append(f"note: token rows {deg['zero_token_rows']} have "
+                             f"zero jitter (partial pinning?)")
+            if a <= 1 and b <= 1:
+                notes.append("*** WARNING: the 0->1 pair is DEGENERATE — it "
+                             "carries the chunk-phase ramp, not content "
+                             "(rho <= 0 with the picture on 6 of 7 scenes). "
+                             "Use 6->12, or 12->24 on a coarse tap. ***")
+            if detrend_phase:
+                Jmap = _detrend_phase(Jmap)
+            if Kmap is not None and Kmap.shape != Jmap.shape:
+                notes.append(f"note: jerk map {Kmap.shape} and jitter map "
+                             f"{Jmap.shape} disagree on geometry — check "
+                             f"length/width/height against the tapped clip; "
+                             f"comparison and blending are skipped")
+                Kmap = None
+                if need_jerk:
+                    raise ValueError(
+                        f"mode '{mode}' needs both maps on the same grid; got "
+                        f"jitter {Jmap.shape} from the dump")
+
+        # profile: normalize per source, then blend, then reduce to per-token
+        if mode == "jerk passthrough":
+            prof = _jerk_profile(_video_component(samples))
+            src_label = "jerk (passthrough)"
+            heat_map = Kmap
+        elif mode == "indecision":
+            prof = _map_to_profile(_map_normalize(Jmap, normalization),
+                                   spatial_reduce)
+            src_label = "indecision"
+            heat_map = Jmap
+        else:
+            Jn = _map_normalize(Jmap, normalization)
+            Kn = _map_normalize(Kmap, normalization)
+            heat_map = _blend_maps(mode, Jn, Kn, float(blend_w))
+            prof = _map_to_profile(heat_map, spatial_reduce)
+            src_label = (f"{mode}" if mode == "blend max"
+                         else f"blend w={blend_w:g} indecision / "
+                              f"{1 - blend_w:g} jerk")
+
+        holds, segs_str, w0, wlen, tok_d = _profile_to_plan(
+            prof, length, q, d_max, ramp, bridge)
+        hold_map = json.dumps({"holds": holds, "world_len": length})
+        profile = " ".join(f"{v:.4f}" for v in prof)
+        n_held = sum(1 for h in holds if h > 1)
+        report = _cost_report(
+            length, _legal_ceil(sum(holds)), fps, s_per_step, est_steps,
+            overhead_s,
+            tail=f"source={src_label}, {n_held} of {length} frames held, "
+                 f"peak x{int(tok_d.max())}")
+        report = "\n".join([report,
+                            "EXPERIMENTAL oracle: defaults elsewhere in the "
+                            "pack are unchanged; validate before trusting it."]
+                           + notes)
+
+        if Jmap is not None and Kmap is not None:
+            comparison = _comparison_report(_map_normalize(Jmap, "rank"),
+                                            _map_normalize(Kmap, "rank"))
+        elif Jmap is None:
+            comparison = ("no comparison: mode is jerk passthrough, so no x0 "
+                          "dump was read. Switch mode to 'indecision' (samples "
+                          "stays wired) for the A/B.")
+        else:
+            comparison = ("no comparison: wire the LATENT into `samples` to "
+                          "get the indecision-vs-jerk A/B numbers.")
+
+        # A/B preview: indecision | jerk side by side whenever both exist,
+        # otherwise just whatever drove the hold map.
+        panels = ([Jmap, Kmap] if (Jmap is not None and Kmap is not None)
+                  else [heat_map])
+        if images is not None:
+            heat = torch.cat([_heat_overlay(images, M, float(alpha))
+                              for M in panels], dim=2)
+        else:
+            heat = torch.cat([_heat_tiles(M) for M in panels], dim=2)
+        return (hold_map, segs_str, int(w0), int(wlen), profile, report,
+                comparison, heat)
+
+    @staticmethod
+    def _resolve_pair(dump_dir, step_a, step_b, auto_fallback):
+        """Pick the actual (a, b) to read. Several shipped graphs tap
+        0,1,12,24 only, so the default 6->12 is not always on disk."""
+        have = _x0_available_steps(dump_dir)
+        assert have, (f"no x0_stepNNN.pt files in {dump_dir} — was pass 1 run "
+                      f"through the X0 Tap (SAMPLER wrapper)?")
+        a, b = int(step_a), int(step_b)
+        if a in have and b in have:
+            if b <= a:
+                raise ValueError(f"step_b ({b}) must be later than step_a ({a})")
+            return a, b, ""
+        if not auto_fallback:
+            raise ValueError(
+                f"steps {a}->{b} were not both dumped in {dump_dir}; available: "
+                f"{have}. Re-tap pass 1 with dump_steps including both, or turn "
+                f"auto_fallback on.")
+        cands = [(x, y) for x in have for y in have if y > x]
+        assert cands, f"only one step dumped in {dump_dir}: {have}"
+        a2, b2 = min(cands, key=lambda p: (abs(p[0] - a) + abs(p[1] - b), p))
+        return a2, b2, (f"*** step fallback: {a}->{b} was not dumped, using the "
+                        f"closest available pair {a2}->{b2}. Steps on disk: "
+                        f"{have}. Only 6->12 (25-step run) and 12->24 (coarse "
+                        f"taps) have been validated; treat anything else as "
+                        f"unmeasured, and re-tap pass 1 if you care. ***")
 
 
 def _env_value(auto, param, frame, default):
@@ -3062,6 +3612,7 @@ class H3ModeSwitch:
 TIMESMEAR_CLASS_MAPPINGS = {
     "H3VideoFit": H3VideoFit,
     "H3JerkOracle": H3JerkOracle,
+    "H3IndecisionOracle": H3IndecisionOracle,
     "H3ManualHoldMap": H3ManualHoldMap,
     "H3TimeSmear": H3TimeSmear,
     "H3ExactRecover": H3ExactRecover,
@@ -3087,6 +3638,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3VideoFit": "H3 Video Fit (source clip -> 17k+5 frames) [alpha]",
     "H3JerkOracle": "H3 Jerk Oracle (profile / window / hold map)",
+    "H3IndecisionOracle": "H3 Indecision Oracle (x0-jitter / blend) [experimental]",
     "H3ManualHoldMap": "H3 Manual Hold Map (ranges to holds, gate) [alpha]",
     "H3TimeSmear": "H3 Time Smear (integer holds)",
     "H3ExactRecover": "H3 Exact Recover (24fps frame selection)",

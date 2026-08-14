@@ -342,6 +342,59 @@ line is it.
 | H3 V2V Init | `freeze_threshold` | 0 (off) | automatic background freeze, not recommended: it fixes background timing but degraded other artifacts in our playback tests. Kept for content where the trade goes the other way |
 | | `mask`, `mask_feather` | off, 0 | manual freeze region: you paint what regenerates (`invert_mask` to paint the frozen background instead). Static union over time, so the boundary never moves. Default is hard latent cells (each ~16 px cell fully frozen or fully live; the decode smooths the edge); raise `mask_feather` for a pixel-space ramp pooled to fractional cells if a seam shows |
 | H3 Motion Composite | `mask` | oracle heat | spatial recovery: regenerated pixels inside the mask, baseline outside. The automatic oracle-heat mode stays deprecated for moving background objects (they pop at its boundary); with a hand-drawn mask the seam goes where you hide it, along a real edge |
+| H3 Indecision Oracle (experimental) | `mode` | indecision | which signal drives the hold map: `indecision`, `jerk passthrough`, `blend max`, `blend weighted w`. Outputs mirror H3 Jerk Oracle and compile through the same threshold/bridge/ramp code, so the switch changes the signal and nothing else. See below |
+| | `step_a`, `step_b` | 6, 12 | which two X0 Tap dumps to difference. 6 to 12 on a 25-step run is the validated pair; 0 to 1 is degenerate |
+| | `blend_w` | 0.5 | weight on indecision in `blend weighted w`; blending happens after per-source rank normalization |
+
+#### The indecision oracle (experimental, 2026-08-14)
+
+A second, independent oracle. The jerk oracle reads a clip's motion out
+of a finished latent; this one reads the model's own uncertainty out of
+two mid-schedule x0 predictions:
+
+    J[token] = avgpool2x2( mean over the 24 latent channels of |x0_b - x0_a| )
+
+High J means tokens whose predicted clean latent is still moving between
+denoise steps, i.e. where the model has not made up its mind. A desk
+study over 7 scenes found it carries genuinely independent signal:
+controlling for pixel motion it still correlates +0.41 with static
+detail energy, and on the quietest third of token-times (where
+frame-diff has nothing to say) +0.51. It also misses things the jerk
+oracle catches: one fast swinging prop read motion rank 0.97 and jitter
+rank 0.04. The two disagree in both directions, so `blend max` is the
+recommended experiment rather than a straight substitution.
+
+**Nothing else in the pack changed its defaults.** This node exists so
+the comparison can be made on real renders first.
+
+Wiring the A/B:
+
+1. Pass 1 goes through `X0 Tap (SAMPLER wrapper)` from `h3-motion-lab`
+   with `dump_steps` including both steps you want (`6,12` at minimum).
+2. Wire the pass-1 latent into `samples` and the tap's `dump_dir` into
+   `dump_dir`, and set `length`/`width`/`height` to the tapped clip.
+3. Wire `hold_map` where you would have wired the jerk oracle's, and
+   flip `mode` to compare. `jerk passthrough` reproduces H3 Jerk Oracle
+   exactly (unit-tested for byte-identical output), so the A/B is one
+   widget and not two graphs.
+4. Read the `comparison` output for the overlap and divergence numbers,
+   and preview `heat` for the side-by-side map (indecision left, jerk
+   right; wire `images` to get it overlaid on frames instead of tiles).
+
+Two traps the node shouts about in its report:
+
+- **The cheap pair is the useless one.** Step 0 to 1 is dominated by the
+  (1,4,4,4,4) chunk-phase ramp, not by content, and correlated at or
+  below zero with the picture on 6 of 7 test scenes.
+- **Masked, pinned and repaint runs give you a picture of the mask.**
+  Composited token rows read as exactly zero jitter. If more than 30% of
+  token rows are exactly zero the report says so in capitals; believe it
+  and do not drive a hold map off that map.
+
+Some graphs tap `0,1,12,24` rather than including 6. There 12 to 24 is
+the usable pair. With `auto_fallback` on (default) the node picks the
+closest available pair and puts what it did in the report; turn it off
+to hard-fail on a mis-tapped graph instead.
 | | `feather_profile`, `feather_direction` | linear, centered | seam control: linear/smoothstep/gaussian falloff; centered straddles the boundary, inward eats into the masked side, outward into the kept side |
 
 ### What to expect, time-wise
