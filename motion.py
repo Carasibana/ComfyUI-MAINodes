@@ -48,6 +48,35 @@ def _frame_token(f, t_lat):
     return 0
 
 
+def _token_frame_spans(t_lat):
+    """Inclusive (first, last) pixel-frame span of every latent time token.
+
+    The token clock is non-uniform: each 17-frame group is 5 tokens
+    covering (1, 4, 4, 4, 4) frames, so every 5th token is a singleton
+    sitting on a 17-multiple frame (the native keyframe anchors). The
+    trailing +2 tokens of a 17k+5 clip are just the next group's first
+    two entries (a singleton at frame 17k and the 4-group 17k+1..17k+4),
+    so no tail special case is needed: spans tile [0, length) exactly."""
+    return [(_tok_start_frame(t), _tok_start_frame(t + 1) - 1)
+            for t in range(t_lat)]
+
+
+def _tokenize_mask_time(m, t_lat, length):
+    """Fold a per-pixel-frame mask (T, H, W) onto the latent token clock,
+    returning (t_lat, H, W). MAX over each token's covered frames: a token
+    cannot be split in time, so any covered frame asking to regenerate wins
+    (same asymmetry as freeze_grow -- a moving subject is never clipped by
+    its own freeze). T != length is nearest-neighbour resampled to length
+    first. Pure torch, no comfy: unit-testable."""
+    if m.shape[0] != length:
+        src = m.shape[0]
+        idx = (torch.arange(length, dtype=torch.float32)
+               * (src / length)).floor().long().clamp(0, src - 1)
+        m = m[idx]
+    return torch.stack([m[a:b + 1].amax(dim=0)
+                        for a, b in _token_frame_spans(t_lat)])
+
+
 def _phase_norm(prof):
     """Divide out the (1,4,4,4,4) grid bias so tokens are comparable."""
     for ph in range(5):
@@ -882,14 +911,26 @@ class H3V2VInit:
         "Manual freeze: wire a MASK instead and YOU choose the boundary "
         "(overrides the oracle path). mask = the region to REGENERATE; "
         "invert_mask flips it so you can paint the background/birds to "
-        "freeze directly. The mask is unioned over time (static boundary, "
-        "never pops) and snapped to HARD latent cells by default "
+        "freeze directly. By default the mask is unioned over time (static "
+        "boundary, never pops) and snapped to HARD latent cells by default "
         "(mask_feather 0): every ~16 px cell is fully frozen or fully "
         "live, no half-frozen blend cells, and the decode smooths the "
         "edge. Set mask_feather above 0 to get the old pixel-space ramp "
         "pooled to fractional cells if a hard seam ever shows. Prefer "
         "this over the composite node when background and subject share "
-        "lighting, shadows or water contact.")
+        "lighting, shadows or water contact.\n\n"
+        "time_varying (manual mask only): keeps the mask's time axis "
+        "instead of unioning it, so the freeze region can move or switch "
+        "on partway. Transitions QUANTIZE to the latent token grid: each "
+        "17 pixel frames are 5 tokens covering (1, 4, 4, 4, 4) frames, so "
+        "a change lands on the token that covers it and a token "
+        "regenerates if ANY frame it covers is marked regenerate. A moving "
+        "boundary CAN pop at those steps - that is the tradeoff for the "
+        "default's promise. Put intended transitions on 17-frame phase "
+        "(frames 0, 17, 34, ...), where the singleton tokens hold exactly "
+        "one frame each and the step is tightest. Masks whose frame count "
+        "differs from the clip length are nearest-neighbour resampled "
+        "first; a 2D or single-frame mask behaves as before.")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -907,13 +948,20 @@ class H3V2VInit:
             "freeze_grow": ("INT", {"default": 2, "min": 0, "max": 16,
                 "tooltip": "latent-pixels of mask dilation (16 image px each); applies to both mask sources"}),
             "mask": ("MASK", {"tooltip": "(alpha) manual region to REGENERATE (1) vs freeze to baseline timing (0). "
-                     "Overrides the oracle path. Union over time: the boundary never moves"}),
+                     "Overrides the oracle path. Union over time by default: the boundary never "
+                     "moves (set time_varying to keep the time axis)"}),
             "mask_feather": ("INT", {"default": 0, "min": 0, "max": 256,
                 "tooltip": "0 (default): hard latent cells, every cell fully frozen or fully live; "
                            "the decode smooths the edge. >0: pixel-space ramp pooled to fractional "
                            "cells (~16 px quanta) if a hard seam ever shows"}),
             "invert_mask": ("BOOLEAN", {"default": False,
                 "tooltip": "on: the mask marks the FREEZE region instead (paint the background/birds directly)"}),
+            "time_varying": ("BOOLEAN", {"default": False,
+                "tooltip": "off (default): the manual mask is unioned over time, static boundary. "
+                           "on: a multi-frame mask keeps its time axis, quantized to the latent "
+                           "token grid ((1,4,4,4,4) frames per 17). A moving boundary CAN pop; put "
+                           "intended transitions on 17-frame phase. Manual mask only, ignored by "
+                           "the oracle path and by 2D / single-frame masks"}),
         }}
 
     RETURN_TYPES = ("LATENT",)
@@ -921,7 +969,8 @@ class H3V2VInit:
     CATEGORY = "latent/minimax/motion"
 
     def build(self, samples, length=0, oracle_samples=None, freeze_threshold=0.0,
-              freeze_grow=2, mask=None, mask_feather=0, invert_mask=False):
+              freeze_grow=2, mask=None, mask_feather=0, invert_mask=False,
+              time_varying=False):
         import torch.nn.functional as F
 
         import comfy.nested_tensor
@@ -944,7 +993,13 @@ class H3V2VInit:
                 m = m[None]
             if invert_mask:
                 m = 1.0 - m
-            m = (m.max(dim=0).values >= 0.5).float()[None]  # union: static boundary
+            m = (m >= 0.5).float()
+            if time_varying and m.shape[0] > 1:
+                # per-token-time mask: fold the frame clock onto the token
+                # clock (max = regenerate wins inside a mixed token)
+                m = _tokenize_mask_time(m, t_lat, length)
+            else:
+                m = m.max(dim=0, keepdim=True).values       # union: static boundary
             m = _soft_edge(m, mask_feather)                 # pixel-space ramp first
             m = F.interpolate(m[None], size=(h, w), mode="area")[0]  # fractional cells
             if freeze_grow:
@@ -955,7 +1010,10 @@ class H3V2VInit:
                 # (half-frozen blends denoise off-manifold); snap to 0/1 and
                 # let the decode's receptive-field overlap smooth the edge
                 m = (m >= 0.5).float()
-            vid_mask = m[0].clamp(0, 1).expand(t_lat, h, w)[None, None].to(video.device)
+            m = m.clamp(0, 1)
+            if m.shape[0] == 1:
+                m = m.expand(t_lat, h, w)
+            vid_mask = m[None, None].to(video.device)
             aud_mask = torch.ones(1, 32, 2, audio_t)
             out["noise_mask"] = comfy.nested_tensor.NestedTensor(
                 (vid_mask.contiguous(), aud_mask))
