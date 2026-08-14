@@ -145,6 +145,13 @@ What to do about it:
   absolute world clock (sample-exact per segment), so seams do not
   accumulate error.
 
+`tests/test_audio_recover.py` is the regression guard for all of this:
+run it bare for the synthetic sample-exact checks (no GPU), or hand it
+a `baseline.mp4 recovered.mp4` pair from any `reference_mix: 1` render
+and it verifies the recovered audio really is the baseline track --
+duration within one AAC frame, zero lag, full correlation. It caught a
+pre-fix render 64 ms short on its first outing.
+
 ### Known-good environment (this works for me)
 
 Every number in this document was measured on this exact stack, on
