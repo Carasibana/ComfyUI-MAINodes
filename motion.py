@@ -11,12 +11,14 @@ Pipeline (all defaults = measured best values, 2026-08-08):
   H3TimeSmear       frames + hold map -> smeared frames on a 17k+5 grid
   (VAEEncode)       smeared frames -> video latent
   H3V2VInit         video latent -> nested AV latent for injection
+  H3LatentUpscale   (experimental) spatial upscale of the video half only
   H3InjectSchedule  model -> truncated SIGMAS (inject 0.70 default)
   (SamplerCustomAdvanced) -> generated latent -> decode
   H3ExactRecover    frames + hold map -> world clock (exact selection)
   H3JerkHeatmap     frames + latent -> oracle overlay + jerk strip (demo tile)
 """
 import json
+import math
 
 import numpy as np
 import torch
@@ -1749,6 +1751,119 @@ class H3V2VInit:
             out["noise_mask"] = comfy.nested_tensor.NestedTensor(
                 (vid_mask.contiguous(), aud_mask))
         return (out,)
+
+
+LATENT_CELL = 16   # image pixels per latent spatial cell (H3 video VAE)
+LATENT_GRID = 2    # legal latent sizes are multiples of 2 cells (= 32 px)
+
+
+def _snap_cells(px):
+    """Pixels -> latent cells on the legal /32-pixel = /2-cell grid.
+
+    Snapped in PIXELS (one step = 32 px) so the result is the nearest legal
+    frame size, and half-up rather than python's banker's rounding so a .5
+    request does not depend on which side of the grid it fell on.
+    """
+    step = LATENT_CELL * LATENT_GRID
+    cells = int(math.floor(px / step + 0.5)) * LATENT_GRID
+    return max(LATENT_GRID, cells)
+
+
+def _spatial_resize(v, h, w, mode):
+    """Spatially resize a (B, C, T, h, w) video latent. T is untouched."""
+    import torch.nn.functional as F
+    b, c, t = v.shape[0], v.shape[1], v.shape[2]
+    flat = v.permute(0, 2, 1, 3, 4).reshape(b * t, c, v.shape[3], v.shape[4])
+    kw = {} if mode.startswith("nearest") else {"align_corners": False}
+    flat = F.interpolate(flat.float(), size=(h, w), mode=mode, **kw).to(v.dtype)
+    return flat.reshape(b, t, c, h, w).permute(0, 2, 1, 3, 4).contiguous()
+
+
+class H3LatentUpscale:
+    """Spatial upscale of the VIDEO half of an H3 latent, audio untouched.
+
+    Stock LatentUpscale cannot touch an H3 latent at all: `samples` is a
+    comfy NestedTensor (video (B,24,T,h,w) + audio (B,32,2,aT)), and a
+    2D interpolate on either member is meaningless. This resizes only the
+    video's h/w on the legal grid and passes the audio through by
+    reference. The time axis is never touched."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL. Spatially upscales the VIDEO component of an H3 "
+        "latent (nested audio+video, or a plain VAEEncode video latent) and "
+        "passes the AUDIO through untouched, bit-exact. Lets an upscale+"
+        "refine pass stay latent-resident: no VAE decode, pixel resize and "
+        "re-encode between the passes. The trade is real - the VAE roundtrip "
+        "the pixel path pays also re-derives detail, so a latent upscale can "
+        "come back softer; measure before adopting it (A/B against the "
+        "pixel path on your content).\n\n"
+        "Sizes snap to the legal grid: one latent cell is 16 image pixels "
+        "and legal frames are multiples of 32 px, so targets round to an "
+        "EVEN number of cells. scale is used unless width/height are "
+        "nonzero (a nonzero value overrides that axis). The TIME axis is "
+        "untouched - token count, the 17k+5 grid and the audio clock all "
+        "stay exactly as they were.")
+
+    MODES = ["bilinear", "nearest-exact"]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "samples": ("LATENT", {"tooltip": "H3 nested AV latent, or a plain video latent from VAEEncode"}),
+            "scale": ("FLOAT", {"default": 2.0, "min": 0.25, "max": 4.0, "step": 0.05,
+                                "tooltip": "spatial scale factor; snapped to the /32-pixel (/2-cell) grid"}),
+            "mode": (cls.MODES, {"default": "bilinear",
+                                 "tooltip": "bilinear (default) is smoother; nearest-exact keeps latent cell values verbatim"}),
+        }, "optional": {
+            "width": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 32,
+                              "tooltip": "0 = use scale. Nonzero: target IMAGE width, snapped to /32"}),
+            "height": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 32,
+                               "tooltip": "0 = use scale. Nonzero: target IMAGE height, snapped to /32"}),
+        }}
+
+    RETURN_TYPES = ("LATENT", "STRING")
+    RETURN_NAMES = ("samples", "report")
+    FUNCTION = "upscale"
+    CATEGORY = "latent/minimax/motion"
+
+    def upscale(self, samples, scale=2.0, mode="bilinear", width=0, height=0):
+        z = samples["samples"]
+        nested = bool(getattr(z, "is_nested", False) and hasattr(z, "unbind"))
+        parts = list(z.unbind()) if nested else [z]
+        video = parts[0]
+        src_h, src_w = int(video.shape[3]), int(video.shape[4])
+
+        tgt_h = _snap_cells(height) if height else _snap_cells(src_h * LATENT_CELL * scale)
+        tgt_w = _snap_cells(width) if width else _snap_cells(src_w * LATENT_CELL * scale)
+
+        out = dict(samples)
+        if (tgt_h, tgt_w) != (src_h, src_w):
+            parts[0] = _spatial_resize(video, tgt_h, tgt_w, mode)
+            if nested:
+                out["samples"] = type(z)(tuple(parts))
+            else:
+                out["samples"] = parts[0]
+            nm = samples.get("noise_mask")
+            if nm is not None:
+                mparts = (list(nm.unbind())
+                          if getattr(nm, "is_nested", False) and hasattr(nm, "unbind")
+                          else [nm])
+                if mparts[0].dim() == 5:
+                    mparts[0] = _spatial_resize(mparts[0], tgt_h, tgt_w,
+                                                "nearest-exact")
+                    out["noise_mask"] = (type(nm)(tuple(mparts))
+                                         if len(mparts) > 1 else mparts[0])
+
+        rep = [f"video {src_h}x{src_w} -> {tgt_h}x{tgt_w} cells "
+               f"({src_h * LATENT_CELL}x{src_w * LATENT_CELL} -> "
+               f"{tgt_h * LATENT_CELL}x{tgt_w * LATENT_CELL} px), {mode}",
+               f"time axis untouched: {int(video.shape[2])} tokens"]
+        if nested and len(parts) > 1:
+            rep.append("audio passed through untouched: "
+                       f"{tuple(parts[1].shape)} {parts[1].dtype}")
+        else:
+            rep.append("plain video latent (no audio component)")
+        return (out, "\n".join(rep))
 
 
 class H3InjectSchedule:
@@ -3618,6 +3733,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3ExactRecover": H3ExactRecover,
     "H3TrueClock": H3TrueClock,
     "H3V2VInit": H3V2VInit,
+    "H3LatentUpscale": H3LatentUpscale,
     "H3InjectSchedule": H3InjectSchedule,
     "H3JerkHeatmap": H3JerkHeatmap,
     "H3AudioRecover": H3AudioRecover,
@@ -3644,6 +3760,7 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3ExactRecover": "H3 Exact Recover (24fps frame selection)",
     "H3TrueClock": "H3 True Clock (density-corrected RoPE t-grid) [experimental]",
     "H3V2VInit": "H3 V2V Init (nested AV latent)",
+    "H3LatentUpscale": "H3 Latent Upscale (video only, audio kept) [experimental]",
     "H3InjectSchedule": "H3 Inject Schedule (v2v sigmas, 0.70)",
     "H3JerkHeatmap": "H3 Jerk Heatmap (oracle overlay tile)",
     "H3AudioRecover": "H3 Audio Recover (hold-map atempo, pitch kept)",
