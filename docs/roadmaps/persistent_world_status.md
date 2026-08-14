@@ -32,3 +32,28 @@ QuerySplat-class lift, and any engine bridge.
 3. **Dependencies from the alpha ledger**: continuation UX and SAM-based
    targeting (see `ATOS_ALPHA_STATUS.md`) are the same machinery this
    design will lean on for world updates.
+
+## Mechanism unifications (2026-08-14 synthesis)
+
+Three findings from the motion program supply machinery this design was
+missing:
+
+- **Per-token noise labels as the world's read/write interface.** Store
+  per-region confidence in the world memory; express it back to the
+  model on re-render as partial denoise labels: well-observed regions
+  arrive nearly finished and are preserved, uncertain regions arrive
+  noisy and are invented. Confidence-weighted regeneration IS the
+  transactional update semantics; a label ramp at the boundary is the
+  handover between known and unknown world. This also resolves the
+  "lift must not directly replace the world" tension: lift confidence
+  maps to noise level, the model adjudicates.
+- **One world clock.** The positional time axis is physical (frame-
+  linear), and generation supports arbitrary time origins. Rendered
+  clips can carry their true world-time origin and become temporally
+  addressable in the world's coordinate frame instead of each starting
+  at t=0.
+- **The budgeted-run shape generalizes.** Budgeted pieces + a banked,
+  resumable store + an explicit seam policy + priced pre-run reports:
+  the rolling window proves the shape over time; spatial tiles and
+  chained scene atoms are the same shape over space and sequence.
+  Build them on that skeleton.
