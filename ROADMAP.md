@@ -1,5 +1,9 @@
 # Roadmap: methods we are investigating
 
+> Status ledger for what has shipped vs what is open:
+> [`docs/roadmaps/ATOS_ALPHA_STATUS.md`](docs/roadmaps/ATOS_ALPHA_STATUS.md).
+> The persistent-world design and its status live there too.
+
 Companion to `RESEARCH_NOTES_ATOS.md` (the claim and the evidence plan),
 `TUNING.md` (symptom to dial, including the rejections) and
 `TESTING_ALPHA.md` (what the alpha nodes still need from human hands).
