@@ -11,12 +11,15 @@ Pipeline (all defaults = measured best values, 2026-08-08):
   H3TimeSmear       frames + hold map -> smeared frames on a 17k+5 grid
   (VAEEncode)       smeared frames -> video latent
   H3V2VInit         video latent -> nested AV latent for injection
+  H3TemporalInsert  (experimental) the same retime done IN LATENT SPACE:
+                    insert interpolated token-times, freeze the originals
   H3LatentUpscale   (experimental) spatial upscale of the video half only
   H3InjectSchedule  model -> truncated SIGMAS (inject 0.70 default)
   (SamplerCustomAdvanced) -> generated latent -> decode
   H3ExactRecover    frames + hold map -> world clock (exact selection)
   H3JerkHeatmap     frames + latent -> oracle overlay + jerk strip (demo tile)
 """
+import bisect
 import json
 import math
 
@@ -1751,6 +1754,256 @@ class H3V2VInit:
             out["noise_mask"] = comfy.nested_tensor.NestedTensor(
                 (vid_mask.contiguous(), aud_mask))
         return (out,)
+
+
+# -------------------------------------------------- temporal token insertion
+# Track 2 of the latent-resident roadmap (idea 23): do the retime IN LATENT
+# SPACE. Instead of duplicating PIXEL frames and paying a VAE encode of the
+# longer clip, expand the video latent along t onto the dilated token grid,
+# fill the inserted token-times by interpolating the base tokens, and hand the
+# sampler a repaint mask that FREEZES the originals so only the in-betweens
+# are generated.
+#
+# The map below is PORTED, not re-derived, from the T2a fidelity probe
+# (ComfyUI-ModelCatalog benchmarks/scripts/tinterp/analyze_tinterp.py:
+# token_spans / smear_index / base_time_of_smear_tokens / lerp_tokens), whose
+# worked token map is checked in as token_map.csv and is pinned row-for-row by
+# tests/test_temporal_insert.py. What T2a measured, and what it decided here
+# [MEAS 2026-08-15, one clip, hold 2 x 34 frames, fp16 VAE]:
+#   - plain lerp of the base latent matches the encode of the pixel-smeared
+#     clip at corr 0.888 / nRMSE 0.44 std (noise null 0.00 / 1.42) and DECODES
+#     as motion-blur-like ghosting, not garbage. Nearest, phase-aware and
+#     box-overlap variants bought nothing, so lerp is the only mode offered.
+#   - token-times landing exactly on a base token centre come back EXACTLY
+#     (corr 1.0); off-anchor singletons are the worst case (0.75). Those exact
+#     hits are bit-copied here and frozen by the mask.
+#   - inserted tokens want sigma >= ~0.5 of denoise (break-even against the
+#     interpolation residual is 0.305; at inject 0.7 the residual is 19% of
+#     the injected noise).
+AUDIO_LATENT_FPS = 40   # H3's audio latent clock [SRC comfy_extras/nodes_minimax_h3.py:31]
+
+
+def _audio_latent_t(frames):
+    """Audio-latent length for a pixel length. Defers to comfy's own
+    temporal_shape when comfy is importable so the two cannot drift; the
+    fallback is that function's arithmetic, for unit tests."""
+    try:
+        from comfy_extras.nodes_minimax_h3 import temporal_shape
+        return int(temporal_shape(frames)[2])
+    except Exception:
+        return int(round(frames / 24.0 * AUDIO_LATENT_FPS))
+
+
+def _token_centers(t_lat):
+    """Mean pixel-frame position of every latent token: the time each token
+    actually sits at on the non-uniform (1,4,4,4,4) grid."""
+    return [(a + b) / 2.0 for a, b in _token_frame_spans(t_lat)]
+
+
+def _index_runs(idx):
+    """Compact 'a-b,c' rendering of a sorted index list, for reports."""
+    if not idx:
+        return "none"
+    out, s, p = [], idx[0], idx[0]
+    for i in idx[1:]:
+        if i == p + 1:
+            p = i
+            continue
+        out.append(f"{s}-{p}" if p > s else f"{s}")
+        s = p = i
+    out.append(f"{s}-{p}" if p > s else f"{s}")
+    return ",".join(out)
+
+
+def temporal_insert_map(holds):
+    """The dilated clip's per-token interpolation plan for a hold map.
+
+    holds: per-world-frame integer hold counts, the same map H3TimeSmear
+    consumes and emits (and the oracles produce). It is legal-snapped here by
+    the SAME rule H3TimeSmear uses (_snap_holds: the 17k+5 tail pad folds into
+    the last hold), so the pixel and latent routes always agree on length.
+
+    Returns (holds_snapped, dilated_len, t_base, t_dil, plan) where plan has
+    one entry per DILATED token: (target_base_time, lo_tok, hi_tok, w_hi,
+    exact_tok). target_base_time is the mean base-frame index of the frames
+    that token covers; the value is (1 - w_hi) * base[lo] + w_hi * base[hi].
+    exact_tok is >= 0 when the target lands exactly on a base token's centre,
+    which means COPY THAT TOKEN VERBATIM (T2a rule 1) rather than blend.
+    """
+    holds = _snap_holds(holds)
+    n_base = len(holds)
+    assert (n_base - 5) % LEGAL_STEP == 0 and n_base >= 5, (
+        f"the base clip is {n_base} frames, which is not on the 17k+5 grid; "
+        "fit the source with H3VideoFit before encoding it")
+    dilated = sum(holds)
+    idx = [i for i, h in enumerate(holds) for _ in range(h)]
+    t_base = (n_base - 5) // LEGAL_STEP * 5 + 2
+    t_dil = (dilated - 5) // LEGAL_STEP * 5 + 2
+    cb = _token_centers(t_base)
+    plan = []
+    for a, b in _token_frame_spans(t_dil):
+        frames = idx[a:b + 1]
+        t = sum(frames) / float(len(frames))
+        j = bisect.bisect_left(cb, t)
+        if j < len(cb) and cb[j] == t:          # exact hit -> verbatim copy
+            plan.append((t, j, j, 0.0, j))
+        elif j <= 0:
+            plan.append((t, 0, 0, 0.0, 0))
+        elif j >= len(cb):
+            plan.append((t, len(cb) - 1, len(cb) - 1, 0.0, len(cb) - 1))
+        else:
+            w = (t - cb[j - 1]) / (cb[j] - cb[j - 1])
+            plan.append((t, j - 1, j, w, -1))
+    return holds, dilated, t_base, t_dil, plan
+
+
+class H3TemporalInsert:
+    """Temporal super-resolution as temporal INPAINTING: expand a video
+    latent onto the dilated token grid, interpolate the inserted
+    token-times, freeze the originals with a repaint mask."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL, off-distribution. The time-smear de-rope done in "
+        "LATENT space: instead of duplicating pixel frames and re-encoding a "
+        "longer clip, this expands the video latent along t onto the dilated "
+        "token grid, fills the INSERTED token-times by interpolating the "
+        "neighbouring base tokens, and emits a repaint mask that freezes "
+        "every original token (0) and regenerates only the in-betweens (1). "
+        "So the pass pays for the dilated token count once, and the frames "
+        "you already have are not re-rendered.\n\n"
+        "Wire the SAME hold map the oracles and H3 Time Smear speak "
+        "(holds express where and how much to insert). Length is snapped up "
+        "to the 17k+5 grid exactly as H3 Time Smear snaps it (the tail pad "
+        "folds into the last hold), and hold_map is passed through already "
+        "snapped for H3 True Clock and the recover nodes - wire THAT output, "
+        "not the original map.\n\n"
+        "init_mode: 'lerp' (default) linearly blends the bracketing base "
+        "tokens - measured corr 0.888 against the encode of the pixel-"
+        "smeared clip, and token-times that land on a base token centre are "
+        "bit-copied. 'noise' fills the inserted tokens with unit noise "
+        "instead (pure inpainting, no init). Denoise the result from sigma "
+        ">= ~0.5; below that the interpolation residual survives.\n\n"
+        "PREFER HOLD SPANS THAT START ON A 17-MULTIPLE (frames 0, 17, 34 "
+        "...): inserted singleton tokens that land on those anchors are "
+        "recovered exactly, off-anchor ones are the worst case.\n\n"
+        "AUDIO IS NOT RETIMED. v1 deliberately leaves H3's audio clock "
+        "alone: any audio component is passed through bit-exact, so the "
+        "expanded video NO LONGER MATCHES ITS AUDIO DURATION (a plain video "
+        "latent gets a zero audio track sized for the DILATED length "
+        "instead). Take audio from elsewhere - the source clip, or H3 Audio "
+        "Recover at reference_mix 1.0.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "samples": ("LATENT", {"tooltip": "video latent from VAEEncode of the ORIGINAL (un-smeared) clip, or a nested AV latent"}),
+            "hold_map": ("STRING", {"default": "", "forceInput": True,
+                         "tooltip": "the oracles' / H3 Time Smear's hold map: per-world-frame integer holds. hold h means h token-times where there was 1"}),
+            "init_mode": (["lerp", "noise"], {"default": "lerp",
+                          "tooltip": "lerp: blend the bracketing base tokens (T2a: corr 0.888, fancier variants buy nothing). noise: unit noise, pure inpainting"}),
+        }, "optional": {
+            "length": ("INT", {"default": 0, "min": 0, "max": 3600,
+                       "tooltip": "0 = derive the base length from the latent (recommended); nonzero asserts this exact base length"}),
+            "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
+                           "tooltip": "only used by init_mode 'noise'; fixed so the init is reproducible"}),
+        }}
+
+    RETURN_TYPES = ("LATENT", "LATENT", "STRING", "STRING")
+    RETURN_NAMES = ("samples", "noise_mask", "hold_map", "report")
+    FUNCTION = "insert"
+    CATEGORY = "latent/minimax/motion"
+
+    def insert(self, samples, hold_map, init_mode="lerp", length=0, noise_seed=0):
+        import comfy.nested_tensor
+
+        parsed = json.loads(hold_map)
+        holds_in = list(parsed["holds"])
+        z = samples["samples"]
+        nested = bool(getattr(z, "is_nested", False) and hasattr(z, "unbind"))
+        parts = list(z.unbind()) if nested else [z]
+        video = parts[0]                                  # (B, 24, t_lat, h, w)
+        audio_in = parts[1] if len(parts) > 1 else None
+        if "world_len" in parsed:
+            assert int(parsed["world_len"]) == len(holds_in), (
+                f"hold map says world_len {parsed['world_len']} but carries "
+                f"{len(holds_in)} holds")
+        if length:
+            assert length == len(holds_in), (
+                f"length {length} but the hold map covers {len(holds_in)} frames")
+
+        holds, dilated, t_base, t_dil, plan = temporal_insert_map(holds_in)
+        assert video.shape[2] == t_base, (
+            f"the latent has {video.shape[2]} tokens; a {len(holds)}-frame "
+            f"base clip needs {t_base} (is this the SMEARED latent? this node "
+            "takes the ORIGINAL clip's latent)")
+
+        out_v = torch.empty(video.shape[0], video.shape[1], t_dil,
+                            video.shape[3], video.shape[4],
+                            device=video.device, dtype=video.dtype)
+        mask_v = torch.zeros(1, 1, t_dil, video.shape[3], video.shape[4],
+                             device=video.device, dtype=video.dtype)
+        gen = torch.Generator(device="cpu").manual_seed(int(noise_seed))
+        copied, inserted = [], []
+        for n, (_t, lo, hi, w, exact) in enumerate(plan):
+            if exact >= 0:
+                out_v[:, :, n] = video[:, :, exact]        # verbatim, maxabs 0
+                copied.append(n)
+                continue
+            inserted.append(n)
+            mask_v[:, :, n] = 1.0
+            if init_mode == "noise":
+                out_v[:, :, n] = torch.randn(
+                    video.shape[0], video.shape[1], video.shape[3],
+                    video.shape[4], generator=gen).to(video.device, video.dtype)
+            else:
+                out_v[:, :, n] = ((1.0 - w) * video[:, :, lo].float()
+                                  + w * video[:, :, hi].float()).to(video.dtype)
+
+        if audio_in is None:
+            audio = torch.zeros(video.shape[0], 32, 2, _audio_latent_t(dilated),
+                                device=video.device, dtype=video.dtype)
+            audio_note = (f"no audio component in: a ZERO audio latent sized "
+                          f"for the dilated length was built ({tuple(audio.shape)})")
+        else:
+            audio = audio_in                               # by reference, bit-exact
+            audio_note = (f"audio passed through untouched, {tuple(audio.shape)} "
+                          f"{audio.dtype} - it still runs on the BASE clip's "
+                          f"clock")
+        mask_a = torch.ones(1, audio.shape[1], audio.shape[2], audio.shape[3])
+
+        out = dict(samples)
+        out["samples"] = comfy.nested_tensor.NestedTensor((out_v, audio))
+        nm = comfy.nested_tensor.NestedTensor((mask_v.contiguous(), mask_a))
+        out["noise_mask"] = nm
+
+        starts = [f for f, h in enumerate(holds)
+                  if h > 1 and (f == 0 or holds[f - 1] <= 1)]
+        off = [f for f in starts if f % LEGAL_STEP]
+        rep = [
+            f"temporal insert ({init_mode}): world {len(holds)}f -> dilated "
+            f"{dilated}f, t_lat {t_base} -> {t_dil} tokens "
+            f"(+{t_dil - t_base}); video {video.shape[3]}x{video.shape[4]} cells",
+            f"copied verbatim (mask 0, frozen): {len(copied)} token-times "
+            f"[{_index_runs(copied)}]",
+            f"inserted (mask 1, regenerate): {len(inserted)} token-times "
+            f"[{_index_runs(inserted)}]",
+            (f"T2a rule 1 - hold spans start at frames [{_index_runs(starts)}]; "
+             + ("all on 17-multiples, so inserted singletons land on base "
+                "anchors and recover exactly"
+                if not off else
+                f"OFF the 17-multiple phase: {off} - those spans' inserted "
+                "singletons are the worst case (T2a corr 0.75). Move them to "
+                "frames 0/17/34/... if the in-betweens look wrong")),
+            f"AUDIO CAVEAT: {audio_note}. The video is now {dilated / 24.0:.2f}s "
+            f"of frames against {len(holds) / 24.0:.2f}s of world time, so any "
+            "audio it carries is NOT in sync - take audio from the source clip "
+            "or H3 Audio Recover at reference_mix 1.0",
+            "denoise the inserted tokens from sigma >= ~0.5 (T2a break-even "
+            "0.305); the mask reaches the sampler through the samples output "
+            "itself - the noise_mask output is the same mask, for inspection",
+        ]
+        used = json.dumps({"holds": holds, "world_len": len(holds)})
+        return (out, {"samples": nm}, used, "\n".join(rep))
 
 
 LATENT_CELL = 16   # image pixels per latent spatial cell (H3 video VAE)
@@ -3733,6 +3986,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3ExactRecover": H3ExactRecover,
     "H3TrueClock": H3TrueClock,
     "H3V2VInit": H3V2VInit,
+    "H3TemporalInsert": H3TemporalInsert,
     "H3LatentUpscale": H3LatentUpscale,
     "H3InjectSchedule": H3InjectSchedule,
     "H3JerkHeatmap": H3JerkHeatmap,
@@ -3760,6 +4014,7 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3ExactRecover": "H3 Exact Recover (24fps frame selection)",
     "H3TrueClock": "H3 True Clock (density-corrected RoPE t-grid) [experimental]",
     "H3V2VInit": "H3 V2V Init (nested AV latent)",
+    "H3TemporalInsert": "H3 Temporal Insert (insert token-times, freeze originals) [experimental]",
     "H3LatentUpscale": "H3 Latent Upscale (video only, audio kept) [experimental]",
     "H3InjectSchedule": "H3 Inject Schedule (v2v sigmas, 0.70)",
     "H3JerkHeatmap": "H3 Jerk Heatmap (oracle overlay tile)",
