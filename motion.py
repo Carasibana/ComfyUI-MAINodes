@@ -1495,7 +1495,10 @@ class H3ExactRecover:
             starts.append(cur)
             cur += h
         assert cur == images.shape[0], (cur, images.shape[0])
-        return (images[torch.tensor(starts)],)
+        # cpu: recovered frames feed image-composition nodes (ImageBatch,
+        # splices) whose other inputs are CPU loads; a cuda tensor here
+        # crashes the cat. Matches H3TimeSmear's convention.
+        return (images[torch.tensor(starts)].cpu(),)
 
 
 _TRUE_CLOCK = {"spans": None}   # armed per run; never left set (see _wrap)
