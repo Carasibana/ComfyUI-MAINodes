@@ -117,7 +117,13 @@ that re-runs one prompt: rolling windows, seed hunts, extension chains.
 Requeueing an unchanged graph does not need it (ComfyUI's node cache
 already serves the conditioning); queueing a second workflow in
 between, restarting, or editing anything upstream of the encode does,
-and that is the normal shape of a session. So
+and that is the normal shape of a session. **H3 Latent Bank** does the
+same for a sampled pass: on the rolling-window graphs the pass-1
+baseline is lost to the same evictions and re-renders in full before
+window item 2 can start, so bank its LATENT (4.8 MB for a 107-frame
+480x832 clip; the decoded frames would be 513 MB) and wire the noise
+seed into the node's `seed` input so a new seed misses instead of
+serving the old take. So
 a 5 s, 1.0 MP de-rope fits a 32 GB card with a few GB of headroom (the
 28 GB figure is a brief spike, under a minute total), and 3 s clips run
 comfortably. Resolution barely moves the peak (0.4 to 0.7 MP added less

@@ -2828,6 +2828,196 @@ class H3ConditioningBank:
         return (conditioning, "\n".join(lines))
 
 
+def _latent_pack(latent):
+    """A LATENT as plain, storable objects.
+
+    H3's `samples` is a comfy NestedTensor (video + audio), not a tensor, so
+    it is stored as its member tensors and rebuilt on load. Storing the class
+    itself would tie every bank file to comfy's current class layout.
+    """
+    out = {}
+    for k, v in latent.items():
+        if getattr(v, "is_nested", False) and hasattr(v, "unbind"):
+            out[k] = {"__nested__": [t.detach().to("cpu").clone()
+                                     for t in v.unbind()]}
+        else:
+            out[k] = _cond_to_cpu(v)
+    return out
+
+
+def _latent_unpack(payload):
+    out = {}
+    for k, v in payload.items():
+        if isinstance(v, dict) and "__nested__" in v:
+            from comfy.nested_tensor import NestedTensor
+            out[k] = NestedTensor(tuple(v["__nested__"]))
+        else:
+            out[k] = v
+    return out
+
+
+def _latent_shape_report(latent):
+    lines = []
+    for k, v in sorted(latent.items()):
+        if getattr(v, "is_nested", False) and hasattr(v, "unbind"):
+            parts = [f"{tuple(t.shape)} {t.dtype}" for t in v.unbind()]
+            lines.append(f"  {k}: nested[{len(parts)}] " + " + ".join(parts))
+        elif isinstance(v, dict) and "__nested__" in v:
+            parts = [f"{tuple(t.shape)} {t.dtype}" for t in v["__nested__"]]
+            lines.append(f"  {k}: nested[{len(parts)}] " + " + ".join(parts))
+        elif isinstance(v, torch.Tensor):
+            lines.append(f"  {k}: {tuple(v.shape)} {v.dtype}")
+    return lines
+
+
+class H3LatentBank:
+    """Bank a sampled LATENT to disk and serve it back without sampling.
+
+    The sibling of H3 Conditioning Bank, same shape and same honesty: the
+    `samples` input is LAZY, so on a hit the sampler upstream is never
+    staged."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-14.\n\n"
+        "Caches a sampled latent on disk so a later queue item reuses the "
+        "pass instead of re-running it. The intended seat is straight after "
+        "the PASS 1 sampler in the rolling-window graphs, where every "
+        "consumer of that pass (VAE Decode, VAE Decode Audio, and H3 Jerk "
+        "Oracle, which reads the latent directly) is downstream of this one "
+        "node. Its `samples` input is LAZY: on a bank hit ComfyUI never "
+        "stages the sampler, so the sigmas, the noise, the guider and the "
+        "pass-1 text encode are not executed either. What is skipped is the "
+        "SAMPLING. Everything downstream of the bank still runs on a hit: "
+        "the VAE decodes and the oracle read the banked latent and do their "
+        "work again, which is seconds against the pass they replace.\n\n"
+        "WHY IT EXISTS. Requeueing an unchanged graph already hits ComfyUI's "
+        "node cache, so a plain window requeue re-samples nothing. But the "
+        "cache is dropped whenever another workflow is queued in between, "
+        "whenever ComfyUI restarts, and whenever anything upstream is "
+        "edited, and then window item 2 re-renders the whole baseline pass "
+        "before it can start its own window. Latents are small: the H3 AV "
+        "latent of a 107-frame 480x832 clip is 4.8 MB (24x32x52x30 video "
+        "plus 32x2x178 audio, float32), against 513 MB for the same clip "
+        "decoded to float32 frames. Bank the latent, not the frames.\n\n"
+        "STALENESS is the contract, and it is on you. The filename is "
+        "bank_key plus a hash of exactly two optional inputs: `seed` and "
+        "`fingerprint`. Wire the sampler's noise seed into `seed`, and put "
+        "anything else that decides the pass into `fingerprint` (a string "
+        "you build: steps, scheduler, LoRA strength, resolution, prompt). "
+        "NOTHING is fingerprinted for you beyond those two. Change a dial "
+        "the key does not cover and you must change bank_key or set mode to "
+        "refresh, or you will silently ship the old take. Latents are "
+        "stored on the CPU and are float32 by default; float16 halves the "
+        "file and is below the noise of a VAE decode, but it is not "
+        "bit-identical, so keep float32 while you are comparing takes.")
+
+    MODES = ["use bank if present (default)", "refresh (re-sample, overwrite)"]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "samples": ("LATENT", {"lazy": True,
+                        "tooltip": "from the sampler; on a bank hit this link is never "
+                                   "evaluated, so the sampler does not run"}),
+            "bank_key": ("STRING", {"default": "pass1",
+                         "tooltip": "names the bank. One key per pass you want to keep"}),
+            "store_dir": ("STRING", {"default": "output/h3_latent_bank",
+                          "tooltip": "a relative path lands inside the ComfyUI working "
+                                     "directory. Avoid /tmp: it is a RAM disk on most "
+                                     "Linux installs and the bank is meant to survive a "
+                                     "reboot"}),
+            "mode": (cls.MODES, {"default": cls.MODES[0]}),
+        }, "optional": {
+            "seed": ("INT", {"forceInput": True, "min": 0, "max": 0xffffffffffffffff,
+                     "tooltip": "wire the sampler's noise seed; it joins the filename, so a "
+                                "new seed misses the bank instead of being served the old take"}),
+            "fingerprint": ("STRING", {"forceInput": True, "multiline": True,
+                            "tooltip": "anything else that decides this pass, as a string. "
+                                       "Nothing is hashed for you except this and 'seed'"}),
+            "store_dtype": (["float32 (exact)", "float16 (half the file)"],
+                            {"default": "float32 (exact)"}),
+        }}
+
+    RETURN_TYPES = ("LATENT", "STRING")
+    RETURN_NAMES = ("samples", "report")
+    FUNCTION = "bank"
+    CATEGORY = "latent/minimax"
+
+    @staticmethod
+    def _path(store_dir, bank_key, seed, fingerprint):
+        import hashlib
+        import os
+        import re
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(bank_key)) or "pass1"
+        if seed is not None or fingerprint is not None:
+            key = f"{seed}|{fingerprint}".encode("utf-8")
+            safe = f"{safe}__{hashlib.sha1(key).hexdigest()[:8]}"
+        return os.path.join(store_dir, f"{safe}.latent.pt")
+
+    def check_lazy_status(self, bank_key, store_dir, mode, samples=None,
+                          seed=None, fingerprint=None, store_dtype=None):
+        """Ask for the sampler's output ONLY when the bank cannot serve it."""
+        import os
+        if samples is not None:
+            return []
+        if mode.startswith("refresh"):
+            return ["samples"]
+        p = self._path(store_dir, bank_key, seed, fingerprint)
+        try:
+            ok = os.path.getsize(p) > 0
+        except OSError:
+            ok = False
+        return [] if ok else ["samples"]
+
+    def bank(self, samples=None, bank_key="pass1",
+             store_dir="output/h3_latent_bank", mode=MODES[0], seed=None,
+             fingerprint=None, store_dtype="float32 (exact)"):
+        import os
+        path = self._path(store_dir, bank_key, seed, fingerprint)
+
+        if samples is None:                       # hit: the sampler never ran
+            payload = torch.load(path, map_location="cpu", weights_only=False)
+            latent = _latent_unpack(payload["latent"])
+            lines = [f"bank HIT: {path} "
+                     f"({os.path.getsize(path) / 1e6:.1f} MB), the sampler "
+                     f"upstream was not executed"]
+            lines += _latent_shape_report(latent)
+            return (latent, "\n".join(lines))
+
+        lines = [("bank REFRESH: re-sampled and overwriting "
+                  if mode.startswith("refresh") else
+                  "bank MISS: sampled and writing ") + path]
+        lines += _latent_shape_report(samples)
+        try:
+            packed = _latent_pack(samples)
+            if store_dtype.startswith("float16"):
+                packed = _cond_to_half(packed)
+            os.makedirs(store_dir or ".", exist_ok=True)
+            tmp = path + ".tmp"
+            torch.save({"latent": packed, "format": 1,
+                        "seed": seed, "fingerprint": fingerprint}, tmp)
+            os.replace(tmp, path)                 # atomic: no half-written bank
+            lines.append(f"  {os.path.getsize(path) / 1e6:.1f} MB banked; the "
+                         f"next queue item on this key skips the pass")
+        except Exception as e:                    # a cache must never kill a run
+            lines.append(f"  NOT BANKED ({type(e).__name__}: {e}); the latent "
+                         f"passes through unchanged and every item will keep "
+                         f"re-sampling")
+        return (samples, "\n".join(lines))
+
+
+def _cond_to_half(obj):
+    """float32 -> float16 for storage only; integer tensors are left alone."""
+    if isinstance(obj, torch.Tensor):
+        return obj.to(torch.float16) if obj.dtype == torch.float32 else obj
+    if isinstance(obj, dict):
+        return {k: _cond_to_half(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        out = [_cond_to_half(v) for v in obj]
+        return tuple(out) if isinstance(obj, tuple) else out
+    return obj
+
+
 class _AnyType(str):
     def __ne__(self, other):
         return False
@@ -2892,6 +3082,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3WindowPlan": H3WindowPlan,
     "H3WindowCollect": H3WindowCollect,
     "H3ConditioningBank": H3ConditioningBank,
+    "H3LatentBank": H3LatentBank,
 }
 TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3VideoFit": "H3 Video Fit (source clip -> 17k+5 frames) [alpha]",
@@ -2916,4 +3107,5 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3WindowPlan": "H3 Window Plan (split the pass into N windows) [alpha]",
     "H3WindowCollect": "H3 Window Collect (bank windows, splice when full) [alpha]",
     "H3ConditioningBank": "H3 Conditioning Bank (encode once, no TE per item) [alpha]",
+    "H3LatentBank": "H3 Latent Bank (sample once, skip the pass) [alpha]",
 }

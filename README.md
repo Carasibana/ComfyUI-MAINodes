@@ -239,6 +239,18 @@ upstream of the encode, and the bank survives all three. It is not
 window-specific: a seed hunt and an extension chain on the same prompt
 encode once between them too.
 
+**H3 Latent Bank** (alpha) is the same trick one stage later, and on
+this graph it is worth more. The pass-1 baseline render is cached
+exactly like the conditioning is, and lost exactly as easily, so an
+interleaved workflow makes window item 2 re-render the whole baseline
+before it starts its own window. Bank the pass-1 LATENT and every
+consumer is served from it: the video decode, the audio decode, and H3
+Jerk Oracle, which reads the latent directly. Latents are the cheap
+thing to keep: the AV latent of a 107-frame 480x832 clip is 4.8 MB,
+against 513 MB for the same clip as float32 frames. The staleness
+contract is stated plainly on the node: `bank_key` plus a hash of
+`seed` and `fingerprint`, and nothing else is fingerprinted for you.
+
 Measured on a simulated 32 GB card (a large card fenced down with
 `--reserve-vram`; int8 stack, 0.4 to 1.5 MP, 107 frames): the one-pass
 de-rope peaked at 30.7 GB, touched the ceiling, and streamed the DiT
@@ -323,6 +335,9 @@ line is it.
 | | `run_name` | window_run | keys the banked set; change it whenever the plan changes |
 | H3 Conditioning Bank (alpha) | `bank_key` | run | banks the encoded prompt to disk between queue items. Its `conditioning` input is lazy, so on a hit the encode node and the ~15 GB text encoder are never executed. One key per (prompt, reference, canvas, length): only the prompt is fingerprinted for you, and only if you wire it |
 | | `mode` | use bank if present | `refresh` re-encodes and overwrites, which is what you press after changing anything the key does not cover |
+| H3 Latent Bank (alpha) | `bank_key` | pass1 | same idea one stage later: banks a sampled LATENT so the pass is not re-rendered. Seat it after the pass-1 sampler, where the video decode, the audio decode and the jerk oracle all read from it. Lazy input, so a hit never stages the sampler |
+| | `seed`, `fingerprint` | unwired | the ONLY things folded into the filename beyond `bank_key`. Wire the noise seed; put steps, scheduler, LoRA strength and resolution into `fingerprint` yourself |
+| | `store_dtype` | float32 (exact) | float16 halves the file and sits below a VAE decode's noise, but it is not bit-identical: keep float32 while you are comparing takes |
 | H3 Manual Hold Map | `ranges` | | manual time targeting: `start-end[:hold]` pairs, frames or seconds. Wire the oracle's hold_map in and its holds survive only inside your ranges (gate mode); leave it unwired to author holds directly. The report output prices the regeneration before you run it |
 | H3 V2V Init | `freeze_threshold` | 0 (off) | automatic background freeze, not recommended: it fixes background timing but degraded other artifacts in our playback tests. Kept for content where the trade goes the other way |
 | | `mask`, `mask_feather` | off, 0 | manual freeze region: you paint what regenerates (`invert_mask` to paint the frozen background instead). Static union over time, so the boundary never moves. Default is hard latent cells (each ~16 px cell fully frozen or fully live; the decode smooths the edge); raise `mask_feather` for a pixel-space ramp pooled to fractional cells if a seam shows |
