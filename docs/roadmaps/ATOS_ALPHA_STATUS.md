@@ -73,8 +73,17 @@ Companions: `ROADMAP.md` (methods under investigation), `TESTING_ALPHA.md`
    so genuine spatial token reduction pays more than proportionally. The
    spatial sibling of the rolling window. Probes will follow the same
    measure-then-mint loop as the temporal work.
-8. **Continuation and temporal-inpainting UX.** The clock discipline above
-   is the prerequisite and is done.
+8. **Continuation and temporal-inpainting UX (product shape settled
+   2026-08-14).** Three verbs: EXTEND a clip, ATTACH two clips, and HEAL
+   the join, where healing is temporal inpainting with the de-rope as the
+   repair pass. Masking (subject and region, item 6) and spatial
+   upscaling ride along the same flows. Mechanism notes: core AddGuide
+   anchors are the conditioning path; per-token clean-context masking
+   (upstream PR #15375, unmerged) is the pinning path the community
+   evidence favors for seams; anchors obey the placement grid (multiples
+   of 17 for clip guides, 39-frame overlaps); durations prefer the
+   clock-aligned lengths (90 / 141 / 192). The clock discipline
+   prerequisite is done.
 
 ## Recently retired
 
