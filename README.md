@@ -494,9 +494,14 @@ the burst back in. Applied to the de-rope pass only, it teaches the base
 model to spend the stretched clock on smoothness instead of invention.
 Weights and the measurement write-up:
 [huggingface.co/matlowai/MiniMax-H3-Motion-Adapter](https://huggingface.co/matlowai/MiniMax-H3-Motion-Adapter).
-Graph: [`examples/motion_pipeline_adapter_api.json`](examples/motion_pipeline_adapter_api.json)
-(the standard pipeline with one `LoraLoaderModelOnly` on the pass-2
-model). Clips on the [demo page](https://matlowai.github.io/ComfyUI-MAINodes/#adapter).
+Graphs: [`examples/motion_pipeline_adapter_api.json`](examples/motion_pipeline_adapter_api.json)
+(text to video, then the standard de-rope with one `LoraLoaderModelOnly`
+on the pass-2 model) and
+[`examples/motion_window_pinned_adapter_api.json`](examples/motion_window_pinned_adapter_api.json)
+(a clip you already have: the window is regenerated at denoise 0.70 with
+its first and last frames pinned, adapter on the pass-2 model; this is the
+graph behind the demo page's headline quad). Clips on the
+[demo page](https://matlowai.github.io/ComfyUI-MAINodes/#adapter).
 
 Settings, measured on clips it never saw: strength 1.0 (strength and
 inject are the same dial; 1.0 wins alternation in every paired cell);

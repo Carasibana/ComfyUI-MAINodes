@@ -111,6 +111,18 @@ The card at the end lists every setting and the wall time per tile
 (10m41s, 10m41s, 11m20s at 1024 px). Numbers on the
 <a href="https://huggingface.co/matlowai/MiniMax-H3-Motion-Adapter">model
 card</a>.</p>
+<p class="cap"><b>Which graph.</b> Two are in the repo, both API format,
+loadable through the API or the frontend's API import. For a clip you
+already have, the graph behind this exhibit is
+<a href="https://github.com/matlowai/ComfyUI-MAINodes/blob/main/examples/motion_window_pinned_adapter_api.json"><code>examples/motion_window_pinned_adapter_api.json</code></a>:
+load the plate, the window is regenerated at denoise 0.70 with its first
+and last frames pinned, the adapter sits on the pass-2 model. To generate
+from text and de-rope in one go, use
+<a href="https://github.com/matlowai/ComfyUI-MAINodes/blob/main/examples/motion_pipeline_adapter_api.json"><code>examples/motion_pipeline_adapter_api.json</code></a>:
+the standard Motion Lab pipeline with one <code>LoraLoaderModelOnly</code>
+on the pass-2 model at strength 1.0, inject 0.45. Put the weights in
+<code>models/loras/minimax_h3/</code>; the LoRA node's file name already
+matches the Hugging Face file.</p>
 <video controls loop playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_chaos_derope_triptych.mp4"></video>
 <p class="cap">A windowed de-rope on a chaotic burst: first generation, the
