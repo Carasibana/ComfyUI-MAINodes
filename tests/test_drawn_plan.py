@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit test for H3 Drawn Plan: a drawn plan document -> hold-map ranges.
 
-  /mnt/work/ai/venvs/comfyui-cu132/bin/python tests/test_drawn_plan.py
+  python tests/test_drawn_plan.py
       Synthetic, no GPU, no models, no renders. torch is needed because the
       node module draws a preview and the grid law lives in motion.py.
 

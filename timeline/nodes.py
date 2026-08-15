@@ -265,7 +265,7 @@ class H3TimelineRender:
                                          "recorder_path": recorder_path})
         schema.save(plan, plan_path)
         launcher = os.environ.get("H3_TIMELINE_QUEUE_CMD",
-               "/mnt/work/ai/venvs/comfyui-cu132/bin/python "
+               "python "
                "/mnt/work/ai/apps/ComfyUI-ModelCatalog/benchmarks/scripts/"
                "queue_scene.py")
         cmd = f"{launcher} {graph_path} --tag timeline --port {int(port)}"

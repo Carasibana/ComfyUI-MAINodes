@@ -24,7 +24,7 @@ from timeline.h3.compile import H3Backend                      # noqa: E402
 
 # Site config: override via env for your install; defaults are the authoring box.
 QUEUE = os.environ.get("H3_TIMELINE_QUEUE_CMD",
-        "/mnt/work/ai/venvs/comfyui-cu132/bin/python "
+        "python "
         "/mnt/work/ai/apps/ComfyUI-ModelCatalog/benchmarks/scripts/"
          "queue_scene.py")
 

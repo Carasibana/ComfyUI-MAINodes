@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Two doors, one answer: the node surface vs the compiler's minted graph.
 
-  /mnt/work/ai/venvs/comfyui-cu132/bin/python tests/test_node_parity.py
+  python tests/test_node_parity.py
       Synthetic, no GPU, no models, no renders.
 
 A plan can reach a render two ways: the compiler mints a whole graph from

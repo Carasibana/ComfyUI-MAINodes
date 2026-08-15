@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit test for the timeline surface: plan schema, backend seam, compiler.
 
-  /mnt/work/ai/venvs/comfyui-cu132/bin/python tests/test_timeline_compile.py
+  python tests/test_timeline_compile.py
       Synthetic, no GPU, no models, no renders. torch is needed only
       because timeline/h3/gridlaw.py reaches into motion.py for the grid
       law (deliberately: reuse it, never fork it).
