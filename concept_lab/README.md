@@ -29,24 +29,27 @@ only the content.
 
 ## Status
 
-**Alpha, and deliberately narrow.** What exists is the data layer: the
-contracts, the workspace, the verbs, and three surfaces over them. What does
-not exist is anything that runs a model.
+**Alpha, and deliberately narrow.** What exists is the data layer (the
+contracts, the workspace, the verbs, and three surfaces over them) plus the
+H3 capture tap that rides along on a render. What does not exist is anything
+that turns a capture into a factor, or a factor into conditioning.
 
 | built | not built |
 |---|---|
-| contracts with deterministic ids (`types.py`) | capture (T4/T5) |
-| the workspace, export and import (`space.py`) | the delta engine (T3) |
-| the verb layer (`api.py`) | factorization strategies (T6+) |
-| shell and agent surfaces (`cli.py`, `mcp.py`) | the compiler (T9) |
-| the H3 backend's verified anchors (`backends/h3.py`) | ComfyUI nodes (T12) |
+| contracts with deterministic ids (`types.py`) | the delta engine (T3) |
+| the workspace, export and import (`space.py`) | factorization strategies (T6+) |
+| the verb layer (`api.py`) | the compiler (T9) |
+| shell and agent surfaces (`cli.py`, `mcp.py`) | the rest of the node surface (T12) |
+| the H3 backend's verified anchors (`backends/h3.py`) | |
+| capture (T4/T5): tap + nodes built, E0 gates NOT yet run live | |
 
 Unbuilt verbs raise and name the task that blocks them. They do not return
 an empty result. In a subsystem whose output is evidence, a quiet nothing is
 worse than a refusal, because the nothing gets written down.
 
-No nodes are registered, and the pack's `__init__.py` is untouched, so
-nothing here changes any existing MAINodes behaviour or default.
+Two alpha nodes are registered (`MAI Concept Capture Arm` / `Flush`,
+DEC-CL-0018), through the pack's guarded loader, so a broken alpha module
+cannot take the pack down. No existing MAINodes behaviour or default moves.
 
 ## Layering, and why it is strict
 
@@ -59,7 +62,7 @@ strategies/   factorization algorithms (they arrive with their experiments).
 
 cli.py        shell client over api.py
 mcp.py        typed agent client over api.py
-nodes.py      ComfyUI client over api.py (not written yet)
+nodes.py      ComfyUI client over api.py (the capture pair, alpha)
 ```
 
 Three surfaces, one authority. A verb that is not in `api.py` does not
@@ -193,6 +196,7 @@ Each of these is here because a previous research program paid for it.
 
 ```
 python tests/test_concept_lab_contracts.py
+python tests/test_concept_lab_tap.py        # torch, no comfy, no GPU
 ```
 
 Synthetic. No GPU, no models, no renders, no torch. Thirteen check groups
@@ -203,6 +207,13 @@ export/import provenance, the H3 anchors read from the installed ComfyUI
 source, unbuilt verbs refusing, the CLI surface, the version-control
 warning, tensor hashing in `doctor`, and the two guards that have to fire:
 split containment and the shape-matched control arm.
+
+The tap suite is the second one and needs torch (it never imports ComfyUI):
+six check groups over pass-through exactness, step selection, what each
+store writes, the manifest and its id, the refusals, and the disabled arm
+writing nothing. What it cannot check offline is the only thing that
+matters in the end, which is why E0 exists: that a real render is
+pixel-identical with the tap installed.
 
 ## Reading order for the design
 

@@ -75,7 +75,10 @@ class H3Backend(Backend):
             "tap_installed_via": "ModelPatcher.set_model_patch_replace",
             "expected_blocks": 50,
             "expected_width": 5376,
-            "supports_capture": False,      # T4/T5
+            # The tap exists (T4) and runs INSIDE the ComfyUI process through
+            # the two alpha nodes; there is no out-of-process capture verb to
+            # call, and there is not going to be one.
+            "supports_capture": "via_node",
             "supports_compile": False,      # T9
             "notes": [
                 "references advance the target cursor, so a two-arm "
@@ -185,16 +188,33 @@ class H3Backend(Backend):
 
     def fingerprint(self, **kw) -> T.ModelStackFingerprint:
         raise BackendError(
-            "h3.fingerprint reads the live ComfyUI stack and is built with "
-            "the capture path (T4). Until then, hand-build a "
-            "ModelStackFingerprint and record where each field came from.")
+            "h3.fingerprint needs a live ModelPatcher, which does not cross "
+            "the api boundary (DEC-CL-0011). Inside the process, call "
+            "concept_lab.backends.h3_tap.fingerprint_from_patcher(patcher, "
+            "stack_label); it reads the model class, config class, parameter "
+            "dtype and weight-patch stack, and takes the checkpoint NAME "
+            "from the caller because a ModelPatcher does not carry it.")
+
+    def tap_install(self, model_patcher, session):
+        """Hang a TapSession on a clone of `model_patcher`.
+
+        The import is local because everything above this line stays
+        importable in a process with no torch and no ComfyUI in it, and
+        `h3_tap` is the file where both arrive.
+        """
+        from concept_lab.backends import h3_tap                 # noqa: PLC0415
+        return h3_tap.install(model_patcher, session)
 
     def capture(self, *a, **k):
         raise BackendError(
-            "h3.capture is T4/T5. The acceptance gate it has to clear "
-            "first: a pass-through tap must be numerically identical to the "
-            "unpatched model at the same seed and settings, and capture "
-            "disabled must be a no-op.")
+            "h3.capture stays refusing on purpose. Capture runs INSIDE the "
+            "ComfyUI process (the states live for microseconds inside the "
+            "block loop and the launch is part of the condition), so the "
+            "path is the MAIConceptCaptureArm / MAIConceptCaptureFlush node "
+            "pair over backends/h3_tap.py, not a verb called from outside. "
+            "The gate it still has to clear is E0: a pass-through tap must "
+            "be numerically identical to the unpatched model at the same "
+            "seed and settings, and capture disabled must be a no-op.")
 
     def compile(self, *a, **k):
         raise BackendError("h3.compile is T9 and blocked on a factor that "

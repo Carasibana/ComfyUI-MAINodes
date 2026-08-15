@@ -324,3 +324,40 @@ last moment when the fix is free.
 **Consequences.** A corpus written before this entry has no `source_id`
 anywhere, which reads as "not recorded" and never as "no collision".
 Absence is skipped, not treated as a shared value.
+
+---
+
+## DEC-CL-0018 · ACCEPTED · 2026-08-15 · The capture tap ships as two thin alpha nodes now (amends DEC-CL-0013's timing, not its rule)
+
+**Decision.** Capture must run INSIDE the ComfyUI process — the states live
+for microseconds inside the DiT block loop and the launch is part of the
+condition (DEC-CL-0015) — so the seam needs a node to exist. Two ship now,
+`MAIConceptCaptureArm` and `MAIConceptCaptureFlush`, under the category
+`MAI/concept (alpha)`. They hold no rules: the Arm node parses its strings
+into a `TapSpec`, reads a stack fingerprint off the live `ModelPatcher`,
+opens a `TapSession` and installs it on a CLONE; the Flush node calls
+`finalize()`. Every refusal comes from `concept_lab/`.
+
+DEC-CL-0013's rule stands and is what makes this safe: existing MAINodes
+behaviour and defaults do not move. The registration is the one-liner that
+entry predicted, in the same guarded loader tuple as `window_loop`,
+`window_expand` and `timeline.nodes`, so a broken alpha module cannot take
+the pack down with it.
+
+**Alternatives.** A monkeypatched sampler — rejected: `ModelPatcher`'s
+`add_wrapper_with_key` / `set_model_patch_replace` are the sanctioned seam,
+and the true-clock precedent is a monkeypatch we would rather not repeat.
+Waiting for T12 — rejected: nothing else in the subsystem can produce a
+capture, so waiting means the data layer keeps being tested against itself.
+
+**Consequences.** E0's gates are run THROUGH these nodes: a baseline render,
+a tap-installed-disabled render and a tap-enabled render at one seed in one
+process must decode to pixel-identical frames. If the pass-through gate
+fails, the nodes are pulled, not patched around. Until those gates run live,
+the nodes are alpha and say so in their DESCRIPTION.
+
+**Also decided here (mechanical, same change).** `TapSpec.store` becomes a
+comma-joined subset of `("stats", "frame_mean", "sketch", "full")` and is
+canonicalized to that order, because one recorded forward is expensive and
+the four reductions answer different questions off the same rows. Single
+words stay legal and keep their meaning, so no id already on disk moves.

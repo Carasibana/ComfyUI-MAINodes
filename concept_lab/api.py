@@ -383,6 +383,41 @@ def arms_check(corpus: str, r_row_id: str, n_row_id: str,
     }
 
 
+def capture_record(manifest: dict, index_root: Optional[str] = None,
+                   tensor_root: Optional[str] = None) -> dict:
+    """File a manifest that a capture has ALREADY produced.
+
+    The tap runs inside the ComfyUI process and writes its tensors as it
+    goes (T4); this verb is the moment the record becomes evidence. It does
+    not run a model, which is why it is allowed on the agent surface: it
+    takes a dict somebody else measured and puts it in the bank under the id
+    the dict's own contents compute to.
+
+    The recompute is the point. A manifest may CLAIM a capture_id; if the
+    claim disagrees with what the fields hash to, one of the two is wrong
+    and filing it would put a lie in the index, so this refuses and prints
+    both. Collision semantics are `Space.put`'s and unchanged: identical
+    bytes are idempotent, different bytes under one id raise (DEC-CL-0007,
+    narrowed by DEC-CL-0015).
+    """
+    claimed = (manifest or {}).get("capture_id")
+    man = T.FunctionalCaptureManifest.from_dict(manifest)
+    cid = man.capture_id
+    if claimed and claimed != cid:
+        raise T.ContractError(
+            f"capture_record: the manifest claims capture_id {claimed!r} but "
+            f"its own fields hash to {cid!r}. One of them is wrong; filing it "
+            f"would key the bank on a claim rather than on the condition")
+    s = _space(index_root, tensor_root, create=True)
+    payload = man.to_dict()
+    payload["capture_id"] = cid
+    path = s.put("captures", cid, payload)
+    return {"capture_id": cid, "path": path, "n_tensors": len(man.tensors),
+            "stack_id": man.stack_id,
+            "process_launch_id": (man.process or {}).get("launch_id"),
+            "warnings": _vc_warnings(s)}
+
+
 def capture_run(*a, **k):
     raise NotYetImplemented(
         "capture_run", "T4/T5",
@@ -449,6 +484,7 @@ VERBS = {
     "corpus_confounds": corpus_confounds,
     "capture_plan": capture_plan,
     "arms_check": arms_check,
+    "capture_record": capture_record,
     "capture_run": capture_run,
     "delta_build": delta_build,
     "factorize": factorize,

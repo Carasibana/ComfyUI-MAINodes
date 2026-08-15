@@ -26,8 +26,10 @@ Layering, and it is load-bearing (the same discipline timeline/ uses):
 
     concept_lab/cli.py        shell client over api.py
     concept_lab/mcp.py        typed agent client over api.py
-    concept_lab/nodes.py      ComfyUI client over api.py (not yet written;
-                              see IMPLEMENTATION_NOTES.md for why)
+    concept_lab/nodes.py      ComfyUI client over api.py: the two alpha
+                              capture nodes, which exist because a capture
+                              can only be taken inside the ComfyUI process
+                              (DEC-CL-0018).
 
 Three surfaces, one authority. A verb that is not in api.py does not
 exist, and no surface is allowed to hold a rule the others cannot see.

@@ -209,6 +209,14 @@ def arms_check(corpus: str, r_row_id: str, n_row_id: str,
     return api.arms_check(corpus, r_row_id, n_row_id, backend=backend)
 
 
+@mcp.tool(description="File a capture manifest the tap has already "
+                      "produced. Runs no model: it recomputes the id from "
+                      "the manifest's own fields and refuses a manifest "
+                      "whose claimed id disagrees with them.")
+def capture_record(manifest: dict) -> dict:
+    return api.capture_record(manifest)
+
+
 @mcp.tool(description="Export the shareable part of this space to a "
                       "portable bundle. Packs marked private are held back "
                       "and reported in `excluded`.")

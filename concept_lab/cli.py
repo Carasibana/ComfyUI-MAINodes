@@ -16,6 +16,7 @@
 
     python -m concept_lab.cli capture plan wave --arms R,N,0
     python -m concept_lab.cli capture arms-check wave <r_row_id> <n_row_id>
+    python -m concept_lab.cli capture record manifest.json
 
 Every command prints JSON on stdout, so a shell pipeline and an agent read
 the same bytes. Errors go to stderr with a non-zero exit; a refusal is
@@ -137,6 +138,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("r_row")
     p.add_argument("n_row")
     p.add_argument("--backend", default="h3")
+    p = kp.add_parser("record")
+    p.add_argument("manifest", help="a capture manifest json the tap wrote")
     kp.add_parser("run")
 
     # ---- pack
@@ -194,6 +197,9 @@ def main(argv=None) -> int:
             elif a.cmd == "arms-check":
                 _out(api.arms_check(a.corpus, a.r_row, a.n_row,
                                     backend=a.backend, **r))
+            elif a.cmd == "record":
+                with open(a.manifest, encoding="utf-8") as fh:
+                    _out(api.capture_record(json.load(fh), **r))
             elif a.cmd == "run":
                 api.capture_run()
         elif a.topic == "pack":

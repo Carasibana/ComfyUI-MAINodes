@@ -376,28 +376,59 @@ class TapSpec(Record):
     `segments` are backend segment names, opaque here. `store` is the memory
     ladder: stats first, full only where separability evidence has already
     earned the disk.
+
+    `store` is a COMMA-JOINED SUBSET of STORE_KINDS, because one recorded
+    forward is expensive and the four reductions answer different questions
+    off the same rows (T4): `stats` is the cheap per-dim summary,
+    `frame_mean` keeps the time axis a video segment has, `sketch` is a
+    seeded random projection that keeps row-to-row geometry at 1/20th the
+    disk, `full` is the rows themselves. A single word is still legal and
+    still means exactly what it meant.
+
+    The stored string is CANONICALIZED to STORE_KINDS order, so
+    "sketch,stats" and "stats,sketch" name one condition and get one id
+    rather than two (DEC-CL-0006's rule: an id that disagrees about whether
+    two identical conditions are identical is an id that lies).
     """
 
     blocks: tuple = ()
     steps: tuple = ()                    # explicit sampler step indices
     step_quantiles: tuple = ()           # or schedule-relative positions
     segments: tuple = ()
-    store: str = "stats"                 # stats | full | sketch
+    store: str = "stats"                 # comma-joined subset of STORE_KINDS
     dtype: str = "bf16"
     sketch_dim: Optional[int] = None
     sketch_seed: Optional[int] = None
 
-    STORES = ("stats", "full", "sketch")
+    STORE_KINDS = ("stats", "frame_mean", "sketch", "full")
+    STORES = STORE_KINDS                 # the old name, same vocabulary
+
+    def store_kinds(self) -> tuple:
+        """The requested reductions, in STORE_KINDS order."""
+        want = {p.strip() for p in str(self.store).split(",") if p.strip()}
+        return tuple(k for k in self.STORE_KINDS if k in want)
 
     def __post_init__(self):
-        if self.store not in self.STORES:
+        parts = [p.strip() for p in str(self.store).split(",") if p.strip()]
+        if not parts:
             raise ContractError(
-                f"TapSpec.store={self.store!r} not in {self.STORES}")
+                f"TapSpec.store={self.store!r} is empty; want one or more of "
+                f"{self.STORE_KINDS}")
+        bad = [p for p in parts if p not in self.STORE_KINDS]
+        if bad:
+            raise ContractError(
+                f"TapSpec.store={self.store!r} names {bad} which is not in "
+                f"{self.STORE_KINDS}")
+        if len(set(parts)) != len(parts):
+            raise ContractError(
+                f"TapSpec.store={self.store!r} repeats a kind; a capture that "
+                f"asks for the same reduction twice has two names for one file")
+        self.store = ",".join(self.store_kinds())
         if self.steps and self.step_quantiles:
             raise ContractError(
                 "TapSpec: give steps OR step_quantiles, not both; a capture "
                 "that can be selected two ways cannot be reproduced one way")
-        if self.store == "sketch" and not self.sketch_dim:
+        if "sketch" in parts and not self.sketch_dim:
             raise ContractError(
                 "TapSpec.store='sketch' needs sketch_dim and sketch_seed: an "
                 "unrecorded random projection is an unreproducible capture")
