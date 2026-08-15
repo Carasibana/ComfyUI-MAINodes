@@ -99,12 +99,16 @@ the same seed, because quantization bends the trajectory. Both coherent,
 both de-rope cleanly. Compare quality, not pixels.</p>
 
 <h2 id="adapter">The motion adapter (pilot), what it does and where it does not</h2>
-<video controls loop playsinline preload="metadata"
-  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_mage_windowed_quad.mp4"></video>
+<video controls playsinline preload="metadata"
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_mage_pinned_quad.mp4"></video>
 <p class="cap">A rank-16 LoRA trained on our own de-rope task, applied to the
-de-rope pass only. Left to right: source plate, the windowed de-rope, the
-same with the adapter at 1.0, and at 0.75. Same seed throughout. On fast
-anime like this it wins at every setting; the numbers are on the
+de-rope pass only. Why the anchors and the adapter both matter: source
+plate; the windowed de-rope at denoise 0.70 with nothing anchoring the
+window, which lands off the plate and jumps at both splices; the same
+graph with the window's first and last frames pinned, which removes the
+jump for free; and pins plus the adapter at 0.75. Same seed throughout.
+The card at the end lists every setting and the wall time per tile
+(10m41s, 10m41s, 11m20s at 1024 px). Numbers on the
 <a href="https://huggingface.co/matlowai/MiniMax-H3-Motion-Adapter">model
 card</a>.</p>
 <video controls loop playsinline preload="metadata"
