@@ -401,6 +401,23 @@ on our clips and is one preset away; some of us prefer it. The expert
 schedule defaults (`total 8, inject 0.70, base_head 2`) give the turbo
 tail its native 4 steps.
 
+## Identity vs strength: the reference rule
+
+Whether a higher inject or denoise is safe depends on what is anchoring
+the subject, not on the route.
+
+- No substantial references in the graph: keep the repaint strength
+  under 0.5 when the subject's identity must match the source. Identity
+  drift is measurable from about 0.30 and structural past 0.5; below
+  that line the init still owns the subject, above it the model's prior
+  does, and no prompt wording buys it back.
+- With substantial references (identity refs, FLF pins, a strong anchor
+  frame): higher strength is fine, and on the high-step routes (the
+  full de-rope at 25+ steps) it often helps more, because the
+  references carry identity so the extra strength buys motion quality
+  instead of drift. The pinned FLF de-rope holding identity at inject
+  0.70 above is the worked example.
+
 ## Refining this guide
 
 When a tuning session finds a symptom/dial pair this table lacks, add it.
