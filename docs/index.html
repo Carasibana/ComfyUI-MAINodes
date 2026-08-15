@@ -99,6 +99,14 @@ the same seed, because quantization bends the trajectory. Both coherent,
 both de-rope cleanly. Compare quality, not pixels.</p>
 
 <h2 id="adapter">The motion adapter (pilot), what it does and where it does not</h2>
+<video controls loop playsinline preload="metadata"
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_t2c_insert_quad.mp4"></video>
+<p class="cap">Temporal insertion, the task it was trained on: a window of a
+fight is refilled on a slowed clock. Source plate; the full-clip de-rope on
+the base model (140 s); the windowed pass without the adapter at inject
+0.45 (64 s); the windowed pass with the adapter at 0.75 and inject 0.30
+(50 s), which won on both alternation and rate. Blind picks on unseen
+clips went 7 to 0 for the adapter.</p>
 <video controls playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_mage_pinned_quad.mp4"></video>
 <p class="cap">A rank-16 LoRA trained on our own de-rope task, applied to the
@@ -129,14 +137,6 @@ matches the Hugging Face file.</p>
 de-rope, the de-rope with the adapter. The creature keeps its colour and
 its sparkle here; what the adapter changes is the motion, which stops
 alternating between advance and snap.</p>
-<video controls loop playsinline preload="metadata"
-  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_t2c_insert_quad.mp4"></video>
-<p class="cap">Temporal insertion, the task it was trained on: a window of a
-fight is refilled on a slowed clock. Source plate; the full-clip de-rope on
-the base model (140 s); the windowed pass without the adapter at inject
-0.45 (64 s); the windowed pass with the adapter at 0.75 and inject 0.30
-(50 s), which won on both alternation and rate. Blind picks on unseen
-clips went 7 to 0 for the adapter.</p>
 <video controls loop playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_ref2va_colour_muting.mp4"></video>
 <p class="cap">Where it is not great, one. The adapter transfers to the Ref2VA
