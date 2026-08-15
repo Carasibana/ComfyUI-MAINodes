@@ -546,4 +546,4 @@ Restart ComfyUI. Nodes appear under `latent/minimax/motion`,
 
 ## License
 
-MIT
+GPL-3.0-or-later. Copyright (C) 2026 MATLOWAI. See LICENSE.
