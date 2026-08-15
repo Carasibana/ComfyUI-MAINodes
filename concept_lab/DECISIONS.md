@@ -1,0 +1,326 @@
+# Concept Lab decisions
+
+Append only. Never edit an old entry: add a new one with `supersedes:`
+instead. An edited history means the next person re-litigates a settled
+argument without knowing they are doing it, and the path looking straighter
+than it was is precisely the damage.
+
+Format: `DEC-CL-nnnn · STATUS · date · title`, then Decision / Alternatives
+/ Consequences.
+
+---
+
+## DEC-CL-0001 · ACCEPTED · 2026-08-15 · Fresh subsystem inside MAINodes, named `concept_lab/`
+
+**Decision.** Functional-conditioning work lands as a new package inside
+ComfyUI-MAINodes rather than as an extension of any existing
+reference-format or adapter-format code. The name is `concept_lab/`.
+
+**Alternatives.** `concept_surgery/` (the source bundle's first suggestion,
+and it carries the ancestor program's vocabulary) — not chosen; it reads
+sharper than the work is, on a public node pack.
+`functional_conditioning/` — most accurate, longest imports, unwieldy node
+names. Operator chose `concept_lab/` to sit alongside Motion Lab and Voice
+Lab: a place you work rather than an operation you perform.
+
+**Consequences.** Backend-specific formats are compiler *targets*, not core
+types. Node display names will read "MAI Concept ...".
+
+---
+
+## DEC-CL-0002 · ACCEPTED · 2026-08-15 · The functional delta is the primary object
+
+**Decision.** The primary scientific object is the matched change in model
+function caused by a conditioning intervention, not the content of the
+source asset and not a similarity between latents.
+
+**Consequences.** Source-latent similarity alone can never certify a
+semantic factor. Every factor claim has to reach an effect on the target
+stream.
+
+---
+
+## DEC-CL-0003 · ACCEPTED · 2026-08-15 · Model-neutral core, H3 as first backend
+
+**Decision.** Core data and factor APIs know nothing model-specific.
+Segment names, block counts, sampler shapes and layout rules live behind
+`backends/`. H3 is first because MAINodes already has H3 tooling and H3 has
+a native image/video/audio reference path.
+
+**Consequences.** `types.py` treats segment names as opaque strings. The
+second backend should not require rewriting the first one's evidence.
+
+---
+
+## DEC-CL-0004 · ACCEPTED · 2026-08-15 · Three arms, because a reference changes more than its content
+
+**Decision.** First reference experiments capture three arms: actual
+reference `R`, shape-matched control `N`, and no reference `0`.
+`Delta_content = R - N` is the primary object; `N - 0` and `R - 0` are kept
+as diagnostics.
+
+**Why.** Verified against the installed ComfyUI: `PackedLayout`
+(`comfy/ldm/minimax/model.py:300`) advances its cursor past every reference
+block before placing the target streams, and references also enter the
+Qwen3-VL presentation path. So a two-arm on/off difference mixes semantic
+content, the presence of a reference, and a moved time origin for the
+target stream.
+
+**Consequences.** `N` is a structural control, not a metaphysical zero.
+Several control strata must be tried and the sensitivity reported before
+`R - N` is called canonical. `backends/h3.py:plan_arms` returns the strata
+rather than picking one.
+
+---
+
+## DEC-CL-0005 · ACCEPTED · 2026-08-15 · Capture the target stream, not only the reference rows
+
+**Decision.** v0 captures include target-video DiT state after selected
+blocks. Reference-row state is secondary diagnostic evidence.
+
+**Why.** The question is not how the reference is represented. It is how
+the reference changes what gets generated.
+
+---
+
+## DEC-CL-0006 · ACCEPTED · 2026-08-15 · Ids are computed over an explicit identity payload
+
+**Decision.** Every id is a hash of a named identity payload, never of the
+whole record. Adding a field to a manifest must not move ids that already
+exist on disk. If a new field genuinely belongs to a capture's identity, it
+joins `identity()` **and** `PROTOCOL_VERSION` is bumped in the same commit,
+deliberately, with an entry here.
+
+**Also decided.** Floats are rounded to 12 significant digits before
+hashing, so a sigma arriving as float32 and the same sigma arriving as
+float64 name one condition rather than two.
+
+**Alternatives.** Hashing the whole record — rejected: every bank on disk
+goes stale the next time anyone adds a note field, for no scientific
+reason. Ignoring floats' representation — rejected: an id that disagrees
+about whether two identical conditions are identical is an id that lies.
+
+**Consequences.** `tests/test_concept_lab_contracts.py` check 2 asserts
+both directions: identity fields move the id, notes and timestamps and
+status do not.
+
+---
+
+## DEC-CL-0007 · ACCEPTED · 2026-08-15 · Same id with different content is refused
+
+**Decision.** Writing a record under an existing id with different bytes
+raises. Writing identical content is idempotent.
+
+**Why.** A capture id names a condition. If the same condition produced
+different bytes, one of the two runs is not what its manifest says, and
+silently keeping the newer one destroys the only evidence that something is
+wrong.
+
+---
+
+## DEC-CL-0008 · ACCEPTED · 2026-08-15 · Two-root workspace, neither root in the repo
+
+**Decision.** Manifests default under the ComfyUI output directory
+(`output/h3_concept`), tensors default to `/mnt/weights/ai/concept-space/tensors`
+on a box that has it, falling back to `<index root>/tensors`. Both are
+overridable per call and by `H3_CONCEPT_INDEX_DIR` / `H3_CONCEPT_TENSOR_DIR`.
+
+**Why.** Manifests are for reading and diffing and belong where a human
+browses. Tensors are scientific evidence, can be large, and belong on the
+array. Neither belongs in a public repository, because a concept pack can
+encode a likeness and the failure mode is somebody running `git add -A`.
+
+---
+
+## DEC-CL-0009 · ACCEPTED · 2026-08-15 · Imported evidence keeps its origin and never merges
+
+**Decision.** An imported space lands under `imported/<origin space id>/`
+with the origin stamped on each record. Imported records are never
+re-exported under this space's id. Importing your own export back into
+itself is refused.
+
+**Why.** The whole subsystem turns measurements into claims. Somebody
+else's measurement informing your work is good; becoming indistinguishable
+from your own is how a claim loses its scope.
+
+---
+
+## DEC-CL-0010 · ACCEPTED · 2026-08-15 · Packs are private by default; export names what it held back
+
+**Decision.** `ConceptPackManifest.visibility` defaults to `private`.
+Export excludes private packs unless explicitly asked, and reports every
+exclusion with its reason. Source assets are referenced by content hash and
+never copied into a pack.
+
+**Consequences.** The MCP surface can export the shareable set and can see
+what was withheld; releasing a private pack is a human keystroke through
+the CLI. A model cannot prove who is asking.
+
+---
+
+## DEC-CL-0011 · ACCEPTED · 2026-08-15 · Three surfaces, one verb layer
+
+**Decision.** `api.py` holds one implementation of every operation and
+returns plain JSON-able dicts. `cli.py`, `mcp.py` and a future `nodes.py`
+are thin clients with no rules in them. No tensors, ComfyUI types or torch
+objects cross the api boundary.
+
+**Why.** It is what lets an agent drive the subsystem over a pipe, lets the
+tests run with no GPU, and stops the three surfaces drifting into three
+implementations.
+
+**Consequences.** When a verb eventually touches tensors it returns
+references, not handles. If that becomes painful, it gets decided here
+rather than worked around in one surface.
+
+---
+
+## DEC-CL-0012 · ACCEPTED · 2026-08-15 · Unbuilt verbs refuse and name their task
+
+**Decision.** A verb whose machinery does not exist raises
+`NotYetImplemented` carrying the task id that blocks it. It never returns
+an empty or placeholder result.
+
+**Why.** The output of this subsystem is evidence. A quiet nothing gets
+recorded and later read as a measurement.
+
+---
+
+## DEC-CL-0013 · ACCEPTED · 2026-08-15 · No ComfyUI nodes until there is something to run
+
+**Decision.** `concept_lab` registers no nodes and the pack's `__init__.py`
+is untouched. Nodes arrive at T12, wrapping proven verbs.
+
+**Why.** Existing MAINodes behaviour and defaults must not move for
+additive alpha work. And a half-built research surface in a UI is how ten
+unstable knobs become somebody's saved workflow.
+
+**Consequences.** The guarded-import line that adds `concept_lab.nodes` to
+the pack's loader is a one-liner when the time comes; the loader already
+does exactly this for `window_loop`, `window_expand` and `timeline.nodes`.
+
+---
+
+## DEC-CL-0014 · ACCEPTED · 2026-08-15 · Held-out, adversarial and null splits are not optional
+
+**Decision.** A corpus carries four splits and `corpus_status` reports the
+missing ones as warnings. No factor ships on extraction-set scores.
+
+**Status of the enforcement.** The warnings exist; a *containment* check
+(no source hash appearing in two splits) does not yet, and is proposed in
+the review brief. Recorded here so the gap is visible rather than assumed
+closed.
+
+---
+
+## DEC-CL-0015 · ACCEPTED · 2026-08-15 · Process launch is an identity dimension of a capture; arms of one comparison share one launch
+
+**Decision.** `FunctionalCaptureManifest` carries a
+`process` fingerprint and `process["launch_id"]` joins `identity()`. The
+launch id is minted once per interpreter (`types.process_fingerprint`).
+Host, pid, start time and Python version stay OUT of identity: a manifest
+must be re-readable on another machine without its id moving.
+
+Corollary, and it is a protocol constraint rather than a nicety: R, N and 0
+are three separate forwards, so all arms of one comparison — and the
+replicates that make a delta — must be captured inside one process launch.
+A capture interrupted and resumed in a new process yields an arm 0 that is
+not comparable row-for-row to the R and N from the old one.
+`capture_plan` prints this in `protocol_notes` and stamps the current
+`process_launch_id`.
+
+**Why.** On this rig the H3 pipeline is bit-identical WITHIN a process and
+merely close ACROSS processes: per-process kernel autotuning puts a
+~41-48 dB PSNR floor between two cold-process renders at the same seed
+(`.claude/skills/h3-latent-mechanics/SKILL.md` §7 in ComfyUI-ModelCatalog).
+Before this entry, `identity()` excluded tensor hashes while `Space.put`
+compared canonical JSON that includes `TensorRef.sha256`, so two honest
+reruns at one seed in two processes produced the SAME capture id and
+DIFFERENT bytes, and `put` accused the second of not being what its
+manifest said. The first legitimate replicate anyone captured would have
+hit it.
+
+**Alternatives.** A mandatory explicit `replicate` set by the caller —
+rejected: it defaults silently to 0, so the failure returns the first time
+someone forgets, which is exactly the population that needs the guard. A
+tolerance-based collision check ("close enough bytes are the same capture")
+— rejected: within a launch the pipeline is exact, so a tolerance hides a
+real defect in the case where the check is most informative.
+
+**Consequences.** `PROTOCOL_VERSION` bumps to `concept_lab/0.2.0`
+(DEC-CL-0006's rule: a field entering identity bumps the protocol,
+deliberately). DEC-CL-0007's rationale is amended below. T3 will refuse
+`alignment="exact_rows"` when `FunctionalDeltaManifest.same_process()` is
+False; the two `*_process_launch_id` fields are there for it now, as
+non-identity provenance. The cold-process floor gets MEASURED in E0 rather
+than assumed: the ~41-48 dB figure was taken on decoded renders, not on
+captured block states, and nobody has read the block-state number yet.
+
+---
+
+## DEC-CL-0007 · AMENDMENT (2026-08-15) · rationale narrowed, decision unchanged
+
+The refusal stands: same id with different bytes still raises. The reason
+it is correct is narrower than the original entry said. WITHIN one process
+launch the pipeline is bit-identical, so different bytes under one id mean
+one of the runs is not what its manifest says. ACROSS launches two honest
+reruns differ by kernel autotuning alone, and calling that a defect would
+have refused the first real replicate — which is why the launch id is now
+part of a capture's identity (DEC-CL-0015) and those two runs are two
+captures.
+
+`Space.put`'s message now says both halves: "Same id, different bytes.
+Within one process launch this means the id does not describe the
+condition; if these came from different launches the capture is missing its
+process fingerprint (DEC-CL-0015)."
+
+---
+
+## DEC-CL-0016 · ACCEPTED · 2026-08-15 · Corpora, tap specs and plans are definitions and want version control (amends DEC-CL-0008's rationale, not its default)
+
+**Decision.** The default index root does not move (DEC-CL-0008 stands, and
+it is the operator's call). But `Space.status()` reports
+`index_root_tracked` and warns when the index root is not inside a git work
+tree, and `corpus_new`, `corpus_add`, `corpus_status` and `capture_plan`
+carry the same warning. The recommendation is to point
+`H3_CONCEPT_INDEX_DIR` at a directory inside a PRIVATE repository, or to
+copy `corpora/` and `plans/` into one.
+
+**Why.** Manifests are not one kind of thing. Captures and deltas are
+RESULTS and can be re-measured from a corpus plus a stack. Corpora, tap
+specs and plans are DEFINITIONS: they encode which contrasts somebody chose
+to shoot, and no tensor reconstructs them. The ancestor program's F30 is
+the paid-for version of this: the definitions behind four findings lived
+only under a gitignored output directory
+(`docs/concept_lab/FABLE_SYNTHESIS_2026-08-15.md` §3.8).
+
+**Alternatives.** Moving the default index root into a repo — not taken
+here; DEC-CL-0008 settled the default deliberately and a public node pack
+is the wrong place for it to land by accident. Silence — rejected: the
+loss is invisible until the day someone wants to re-run the experiment.
+
+**Consequences.** Status and the corpus verbs warn. Whether the default
+moves is the operator's decision, and this entry does not pre-empt it.
+
+---
+
+## DEC-CL-0017 · ACCEPTED · 2026-08-15 · Split containment is enforced, and lineage counts as containment (closes DEC-CL-0014's open gap)
+
+**Decision.** `ConceptCorpus.containment()` lists every `content_hash` and
+every `source_id` that appears in more than one split, with the splits and
+row ids. `corpus_status` reports it and warns per collision;
+`capture_plan` REFUSES, naming the value and the splits, unless
+`allow_containment=True` is passed — and then the plan carries
+`containment_overridden` so the exception is in the record rather than in
+somebody's memory. `ConceptCorpusRow.source_id` is new and enters the row
+identity.
+
+**Why.** DEC-CL-0014 recorded this as a visible gap. A content hash alone
+does not close it: two crops of one take are different bytes and the same
+observation, so held-out means nothing if a lineage id is not checked too.
+Refusal rather than a warning at this one point, because plan time is the
+last moment when the fix is free.
+
+**Consequences.** A corpus written before this entry has no `source_id`
+anywhere, which reads as "not recorded" and never as "no collision".
+Absence is skipped, not treated as a shared value.
