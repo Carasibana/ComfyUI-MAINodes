@@ -156,6 +156,29 @@ def compile_temporal(ratios, frames, expand_to_end=True):
     }
 
 
+def ranges_from_holds(holds, window_start=0, fps=24.0, decimals=4):
+    """Compiled hold map -> the `ranges` convention H3ManualHoldMap parses.
+
+    A FORMATTER, not a decision. The holds are the compiler's own output,
+    the window offset puts them back on the world clock, and the seconds
+    are that clock's. Runs at hold 1 are left out (a range is a request to
+    spend frames, and 1 is the default), ends are inclusive, and the ends
+    land back on their own frames when parsed at the same fps.
+    """
+    out, f, n = [], 0, len(holds)
+    while f < n:
+        h = int(holds[f])
+        g = f
+        while g + 1 < n and int(holds[g + 1]) == h:
+            g += 1
+        if h > 1:
+            a = (int(window_start) + f) / float(fps)
+            b = (int(window_start) + g) / float(fps)
+            out.append(f"{a:.{decimals}f}s-{b:.{decimals}f}s:{h}")
+        f = g + 1
+    return ", ".join(out)
+
+
 # ------------------------------------------------------------ graph emission
 
 def _prompt_of(plan):

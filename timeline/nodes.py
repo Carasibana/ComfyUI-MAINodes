@@ -15,6 +15,7 @@ import os
 import torch
 
 from . import price, recorder, schema
+from .h3 import compile as h3compile
 from .h3 import propose
 from .h3.compile import H3Backend
 # through gridlaw's loader, not `from ..motion import ANY`: the same import
@@ -70,6 +71,35 @@ def _strip(plan, compiled=None, height=160, width=None):
             x = min(w - 1, int(edge / float(frames) * w))
             img[:, x, :] = torch.tensor([0.2, 0.9, 1.0])
     return img[None]
+
+
+def _read_plan(plan_path, plan_json=""):
+    """Text -> a migrated plan document, with errors a user can act on.
+
+    A malformed plan is the normal accident here (a half-copied paste, a
+    truncated file), so it reports WHERE it broke and stops, rather than
+    letting a json exception surface as a stack trace.
+    """
+    text, src = (plan_json or "").strip(), "the pasted plan"
+    if not text:
+        p = (plan_path or "").strip()
+        if not p:
+            raise ValueError("H3 Drawn Plan: give a plan_path or paste a plan "
+                             "into plan_json")
+        if not os.path.isfile(p):
+            raise ValueError(f"H3 Drawn Plan: no plan file at {p}")
+        with open(p) as fh:
+            text = fh.read()
+        src = p
+    try:
+        plan = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"H3 Drawn Plan: {src} is not valid JSON "
+                         f"(line {e.lineno}, column {e.colno}): {e.msg}")
+    if not isinstance(plan, dict):
+        raise ValueError(f"H3 Drawn Plan: {src} is valid JSON but not a plan "
+                         f"document (it is a {type(plan).__name__})")
+    return schema.migrate(plan)
 
 
 class H3TimelineAnalyze:
@@ -243,6 +273,76 @@ class H3TimelineRender:
         return (graph_path, cmd, report)
 
 
+class H3DrawnPlan:
+    """A drawn plan document in, the motion nodes' hold-map ranges out.
+
+    THIN LOADER. It parses the plan, hands it to the H3 backend, and reads
+    the ranges off the compiled artifact. It contains no grid law: which
+    frames are held, how long the window is and where it starts are the
+    compiler's answers, and if this node ever needs to know about 17s or
+    token indices to do its job, the answer has been forked.
+    """
+
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-15. Load a plan document (the "
+        "timeline surface's JSON: what the shot should do, in seconds and "
+        "densities) and get back the hold-map ranges H3 Manual Hold Map "
+        "takes, already on the world clock.\n\n"
+        "Draw the envelope in the web editor, export the plan, point this "
+        "node at the file: the drawing arrives in the graph without anybody "
+        "retyping frame numbers.\n\n"
+        "The ranges come from the COMPILER, not from this node. It is the "
+        "same compilation H3 Timeline Render would mint, so the map is "
+        "already shaped: feed the ranges to H3 Manual Hold Map with ramp "
+        "OFF and bridge 0 to reproduce it exactly. Leaving ramp on re-shapes "
+        "the shoulders a second time.\n\n"
+        "plan_json wins over plan_path when both are filled, so a plan "
+        "pasted from a chat works without a file.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "plan_path": ("STRING", {"default": "",
+                          "tooltip": "path to a plan.json written by the editor, the oracle node or the CLI"}),
+        }, "optional": {
+            "plan_json": ("STRING", {"default": "", "multiline": True,
+                          "tooltip": "the plan document itself, pasted; wins over plan_path"}),
+        }}
+
+    RETURN_TYPES = ("STRING", "INT", "INT", "INT", "INT", "STRING")
+    RETURN_NAMES = ("ranges", "length", "fps", "window_start", "window_len",
+                    "report")
+    FUNCTION = "load"
+    CATEGORY = "latent/minimax/timeline"
+
+    def load(self, plan_path, plan_json=""):
+        plan = _read_plan(plan_path, plan_json)
+        backend = H3Backend()
+        problems = backend.validate(plan)
+        if problems:
+            raise ValueError("H3 Drawn Plan: this plan cannot be compiled: "
+                             + "; ".join(problems))
+        res = backend.compile(plan)
+        art = res.compiled["artifact"]
+        holds = art["hold_map"]["holds"]
+        w0 = int(art["window"]["start"])
+        frames = int(plan["clip"]["frames"])
+        fps = int(round(float(plan["clip"].get("fps") or 24)))
+        ranges = h3compile.ranges_from_holds(holds, w0, fps)
+        shown = ranges or "(none: the drawn envelope is flat at 1.0)"
+        lines = [f"plan {plan.get('id', '?')[:8]} rev {plan.get('revision', 0)}"
+                 f" -> {len([1 for h in holds if h > 1])} held world frames in "
+                 f"{len(ranges.split(',')) if ranges else 0} ranges",
+                 f"ranges (world clock, {fps} fps): {shown}",
+                 "wire into H3 Manual Hold Map with ramp OFF and bridge 0: "
+                 "the compiler has already shaped this map",
+                 res.report]
+        for w in res.warnings:
+            lines.append("WARNING: " + w)
+        return (ranges, frames, fps, w0, int(art["window"]["len"]),
+                "\n".join(lines))
+
+
 class H3RecordStart:
     """Flight recorder, front half: reset the torch peak counters."""
 
@@ -310,6 +410,7 @@ class H3RecordStop:
 NODE_CLASS_MAPPINGS = {
     "H3TimelineAnalyze": H3TimelineAnalyze,
     "H3TimelineRender": H3TimelineRender,
+    "H3DrawnPlan": H3DrawnPlan,
     "H3RecordStart": H3RecordStart,
     "H3RecordStop": H3RecordStop,
 }
@@ -317,6 +418,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "H3TimelineAnalyze": "H3 Timeline Analyze (alpha)",
     "H3TimelineRender": "H3 Timeline Render (alpha)",
+    "H3DrawnPlan": "H3 Drawn Plan (alpha)",
     "H3RecordStart": "H3 Flight Recorder Start (alpha)",
     "H3RecordStop": "H3 Flight Recorder Stop (alpha)",
 }
