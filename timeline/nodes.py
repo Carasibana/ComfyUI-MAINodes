@@ -1,4 +1,10 @@
-"""The two ComfyUI nodes of the timeline surface, plus the recorder pair.
+"""The ComfyUI node surface of the timeline surface, plus the recorder pair.
+
+Two doors onto one compiler. H3TimelineAnalyze/H3TimelineRender drive the
+whole plan-to-graph path in one step; H3DrawnPlan/H3PlanSettings/
+H3PlanEstimate hand a plan's compiled answers out as typed outputs, so a
+graph author can wire the same numbers into stock H3 nodes and get the same
+execution. Whichever door you use, the answers come from timeline/h3.
 
 Two-phase execution, no mid-graph pause (spec): ANALYZE is cheap and writes
 plan.json; COMPILE+RENDER is phase 2. The auto checkbox is phase 2's entry:
@@ -273,6 +279,58 @@ class H3TimelineRender:
         return (graph_path, cmd, report)
 
 
+def _compile_for_nodes(plan_path, plan_json="", ignore_uncompiled_lanes=False):
+    """Read a plan and compile it. -> (plan, CompileResult, skipped lanes).
+
+    THE ONE DOOR the plan-loading nodes go through, so H3 Drawn Plan, H3
+    Plan Settings and H3 Plan Estimate cannot drift into three opinions
+    about the same document. Everything they return afterwards is a field
+    of the compiler's answer, never a recomputation of it.
+    """
+    plan = _read_plan(plan_path, plan_json)
+    backend = H3Backend()
+    skipped = []
+    if ignore_uncompiled_lanes:
+        # which lane types compile is the BACKEND's answer, asked for
+        # rather than assumed, so this stays true as lanes land
+        runs = set(backend.capabilities()["lanes_compiled"])
+        for lane in plan.get("lanes", []):
+            if schema.lane_type(lane) not in runs and lane.get("enabled", True):
+                lane["enabled"] = False
+                skipped.append(str(lane.get("type")))
+    problems = backend.validate(plan)
+    if problems:
+        raise ValueError("this plan cannot be compiled: " + "; ".join(problems))
+    return plan, backend.compile(plan), skipped
+
+
+def _plan_inputs(extra=None):
+    """The three loader nodes take the same document the same way."""
+    opt = {"plan_json": ("STRING", {"default": "", "multiline": True,
+                         "tooltip": "the plan document itself, pasted; wins over plan_path"}),
+           "ignore_uncompiled_lanes": ("BOOLEAN", {"default": False,
+                         "tooltip": "a plan may carry lanes this backend cannot compile yet (pins, regions). OFF: refuse, so nothing is silently dropped. ON: compile the density lane anyway and name every lane that was skipped"})}
+    opt.update(extra or {})
+    return {"required": {
+        "plan_path": ("STRING", {"default": "",
+                      "tooltip": "path to a plan.json written by the editor, the oracle node or the CLI"}),
+    }, "optional": opt}
+
+
+def _tail_lines(res, skipped, include_warnings=True):
+    """Skipped lanes and the compiler's warnings, for nodes that do not
+    already print the compile report (which carries the warnings itself)."""
+    lines = []
+    if skipped:
+        lines.append("SKIPPED (ignore_uncompiled_lanes is ON): %s. Those lanes "
+                     "are still in the plan; this pass did not run them"
+                     % ", ".join(sorted(set(skipped))))
+    if include_warnings:
+        for w in res.warnings:
+            lines.append("WARNING: " + w)
+    return lines
+
+
 class H3DrawnPlan:
     """A drawn plan document in, the motion nodes' hold-map ranges out.
 
@@ -297,64 +355,177 @@ class H3DrawnPlan:
         "OFF and bridge 0 to reproduce it exactly. Leaving ramp on re-shapes "
         "the shoulders a second time.\n\n"
         "plan_json wins over plan_path when both are filled, so a plan "
-        "pasted from a chat works without a file.")
+        "pasted from a chat works without a file.\n\n"
+        "TWO DOORS, ONE ANSWER: hold_map is the compiler's map verbatim, "
+        "for wiring straight into H3 Temporal Insert. ranges is the same "
+        "map in H3 Manual Hold Map's language, for when you want to read "
+        "or edit it by hand (that route re-shapes through the node's own "
+        "token snapping, so wire ranges with ramp OFF and bridge 0). "
+        "splice_map drives H3 Segment Splice at feather 0 to put the "
+        "recovered window back into the untouched clip.")
 
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {
-            "plan_path": ("STRING", {"default": "",
-                          "tooltip": "path to a plan.json written by the editor, the oracle node or the CLI"}),
-        }, "optional": {
-            "plan_json": ("STRING", {"default": "", "multiline": True,
-                          "tooltip": "the plan document itself, pasted; wins over plan_path"}),
-            "ignore_uncompiled_lanes": ("BOOLEAN", {"default": False,
-                          "tooltip": "a plan may carry lanes this backend cannot compile yet (pins, regions). OFF: refuse, so nothing is silently dropped. ON: compile the density lane anyway and name every lane that was skipped"}),
-        }}
+        return _plan_inputs()
 
-    RETURN_TYPES = ("STRING", "INT", "INT", "INT", "INT", "STRING")
+    RETURN_TYPES = ("STRING", "INT", "INT", "INT", "INT", "STRING",
+                    "STRING", "INT", "INT", "STRING")
     RETURN_NAMES = ("ranges", "length", "fps", "window_start", "window_len",
-                    "report")
+                    "report",
+                    "hold_map", "dilated_frames", "guide_frame", "splice_map")
     FUNCTION = "load"
     CATEGORY = "latent/minimax/timeline"
 
     def load(self, plan_path, plan_json="", ignore_uncompiled_lanes=False):
-        plan = _read_plan(plan_path, plan_json)
-        backend = H3Backend()
-        skipped = []
-        if ignore_uncompiled_lanes:
-            # which lane types compile is the BACKEND's answer, asked for
-            # rather than assumed, so this stays true as lanes land
-            runs = set(backend.capabilities()["lanes_compiled"])
-            for lane in plan.get("lanes", []):
-                if schema.lane_type(lane) not in runs and lane.get("enabled", True):
-                    lane["enabled"] = False
-                    skipped.append(str(lane.get("type")))
-        problems = backend.validate(plan)
-        if problems:
-            raise ValueError("H3 Drawn Plan: this plan cannot be compiled: "
-                             + "; ".join(problems))
-        res = backend.compile(plan)
+        try:
+            plan, res, skipped = _compile_for_nodes(
+                plan_path, plan_json, ignore_uncompiled_lanes)
+        except ValueError as e:
+            raise ValueError("H3 Drawn Plan: %s" % e)
         art = res.compiled["artifact"]
         holds = art["hold_map"]["holds"]
         w0 = int(art["window"]["start"])
+        wlen = int(art["window"]["len"])
         frames = int(plan["clip"]["frames"])
         fps = int(round(float(plan["clip"].get("fps") or 24)))
         ranges = h3compile.ranges_from_holds(holds, w0, fps)
         shown = ranges or "(none: the drawn envelope is flat at 1.0)"
+        # Both strings are the COMPILER's, passed through: the hold map as
+        # H3 Temporal Insert eats it, and the window's place in the clip as
+        # H3 Segment Splice eats it.
+        hold_map = json.dumps(art["hold_map"])
+        splice_map = json.dumps({"start": w0, "end": w0 + wlen - 1,
+                                 "world_len": frames,
+                                 "handle_in": 0, "handle_out": 0})
         lines = [f"plan {plan.get('id', '?')[:8]} rev {plan.get('revision', 0)}"
                  f" -> {len([1 for h in holds if h > 1])} held world frames in "
                  f"{len(ranges.split(',')) if ranges else 0} ranges",
                  f"ranges (world clock, {fps} fps): {shown}",
-                 "wire into H3 Manual Hold Map with ramp OFF and bridge 0: "
-                 "the compiler has already shaped this map",
-                 res.report]
-        if skipped:
-            lines.append("SKIPPED (ignore_uncompiled_lanes is ON): %s. Those "
-                         "lanes are still in the plan; this pass did not run "
-                         "them" % ", ".join(sorted(set(skipped))))
-        for w in res.warnings:
-            lines.append("WARNING: " + w)
-        return (ranges, frames, fps, w0, int(art["window"]["len"]),
+                 "wire hold_map into H3 Temporal Insert for the exact map; "
+                 "the ranges route needs ramp OFF and bridge 0",
+                 res.report] + _tail_lines(res, skipped,
+                                           include_warnings=False)
+        return (ranges, frames, fps, w0, wlen, "\n".join(lines),
+                hold_map, int(art["dilated_frames"]),
+                int(art["guide_dilated_idx"]), splice_map)
+
+
+class H3PlanSettings:
+    """The plan's execution knobs, as typed outputs.
+
+    THIN LOADER, like its sibling: every value here is read out of the plan
+    document or the compiler's answer. No default is invented, no number is
+    adjusted, and nothing about the model's grid is known here.
+    """
+
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-15. The other half of H3 Drawn "
+        "Plan: the settings a graph needs wired, straight off the plan "
+        "document.\n\n"
+        "inject and steps drive H3 Inject Schedule, seed drives Random "
+        "Noise, width/height/prompt drive the conditioning node, "
+        "output_prefix drives Save Video. Wire these instead of retyping "
+        "them and the graph cannot drift from the plan it came from.\n\n"
+        "expand_to_end reports what the plan ASKED for. The compiler has "
+        "already applied it to the map, so H3 Temporal Insert must be left "
+        "at False: wiring this output into that toggle would apply it "
+        "twice.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return _plan_inputs()
+
+    RETURN_TYPES = ("FLOAT", "INT", "INT", "STRING", "INT", "INT", "STRING",
+                    "BOOLEAN", "STRING")
+    RETURN_NAMES = ("inject", "steps", "seed", "prompt", "width", "height",
+                    "output_prefix", "expand_to_end", "report")
+    FUNCTION = "load"
+    CATEGORY = "latent/minimax/timeline"
+
+    def load(self, plan_path, plan_json="", ignore_uncompiled_lanes=False):
+        try:
+            plan, res, skipped = _compile_for_nodes(
+                plan_path, plan_json, ignore_uncompiled_lanes)
+        except ValueError as e:
+            raise ValueError("H3 Plan Settings: %s" % e)
+        clip = plan["clip"]
+        ov = dict(h3compile.DEFAULT_OVERRIDES)
+        ov.update(schema.backend_settings(plan, H3Backend.backend_id))
+        inject = float(schema.setting(plan, "regen_strength"))
+        steps = int(schema.setting(plan, "steps"))
+        seed = int(schema.setting(plan, "seed"))
+        width = int(clip.get("width") or ov["width"])
+        height = int(clip.get("height") or ov["height"])
+        expand = bool(schema.setting(plan, "hold_expansion_to_clip_end"))
+        lines = [f"plan {plan.get('id', '?')[:8]} rev {plan.get('revision', 0)}: "
+                 f"inject {inject:g} over {steps} steps, seed {seed}, "
+                 f"{width}x{height}",
+                 f"delivery: {schema.setting(plan, 'output_prefix')} "
+                 f"(sync policy {schema.setting(plan, 'sync_policy')})",
+                 "expand_to_end is the plan's INTENT and is already baked "
+                 "into the hold map; leave H3 Temporal Insert at False",
+                 ] + _tail_lines(res, skipped)
+        return (inject, steps, seed, schema.setting(plan, "prompt", "") or "",
+                width, height, schema.setting(plan, "output_prefix"),
+                expand, "\n".join(lines))
+
+
+class H3PlanEstimate:
+    """What the plan costs, before anything runs.
+
+    The price meter's three layers, surfaced in the graph. Layer (b)
+    ABSTAINS rather than quoting another machine's minutes: seconds comes
+    back as -1 when there is no calibration for this box, and the report
+    says why. Reading -1 as a number is the caller's mistake to avoid; the
+    node will not invent one.
+    """
+
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-15. Price a plan without running "
+        "it: how many times a plain render of this clip it costs, how many "
+        "work units it generates, and whether it fits your VRAM.\n\n"
+        "(a) equivalent clip time is exact from the plan and needs no "
+        "calibration. (b) seconds is REAL MINUTES from your own flight "
+        "recorder, and comes back as -1 when you have no runs on record for "
+        "this box: an uncalibrated guess from GPU specs is worse than no "
+        "answer. (c) vram_band is a bracketing verdict from your recorded "
+        "runs, not a peak-bytes prediction.\n\n"
+        "recorder_path and port are the same two sources the timeline "
+        "surface uses; leave them alone unless your setup moved.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return _plan_inputs({
+            "port": ("INT", {"default": 8188, "min": 8188, "max": 8199,
+                     "tooltip": "instance whose /system_stats the VRAM reading comes from"}),
+            "recorder_path": ("STRING", {"default": recorder.DEFAULT_PATH,
+                              "tooltip": "flight-recorder jsonl; layer (b) calibrates from YOUR runs only"}),
+        })
+
+    RETURN_TYPES = ("FLOAT", "FLOAT", "INT", "STRING", "STRING")
+    RETURN_NAMES = ("equivalent_clip_time", "seconds", "work_units",
+                    "vram_band", "report")
+    FUNCTION = "load"
+    CATEGORY = "latent/minimax/timeline"
+
+    def load(self, plan_path, plan_json="", ignore_uncompiled_lanes=False,
+             port=8188, recorder_path=recorder.DEFAULT_PATH):
+        try:
+            plan, res, skipped = _compile_for_nodes(
+                plan_path, plan_json, ignore_uncompiled_lanes)
+        except ValueError as e:
+            raise ValueError("H3 Plan Estimate: %s" % e)
+        ctx = {"port": int(port)}
+        if recorder_path and os.path.isfile(recorder_path):
+            ctx["recorder_path"] = recorder_path
+        est = H3Backend().estimate(plan, ctx)
+        secs = -1.0 if est.seconds is None else float(est.seconds)
+        lines = est.lines + _tail_lines(res, skipped)
+        if est.seconds is None:
+            lines.append("seconds = -1: layer (b) abstained, and this node "
+                         "will not turn an abstention into a number")
+        return (float(est.multiplier), secs,
+                int(est.geometry.work_units_plan), str(est.fit),
                 "\n".join(lines))
 
 
@@ -426,6 +597,8 @@ NODE_CLASS_MAPPINGS = {
     "H3TimelineAnalyze": H3TimelineAnalyze,
     "H3TimelineRender": H3TimelineRender,
     "H3DrawnPlan": H3DrawnPlan,
+    "H3PlanSettings": H3PlanSettings,
+    "H3PlanEstimate": H3PlanEstimate,
     "H3RecordStart": H3RecordStart,
     "H3RecordStop": H3RecordStop,
 }
@@ -434,6 +607,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "H3TimelineAnalyze": "H3 Timeline Analyze (alpha)",
     "H3TimelineRender": "H3 Timeline Render (alpha)",
     "H3DrawnPlan": "H3 Drawn Plan (alpha)",
+    "H3PlanSettings": "H3 Plan Settings (alpha)",
+    "H3PlanEstimate": "H3 Plan Estimate (alpha)",
     "H3RecordStart": "H3 Flight Recorder Start (alpha)",
     "H3RecordStop": "H3 Flight Recorder Stop (alpha)",
 }
