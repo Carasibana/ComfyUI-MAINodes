@@ -110,16 +110,18 @@ class MAIConceptCaptureArm:
                     "tooltip": "R actual reference / N shape-matched control "
                                "/ 0 no reference / free (uncontrolled)"}),
             "variant_name": ("STRING", {"default": "",
-                             "tooltip": "your name for this condition; the "
-                                        "arm is the protocol's word, this is "
-                                        "yours"}),
+                             "tooltip": "a label; identity comes from what "
+                                        "the model actually saw (text "
+                                        "context, reference latents), "
+                                        "measured by the tap"}),
             "seed": ("INT", {"default": 0, "min": 0,
                      "max": 0xffffffffffffffff,
                      "tooltip": "MUST equal the sampler's noise seed. This "
                                 "node cannot read it (the seed lives in the "
                                 "sampler, not in the model), so it is copied "
                                 "by hand and a mismatch silently mislabels "
-                                "the capture"}),
+                                "the capture; the tap now refuses on "
+                                "mismatch"}),
             "replicate": ("INT", {"default": 0, "min": 0, "max": 999,
                           "tooltip": "which repeat of this condition, inside "
                                      "this launch"}),
@@ -248,7 +250,14 @@ class MAIConceptCaptureFlush:
         return float("nan")
 
     def flush(self, capture, after=None):
-        return (json.dumps(capture.finalize(), indent=2, sort_keys=True),)
+        # `after` is the decode's IMAGE batch in every graph that wires this
+        # correctly, so it is also free evidence about what the render came
+        # out as: hashed, recorded in the notes, never part of identity
+        # (DEC-CL-0006). Anything that is not an image tensor records null.
+        return (json.dumps(
+            capture.finalize(
+                render_fingerprint=h3_tap.render_fingerprint(after)),
+            indent=2, sort_keys=True),)
 
 
 NODE_CLASS_MAPPINGS = {

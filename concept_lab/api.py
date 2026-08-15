@@ -16,6 +16,7 @@ nothing is worse than one that refuses, because the nothing gets recorded.
 """
 from __future__ import annotations
 
+import json
 import os
 from typing import Optional
 
@@ -418,6 +419,52 @@ def capture_record(manifest: dict, index_root: Optional[str] = None,
             "warnings": _vc_warnings(s)}
 
 
+def capture_exists(capture_id: str, index_root: Optional[str] = None,
+                   tensor_root: Optional[str] = None,
+                   origin: Optional[str] = None) -> Optional[dict]:
+    """Is this capture id already taken? Read-only, stdlib, no torch.
+
+    `capture_record` is the LAST thing a capture does, and by then its
+    tensors are already on disk (T4 streams them). A tap that only learns
+    about a collision at that moment has already overwritten the earlier
+    capture's bytes, which is how E0 replicate 0 was destroyed. So the
+    refusal needs a door that can be opened BEFORE the first write, and this
+    is it (DEC-CL-0019).
+
+    Returns None when the id is free, or what is already there: the manifest
+    path and the fields a human needs to tell the two runs apart. A
+    `<id>.partial` tensor directory does NOT count as taken; it is the
+    wreckage of a capture that never finalized and `space doctor` reports it.
+    """
+    try:
+        s = _space(index_root, tensor_root)
+        space_id = s.space_id
+    except SpaceError:
+        return None                      # no space yet, so nothing is taken
+    path = s._record_path("captures", capture_id, origin)
+    tdir = os.path.join(s.tensor_dir(origin or space_id), capture_id)
+    have_manifest = os.path.isfile(path)
+    have_tensors = os.path.isdir(tdir)
+    if not have_manifest and not have_tensors:
+        return None
+    out = {"capture_id": capture_id, "space_id": space_id,
+           "manifest_path": path if have_manifest else None,
+           "tensor_dir": tdir if have_tensors else None,
+           "variant_name": None, "arm": None, "replicate": None,
+           "process_launch_id": None, "created": None, "n_tensors": None}
+    if have_manifest:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                d = T.FunctionalCaptureManifest.from_dict(json.load(fh))
+            out.update({"variant_name": d._variant().name,
+                        "arm": d._variant().arm, "replicate": d.replicate,
+                        "process_launch_id": (d.process or {}).get("launch_id"),
+                        "created": d.created, "n_tensors": len(d.tensors)})
+        except Exception as e:                # a broken manifest is still taken
+            out["unreadable"] = f"{type(e).__name__}: {e}"
+    return out
+
+
 def capture_run(*a, **k):
     raise NotYetImplemented(
         "capture_run", "T4/T5",
@@ -485,6 +532,7 @@ VERBS = {
     "capture_plan": capture_plan,
     "arms_check": arms_check,
     "capture_record": capture_record,
+    "capture_exists": capture_exists,
     "capture_run": capture_run,
     "delta_build": delta_build,
     "factorize": factorize,

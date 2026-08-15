@@ -361,3 +361,68 @@ comma-joined subset of `("stats", "frame_mean", "sketch", "full")` and is
 canonicalized to that order, because one recorded forward is expensive and
 the four reductions answer different questions off the same rows. Single
 words stay legal and keep their meaning, so no id already on disk moves.
+
+---
+
+## DEC-CL-0019 · ACCEPTED · 2026-08-15 · Capture identity is measured at the model boundary, not declared; the tap refuses before its first byte and streams into a partial dir
+
+**Decision.** Three parts, one rule.
+
+1. A capture's `ConditionVariant` is built by the tap on its FIRST
+   diffusion-model call, from what the model was handed: the text-encoder
+   output (`sha256` of `context` through float32) as the first
+   `ConditioningSource`, then one source per `minimax_payload["refs"]` block
+   and one per `keyframes` block, hashed over their latents in packed order.
+   `variant.name` stays a LABEL and stays out of identity; `variant.prompt`
+   stays `None` (the human text is not reachable at this seam, and the
+   encoder output the model consumed is the stronger identity). Noise-aug
+   levels, `audio_scale`, the token-tag digest and the payload seed ride in
+   the text source's `preprocess`, which `ConditioningSource.identity()`
+   already covers, so no schema changed and `PROTOCOL_VERSION` does not move.
+2. The payload seed must equal the seed the Arm node was given. The node
+   cannot read the sampler's seed, so it is copied by hand; a mismatch now
+   raises naming both numbers instead of mislabelling the capture.
+3. `_ensure_capture_id()` refuses BEFORE the first write when the id is
+   already on disk (manifest present, or a non-partial tensor directory),
+   naming the existing variant, replicate, launch and paths. Tensors stream
+   into `<tensor_dir>/<id>.partial/` while `TensorRef.path` records the final
+   `<id>/...`; `finalize()` files the manifest through `api.capture_record`
+   and only then renames the directory. `api.capture_exists()` is the stdlib
+   door the tap knocks on. `Space.doctor()` reports leftover `*.partial`
+   directories as `unfinished_capture` problems.
+
+**Why.** Both halves are the reported-vs-consumed family the ancestor
+program kept paying for, and both were caught live rather than reasoned
+about. `MAIConceptCaptureArm` built `ConditionVariant(name, arm)` with
+`sources=()` and `prompt=None`, and `ConditionVariant.identity()` is
+`{arm, sources, prompt}`, so every R cell hashed to one id and every N cell
+to another regardless of which plate the model actually saw: 12 of 15 E0.5
+cells collided. Worse, the same-id refusal lived in `capture_record`, which
+runs at the END, while `h3_tap` had already streamed tensors into
+`<tensor_dir>/<id>/`. A collision therefore overwrote the earlier capture's
+tensors before anything detected it, and E0 replicate 0's tensors were
+destroyed that way. A refusal that fires after the damage is not a refusal.
+
+**Alternatives.** Putting `variant_name` into identity — rejected: it makes
+the label load-bearing, so a typo becomes a new condition and a copied node
+silently merges two. Declaring sources from the node's inputs — rejected:
+that is the reported number again, and the plate a node points at is not
+necessarily the latent the model got. Buffering tensors until finalize —
+rejected: a capture's worth of block states is exactly what T4 refuses to
+hold in VRAM. Deleting the partial dir on failure — rejected: it is the
+evidence that something failed.
+
+**How to apply.** Arms of one comparison differ by what they feed the model,
+not by what they are called; two arms with different plates now get
+different ids automatically, and two arms with the same plate and the same
+label get the same id and the second one is refused. An honest rerun of a
+condition inside one launch increments `replicate`. A `*.partial` directory
+in the tensor root is wreckage: `space doctor` lists it, the operator
+deletes it, nothing else touches it.
+
+**Consequences.** `tests/test_concept_lab_tap.py` grew sections 7-9
+(identity from context and refs, refuse-before-writing and partial/promote,
+render fingerprint). The render fingerprint is evidence and not identity
+(DEC-CL-0006 stands): `MAIConceptCaptureFlush` hashes frame 0 and the whole
+decoded batch as uint8 into the manifest notes, so E0's pass-through gate is
+a hash comparison rather than two humans watching two videos.

@@ -43,6 +43,13 @@ computable before the first tensor is written (identity is stack + variant
 + tap + seed + sampler + replicate + launch, and tensors are not identity),
 tensors are written as they are captured rather than accumulated in VRAM,
 and every file lands with its sha256 in a TensorRef.
+
+The variant half of that identity is MEASURED here rather than declared by
+the caller (DEC-CL-0019): the first wrapper call hashes the text-encoder
+output and every ref and keyframe latent the model was handed, and those
+hashes are the variant's sources. The refusal that protects the bank is
+armed at the same moment, before the first byte, and tensors stream into
+`<id>.partial` until the manifest is filed.
 """
 from __future__ import annotations
 
@@ -84,6 +91,60 @@ def _tensor_bytes(t: torch.Tensor) -> bytes:
 
 def _sha256_tensor(t: torch.Tensor) -> str:
     return "sha256:" + hashlib.sha256(_tensor_bytes(t)).hexdigest()
+
+
+def _cond_sha256(*tensors: torch.Tensor) -> str:
+    """sha256 over conditioning tensors, in the order given, through fp32.
+
+    Float tensors go through float32 rather than their own dtype for two
+    reasons: bf16 has no numpy dtype at all (`.numpy()` raises on it, and
+    conditioning arrives bf16 whenever the stack is), and the same latent
+    arriving bf16 in one launch and fp32 in the next is one condition rather
+    than two. Integer tensors (token tags) are hashed as they are.
+
+    Separate from `_sha256_tensor` on purpose: that one hashes position ids
+    and the sketch matrix, whose digests are already in manifests on disk,
+    and widening it would move ids that exist.
+    """
+    h = hashlib.sha256()
+    for t in tensors:
+        t = t.detach().to("cpu")
+        if t.is_floating_point():
+            t = t.to(torch.float32)
+        h.update(t.contiguous().numpy().tobytes())
+    return "sha256:" + h.hexdigest()
+
+
+# payload ref `kind` -> the ConditioningSource kind it becomes.
+# comfy_extras/nodes_minimax_h3.py:290-355 emits exactly these four.
+_REF_SOURCE_KIND = {"image": "image", "video": "video",
+                    "video_audio": "video", "audio": "audio"}
+
+
+def render_fingerprint(after) -> "dict | None":
+    """Evidence about what the render DECODED to, for a finished capture.
+
+    Not identity (DEC-CL-0006 stands: tensors and outputs are not identity)
+    and deliberately so: this is how E0's pass-through gate stops being a
+    human comparing two videos by eye. Two arms that claim to be the same
+    render either carry the same frame hashes or one of them is lying.
+
+    `after` is whatever was wired into the flush node for ordering. If it is
+    not an image-shaped tensor this returns None, because a fingerprint of
+    something that is not a render is worse than no fingerprint.
+    """
+    if not isinstance(after, torch.Tensor) or after.ndim < 3:
+        return None
+    x = after.detach().to("cpu", torch.float32)
+    u8 = (x.clamp(0, 1) * 255).round().to(torch.uint8).contiguous()
+    return {
+        "frame0_sha256": "sha256:" + hashlib.sha256(
+            u8[0].numpy().tobytes()).hexdigest(),
+        "frames_sha256": "sha256:" + hashlib.sha256(
+            u8.numpy().tobytes()).hexdigest(),
+        "n_frames": int(u8.shape[0]), "h": int(u8.shape[-3]),
+        "w": int(u8.shape[-2]),
+    }
 
 
 def _git_short(path: str):
@@ -207,6 +268,12 @@ class TapSession:
         self._capture_id = None
         self._sketch_R = None
         self._sketch_sha = None
+        # measured at the model boundary on the first wrapper call, then
+        # frozen: the variant is what the model SAW, not what a node said
+        # it was armed with (DEC-CL-0019)
+        self._variant = None
+        self._context_shape = None
+        self._render_fingerprint = None
 
         self.tensors = []
         self.bytes_written = 0
@@ -258,10 +325,126 @@ class TapSession:
                 f"{self._layout_sig.total_rows} rows, now "
                 f"{sig.signature_id} with {sig.total_rows} rows. One capture "
                 f"spans one layout; two layouts are two conditions")
+        if self._variant is None:
+            self._freeze_variant(context, minimax_payload or {})
         self._layout = layout
         self._timestep = timestep
         return executor(x, timestep, context, transformer_options,
                         minimax_payload=minimax_payload, **kw)
+
+    # ------------------------------------------- what the model actually saw
+    def _freeze_variant(self, context, payload) -> None:
+        """Derive the variant's identity from the conditioning, once.
+
+        Called on the first diffusion-model call, which is before any block
+        patch can fire and therefore before a byte can be written. The
+        caller's `variant_name` is a LABEL and stays out of identity: two
+        arms named differently that fed the model the same bytes are one
+        condition, and two arms with one name that fed it different bytes
+        are two (DEC-CL-0019; the defect it replaces gave every R cell in a
+        15-cell grid one id).
+
+        `prompt` stays None. The human text is not reachable at this seam,
+        and a hash of the encoder output the model consumed is the stronger
+        identity anyway.
+        """
+        # packed order: text, then keyframe (cond) rows, then ref rows
+        # (model.py:322-345), so sources mirror the rows the model saw
+        sources = [self._text_source(context, payload)]
+        for i, blk in enumerate(payload.get("keyframes") or ()):
+            sources.append(self._block_source(blk, i, "keyframe"))
+        for i, blk in enumerate(payload.get("refs") or ()):
+            sources.append(self._block_source(blk, i, "ref"))
+        self._variant = T.ConditionVariant(
+            name=self.variant_name, arm=self.arm, sources=tuple(sources),
+            prompt=None)
+
+    def _text_source(self, context, payload) -> T.ConditioningSource:
+        if not isinstance(context, torch.Tensor):
+            raise TapError(
+                f"concept_lab tap: the diffusion-model call carried "
+                f"context={type(context).__name__}, not a tensor. The text "
+                f"conditioning IS the identity of a text-only arm "
+                f"(DEC-CL-0019); without it two different prompts would file "
+                f"one capture id")
+        self._context_shape = [int(s) for s in context.shape]
+        seed = payload.get("seed")
+        if seed is not None and int(seed) != self.seed:
+            raise TapError(
+                f"concept_lab tap: the sampler's payload seed is {int(seed)} "
+                f"but this arm was told seed={self.seed}. The node cannot "
+                f"read the sampler's seed (it lives in the sampler) so it is "
+                f"copied by hand, and a mismatch mislabels the capture. "
+                f"Fix the Arm node's seed to {int(seed)} and rerun")
+        tags = payload.get("text_token_tags")
+        if tags is None:
+            tag_hash, tag_n = None, None
+        elif isinstance(tags, torch.Tensor):
+            tag_hash, tag_n = _cond_sha256(tags), int(tags.numel())
+        else:
+            tag_hash, tag_n = T.digest(list(tags)), len(list(tags))
+        return T.ConditioningSource(
+            kind="text", content_hash=_cond_sha256(context),
+            preprocess={
+                # the tags are a per-token modality vector (model.py:574-583)
+                # and can be thousands long, so identity carries their digest
+                # rather than the vector itself
+                "text_token_tags": tag_hash,
+                "text_token_tags_len": tag_n,
+                "visual_cond_noise_aug": payload.get("visual_cond_noise_aug"),
+                "audio_cond_noise_aug": payload.get("audio_cond_noise_aug"),
+                "audio_scale": payload.get("audio_scale"),
+                "payload_seed": None if seed is None else int(seed)},
+            notes="text-encoder output as the model consumed it")
+
+    def _block_source(self, blk, idx: int, family: str) -> T.ConditioningSource:
+        """One ref or keyframe block, hashed as the model got it.
+
+        Ref blocks carry `kind` in {image, video, video_audio, audio}
+        (nodes_minimax_h3.py:290-355); keyframe blocks carry no kind at all
+        and are recorded as kind "keyframe".
+        """
+        latent, audio = blk.get("latent"), blk.get("audio_latent")
+        if family == "keyframe":
+            payload_kind, source_kind = "keyframe", "keyframe"
+            parts = [t for t in (latent, audio) if t is not None]
+        else:
+            payload_kind = str(blk.get("kind"))
+            source_kind = _REF_SOURCE_KIND.get(payload_kind)
+            if source_kind is None:
+                raise TapError(
+                    f"concept_lab tap: ref block {idx} has kind "
+                    f"{payload_kind!r}, not one of "
+                    f"{sorted(_REF_SOURCE_KIND)}. An unknown block kind means "
+                    f"the packed order this capture records is not the order "
+                    f"the model used")
+            if payload_kind == "audio":
+                parts = [audio]
+            elif payload_kind == "video_audio":
+                parts = [latent, audio]
+            else:
+                parts = [latent]
+        if not parts or any(p is None for p in parts):
+            raise TapError(
+                f"concept_lab tap: {family} block {idx} (kind "
+                f"{payload_kind!r}) carries no latent to hash; its keys are "
+                f"{sorted(blk)}. A reference whose bytes cannot be read "
+                f"cannot be part of an identity")
+        pre = {"payload_kind": payload_kind,
+               "latent_shape": None if latent is None
+               else [int(s) for s in latent.shape],
+               "audio_latent_shape": None if audio is None
+               else [int(s) for s in audio.shape],
+               "ref_audio_t": None if blk.get("ref_audio_t") is None
+               else int(blk["ref_audio_t"])}
+        if family == "keyframe":
+            # upstream names it resolved_frame_index (nodes_minimax_h3.py:145,
+            # 150, 209); frame_idx is read too in case a caller sets it
+            fi = blk.get("frame_idx", blk.get("resolved_frame_index"))
+            pre["frame_idx"] = None if fi is None else int(fi)
+        return T.ConditioningSource(kind=source_kind,
+                                    content_hash=_cond_sha256(*parts),
+                                    preprocess=pre)
 
     @staticmethod
     def _layout_signature(layout) -> T.LayoutSignature:
@@ -407,11 +590,12 @@ class TapSession:
         else:
             raise TapError(f"concept_lab tap: unknown store {store!r}")
 
-        rel_dir = self._capture_id
         name = (f"b{int(block):02d}_s{int(step):02d}_{seg_kind}{suffix}"
                 f"_{store}.safetensors")
-        rel = os.path.join(rel_dir, name)
-        path = os.path.join(self.space.tensor_dir(), rel)
+        # the ref records the FINAL path; the bytes land in the partial dir
+        # until finalize files the manifest and promotes it (DEC-CL-0019)
+        rel = os.path.join(self._capture_id, name)
+        path = os.path.join(self.partial_dir(), name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         save_file({k: v.detach().cpu().contiguous()
                    for k, v in payload.items()}, path)
@@ -448,16 +632,48 @@ class TapSession:
         return self._sketch_R.to(device=device, dtype=torch.float32)
 
     # ---------------------------------------------------------- identity
+    def capture_dir(self) -> str:
+        return os.path.join(self.space.tensor_dir(), self._capture_id or "")
+
+    def partial_dir(self) -> str:
+        return self.capture_dir() + ".partial"
+
     def _ensure_capture_id(self) -> str:
         """The id, computed before the first byte is written, then frozen.
 
         Tensors are not identity (DEC-CL-0006), so the id is knowable as
         soon as the sampler's schedule is; freezing it here is what lets the
-        tap write into `<tensor_dir>/<capture_id>/` as it goes instead of
-        buffering a capture's worth of state in VRAM.
+        tap write into `<tensor_dir>/<capture_id>.partial/` as it goes
+        instead of buffering a capture's worth of state in VRAM.
+
+        The collision check lives HERE rather than in `capture_record`,
+        which is the last thing a capture does. An id already on disk means
+        the bytes about to be streamed would overwrite an earlier capture's
+        before anything noticed, and that is not a hypothetical: E0
+        replicate 0's tensors were destroyed exactly this way (DEC-CL-0019).
         """
         cid = self._manifest(()).capture_id
         if self._capture_id is None:
+            if self._variant is None:
+                raise TapError(
+                    "concept_lab tap: the capture id was asked for before "
+                    "the diffusion-model wrapper ran. Identity is measured "
+                    "from what the model saw (DEC-CL-0019), so there is "
+                    "nothing to hash yet")
+            taken = api.capture_exists(cid, index_root=self.index_root,
+                                       tensor_root=self.tensor_root)
+            if taken:
+                raise TapError(
+                    f"concept_lab tap: capture id {cid} is already taken by "
+                    f"variant {taken.get('variant_name')!r} (arm "
+                    f"{taken.get('arm')!r}, replicate {taken.get('replicate')}"
+                    f", launch {taken.get('process_launch_id')}, manifest "
+                    f"{taken.get('manifest_path')}, tensors "
+                    f"{taken.get('tensor_dir')}). This arm is armed as "
+                    f"{self.variant_name!r} replicate {self.replicate}: same "
+                    f"stack, same conditioning, same seed, same launch. "
+                    f"increment `replicate` for an honest rerun; the tap "
+                    f"wrote nothing")
             self._capture_id = cid
         elif cid != self._capture_id:
             raise TapError(
@@ -467,7 +683,8 @@ class TapSession:
         return self._capture_id
 
     def _manifest(self, tensors) -> T.FunctionalCaptureManifest:
-        variant = T.ConditionVariant(name=self.variant_name, arm=self.arm)
+        variant = self._variant or T.ConditionVariant(name=self.variant_name,
+                                                      arm=self.arm)
         return T.FunctionalCaptureManifest(
             stack=self.stack, variant=variant, tap=self.tap, seed=self.seed,
             sampler=dict(self._sampler or {}),
@@ -487,16 +704,24 @@ class TapSession:
             "calls_recorded": self.calls_recorded,
             "steps_selected": list(self._selected or ()),
             "sketch_R_sha256": self._sketch_sha,
+            "context_shape": self._context_shape,
+            "render_fingerprint": self._render_fingerprint,
         }, sort_keys=True)
 
     # ---------------------------------------------------------- the sink
-    def finalize(self) -> dict:
-        """File the manifest. Nothing here re-reads a tensor.
+    def finalize(self, render_fingerprint=None) -> dict:
+        """File the manifest, THEN promote the tensors. Nothing re-read.
 
         With `enabled=False` this writes NOTHING, on purpose: the disabled
         arm is the pass-through gate's control, and a control that leaves a
         record behind is not a control.
+
+        The order is the rule: the manifest is filed first and the
+        `<id>.partial` directory becomes `<id>` only once it landed. Renaming
+        first would leave orphaned final bytes behind a refusal, which is
+        indistinguishable on disk from a capture that succeeded.
         """
+        self._render_fingerprint = render_fingerprint
         if not self.enabled:
             self.finalized = True
             return {"enabled": False, "calls_seen": self.calls_seen,
@@ -513,16 +738,26 @@ class TapSession:
                 f"concept_lab tap: the capture id moved between the first "
                 f"tensor and finalize ({self._capture_id} -> "
                 f"{man.capture_id})")
-        out = api.capture_record(man.to_dict(), index_root=self.index_root,
-                                 tensor_root=self.tensor_root)
+        try:
+            out = api.capture_record(man.to_dict(), index_root=self.index_root,
+                                     tensor_root=self.tensor_root)
+        except Exception as e:
+            raise TapError(
+                f"concept_lab tap: the manifest for {self._capture_id} was "
+                f"refused, so its tensors were NOT promoted and are still at "
+                f"{self.partial_dir()} (evidence; `space doctor` reports it "
+                f"as an unfinished capture and it is yours to delete). "
+                f"{type(e).__name__}: {e}") from e
+        if os.path.isdir(self.partial_dir()):
+            os.rename(self.partial_dir(), self.capture_dir())
         self.finalized = True
         out.update({"enabled": True, "n_tensors": len(self.tensors),
                     "bytes_written": self.bytes_written,
                     "capture_id": self._capture_id,
                     "calls_seen": self.calls_seen,
                     "calls_recorded": self.calls_recorded,
-                    "tensor_dir": os.path.join(self.space.tensor_dir(),
-                                               self._capture_id),
+                    "render_fingerprint": self._render_fingerprint,
+                    "tensor_dir": self.capture_dir(),
                     "steps_selected": list(self._selected or ()),
                     "sigmas_selected": [self._sched[s]
                                         for s in (self._selected or ())]})

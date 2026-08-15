@@ -29,6 +29,16 @@ is this file's own arithmetic and refusals, not ComfyUI's.
   5. REFUSALS. A frame-row mismatch, a layout that changes mid-capture, a
      bogus store and a payload with no layout all raise, naming numbers.
   6. DISABLED WRITES NOTHING. Not "writes an empty manifest": nothing.
+  7. IDENTITY IS WHAT THE MODEL SAW. Different text context or different
+     ref latents are different captures; a different variant_name is not
+     (DEC-CL-0019). The id cannot even be asked for before the wrapper ran,
+     and a payload seed that disagrees with the armed seed refuses.
+  8. THE REFUSAL FIRES BEFORE THE FIRST BYTE. An id already on disk is
+     refused with nothing written, tensors stream into <id>.partial and are
+     promoted only after the manifest lands, and a refused manifest leaves
+     the partial dir behind for the doctor to report.
+  9. RENDER FINGERPRINT. Frame hashes when the flush gets a tensor, null
+     when it does not. Evidence, never identity.
 """
 import json
 import os
@@ -53,6 +63,27 @@ SEGS = ((0, 10, "text"), (10, 34, "ref_img"), (34, 42, "audio"),
         (42, 60, "video"))
 SIGNATURE = (10, 3, 6, 4, 4)      # text_len, latent_t, latent_h, latent_w, audio_t
 SCHED = [float(v) for v in torch.linspace(1.0, 0.0, 26).tolist()]
+# the text-encoder output the fake model "saw"; identity is derived from it
+CTX = (torch.arange(1 * 10 * HIDDEN, dtype=torch.float32)
+       .reshape(1, 10, HIDDEN) / 31.0)
+
+
+def payload(layout=None, seed=42, **kw):
+    """A minimax_payload shaped like model_base.py:2160-2189 builds one."""
+    p = {"layout": layout if layout is not None else FakeLayout(),
+         "seed": seed, "audio_scale": 1.0}
+    p.update(kw)
+    return p
+
+
+def ref_block(kind="image", latent=None, audio_latent=None, **kw):
+    b = {"kind": kind}
+    if latent is not None:
+        b["latent"] = latent
+    if audio_latent is not None:
+        b["audio_latent"] = audio_latent
+    b.update(kw)
+    return b
 
 
 def ck(cond, label, detail=""):
@@ -127,16 +158,19 @@ def make_session(root, name="s", **kw):
     return TapSession(**kw)
 
 
-def drive(session, patcher, layout=None, to=None, block=0, img=None):
+def drive(session, patcher, layout=None, to=None, block=0, img=None,
+          context=None, pay=None):
     """One wrapper call plus one block-patch call, as the model would."""
     layout = layout or FakeLayout()
     to = to if to is not None else topts()
     img = img if img is not None else torch.arange(
         layout.seq_len * HIDDEN, dtype=torch.float32).reshape(-1, HIDDEN) / 97.0
     session._dm_wrapper(lambda *a, **k: "PASSED THROUGH", None,
-                        torch.tensor([1.0]), None,
+                        torch.tensor([1.0]),
+                        CTX if context is None else context,
                         transformer_options=to,
-                        minimax_payload={"layout": layout})
+                        minimax_payload=pay if pay is not None
+                        else payload(layout, seed=session.seed))
     returned = {}
 
     def original_block(args):
@@ -149,6 +183,13 @@ def drive(session, patcher, layout=None, to=None, block=0, img=None):
                  "rope_freqs": None, "transformer_options": to},
                 {"original_block": original_block})
     return out, returned.get("d"), img
+
+
+def live(session, ref):
+    """Where a tensor is DURING a capture: the partial dir, not the final
+    one. TensorRef.path is the promoted path, which only exists after
+    finalize (DEC-CL-0019)."""
+    return os.path.join(session.partial_dir(), os.path.basename(ref.path))
 
 
 def tensor_files(root):
@@ -191,8 +232,8 @@ def check_passthrough(root):
     s = make_session(root, name="pw")
     p = s.install(FakePatcher())
     ck(s._dm_wrapper(lambda *a, **k: "PASSED THROUGH", None,
-                     torch.tensor([1.0]), None, transformer_options=topts(),
-                     minimax_payload={"layout": FakeLayout()})
+                     torch.tensor([1.0]), CTX, transformer_options=topts(),
+                     minimax_payload=payload())
        == "PASSED THROUGH",
        "the wrapper returns the executor's result unchanged")
 
@@ -290,14 +331,12 @@ def check_shapes(root):
 
     # the arithmetic, checked against the state that went in
     from safetensors.torch import load_file
-    st = load_file(os.path.join(s.space.tensor_dir(),
-                                by_key["video/b0/s12/stats"].path))["stats"]
+    st = load_file(live(s, by_key["video/b0/s12/stats"]))["stats"]
     rows = (img * 2 + 1)[42:60].to(torch.float32)
     ck(torch.allclose(st[0], rows.mean(dim=0), atol=1e-6)
        and torch.allclose(st[2], (rows * rows).mean(dim=0), atol=1e-4),
        "stats row 0 is the per-dim mean and row 2 the mean of squares")
-    fm = load_file(os.path.join(s.space.tensor_dir(),
-                                by_key["video/b0/s12/frame_mean"].path))
+    fm = load_file(live(s, by_key["video/b0/s12/frame_mean"]))
     ck(torch.allclose(fm["frame_mean"],
                       rows.reshape(3, 6, HIDDEN).mean(dim=1), atol=1e-6),
        "frame_mean averages the 6 patch rows of each of the 3 latent frames")
@@ -308,11 +347,9 @@ def check_shapes(root):
     drive(s2, p2, to=topts(step=12))
     ck(s._sketch_sha == s2._sketch_sha and s._sketch_sha is not None,
        "the same sketch_seed draws the same projection", s._sketch_sha[:23])
-    a = load_file(os.path.join(s.space.tensor_dir(),
-                               by_key["video/b0/s12/sketch"].path))["sketch"]
-    b = load_file(os.path.join(s2.space.tensor_dir(),
-                              [t for t in s2.tensors
-                               if t.key == "video/b0/s12/sketch"][0].path))["sketch"]
+    a = load_file(live(s, by_key["video/b0/s12/sketch"]))["sketch"]
+    b = load_file(live(s2, [t for t in s2.tensors
+                            if t.key == "video/b0/s12/sketch"][0]))["sketch"]
     ck(torch.equal(a, b), "so the sketch itself reproduces")
 
 
@@ -326,7 +363,17 @@ def check_manifest(root):
     patched = s.install(FakePatcher())
     drive(s, patched, to=topts(step=12))
     cid_before = s._capture_id
+    ck(os.path.isdir(s.partial_dir()) and not os.path.isdir(s.capture_dir()),
+       "tensors stream into <id>.partial and the final dir does not exist yet",
+       os.path.basename(s.partial_dir()))
     rep = s.finalize()
+    ck(os.path.isdir(s.capture_dir()) and not os.path.isdir(s.partial_dir()),
+       "finalize promotes <id>.partial to <id> AFTER the manifest is filed",
+       rep["tensor_dir"])
+    ck(all(os.path.isfile(os.path.join(s.space.tensor_dir(), t.path))
+           for t in s.tensors),
+       "and every TensorRef.path resolves under the tensor dir",
+       s.tensors[0].path)
 
     ck(rep["capture_id"] == cid_before,
        "the capture id was fixed BEFORE any tensor was written",
@@ -367,13 +414,11 @@ def check_manifest(root):
        "doctor verifies every tensor byte-for-byte",
        json.dumps(doc["problems"])[:90])
 
-    # same condition, same launch, same bytes -> one capture, idempotent put
-    s2 = make_session(root, tap=tap, index_root=idx, tensor_root=ten)
-    drive(s2, s2.install(FakePatcher()), to=topts(step=12))
-    rep2 = s2.finalize()
-    ck(rep2["capture_id"] == rep["capture_id"],
-       "two identical sessions in one launch are one capture id")
-    ck(rep2["path"] == rep["path"], "and the put is idempotent, not a refusal")
+    # re-filing the SAME manifest is still idempotent at the api level
+    from concept_lab import api
+    again = api.capture_record(d, index_root=idx, tensor_root=ten)
+    ck(again["path"] == rep["path"],
+       "re-filing identical manifest bytes is idempotent, not a refusal")
 
     s3 = make_session(root, tap=tap, index_root=idx, tensor_root=ten,
                       replicate=1)
@@ -385,7 +430,6 @@ def check_manifest(root):
        f"n_captures={len(space.list('captures'))}")
 
     # a manifest that claims an id its own fields do not produce
-    from concept_lab import api
     lying = dict(d)
     lying["capture_id"] = "0" * 16
     try:
@@ -416,16 +460,16 @@ def check_refusals(root):
     other = FakeLayout(segments=((0, 12, "text"), (12, 30, "video")),
                        signature=(12, 3, 6, 4, 0))
     refuses(lambda: s2._dm_wrapper(lambda *a, **k: None, None,
-                                   torch.tensor([1.0]), None,
+                                   torch.tensor([1.0]), CTX,
                                    transformer_options=topts(),
-                                   minimax_payload={"layout": other}),
+                                   minimax_payload=payload(other)),
             "a second layout signature inside one capture raises",
             ("60", "30"))
 
     s3 = make_session(root, name="r3")
     p3 = s3.install(FakePatcher())
     refuses(lambda: s3._dm_wrapper(lambda *a, **k: None, None,
-                                   torch.tensor([1.0]), None,
+                                   torch.tensor([1.0]), CTX,
                                    transformer_options=topts(),
                                    minimax_payload={"refs": []}),
             "a payload with no layout raises, listing the keys it did carry",
@@ -475,6 +519,194 @@ def check_disabled(root):
        "and no capture was filed")
 
 
+# ---------------------------------------------------------------- 7
+def check_identity(root):
+    print("\n[7] identity is what the model saw, not what the node was called")
+    tap = T.TapSpec(blocks=(0,), steps=(12,), segments=("video",),
+                    store="stats")
+
+    def cid(name, ctx=CTX, refs=None, seed=42, rep=0, tag=""):
+        s = make_session(root, name="id" + (tag or name), tap=tap,
+                         variant_name=name, replicate=rep)
+        p = s.install(FakePatcher())
+        lay = FakeLayout()
+        drive(s, p, layout=lay, to=topts(step=12), context=ctx,
+              pay=payload(lay, seed=seed, refs=refs))
+        return s
+
+    base = cid("actual_ref", tag="a")
+    other_ctx = cid("actual_ref", ctx=CTX + 1.0, tag="b")
+    ck(base._capture_id != other_ctx._capture_id,
+       "(a) two sessions with DIFFERENT text context are different captures",
+       f"{base._capture_id} vs {other_ctx._capture_id}")
+    ck(len(base._variant.sources) == 1
+       and base._variant.sources[0].kind == "text"
+       and base._variant.sources[0].content_hash
+       != other_ctx._variant.sources[0].content_hash,
+       "and the text source is the hash of the context the model consumed",
+       base._variant.sources[0].content_hash[:23])
+
+    z1 = torch.arange(24, dtype=torch.float32).reshape(1, 4, 1, 3, 2)
+    r1 = cid("R", refs=[ref_block("image", latent=z1)], tag="c")
+    r2 = cid("R", refs=[ref_block("image", latent=z1 + 0.5)], tag="d")
+    ck(r1._capture_id != r2._capture_id,
+       "(b) two sessions with DIFFERENT ref latents are different captures",
+       f"{r1._capture_id} vs {r2._capture_id}")
+    ck(r1._capture_id != base._capture_id,
+       "and a ref-bearing arm differs from the text-only arm it shares a "
+       "prompt with", r1._capture_id)
+    src = r1._variant.sources[1]
+    ck(src.kind == "image" and src.preprocess["payload_kind"] == "image"
+       and src.preprocess["latent_shape"] == [1, 4, 1, 3, 2],
+       "the ref source records the packed kind and the latent shape",
+       json.dumps(src.preprocess))
+
+    named = cid("a completely different label", refs=[
+        ref_block("image", latent=z1)], tag="e")
+    ck(named._capture_id == r1._capture_id,
+       "(c) the same context and refs under a different variant_name are ONE "
+       "capture: the name is a label, not identity", named._capture_id)
+    ck(named._variant.name != r1._variant.name,
+       "and the label is still recorded, just not hashed",
+       f"{named._variant.name!r}")
+
+    va = cid("va", refs=[ref_block("video_audio", latent=z1,
+                                   audio_latent=torch.ones(1, 2, 4),
+                                   ref_audio_t=4)], tag="f")
+    vs = va._variant.sources[1]
+    ck(vs.kind == "video" and vs.preprocess["ref_audio_t"] == 4
+       and vs.preprocess["audio_latent_shape"] == [1, 2, 4],
+       "a video_audio block hashes latent then audio_latent and records both "
+       "shapes", json.dumps(vs.preprocess))
+    kf = cid("kf", tag="g", refs=None)
+    lay = FakeLayout()
+    kfs = make_session(root, name="idkf2", tap=tap, variant_name="kf")
+    kfp = kfs.install(FakePatcher())
+    drive(kfs, kfp, layout=lay, to=topts(step=12),
+          pay=payload(lay, keyframes=[{"resolved_frame_index": 12,
+                                       "latent": z1}]))
+    ks = kfs._variant.sources[1]
+    ck(ks.kind == "keyframe" and ks.preprocess["frame_idx"] == 12,
+       "a keyframe block is kind 'keyframe' and carries its resolved frame "
+       "index", json.dumps(ks.preprocess))
+    ck(kfs._capture_id != kf._capture_id,
+       "and a keyframe changes the capture id", kfs._capture_id)
+
+    d = make_session(root, name="idd", tap=tap)
+    d.install(FakePatcher())
+    refuses(d._ensure_capture_id,
+            "(d) the capture id cannot be asked for before the wrapper ran",
+            ("before the diffusion-model wrapper",))
+
+    m = make_session(root, name="idm", tap=tap, seed=42)
+    mp = m.install(FakePatcher())
+    lay = FakeLayout()
+    refuses(lambda: drive(m, mp, layout=lay, to=topts(step=12),
+                          pay=payload(lay, seed=99)),
+            "(e) a payload seed that disagrees with the armed seed refuses, "
+            "naming both", ("99", "42"))
+
+
+# ---------------------------------------------------------------- 8
+def check_refuse_before_writing(root):
+    print("\n[8] the refusal fires before the first byte")
+    idx, ten = os.path.join(root, "P"), os.path.join(root, "Pt")
+    tap = T.TapSpec(blocks=(0,), steps=(12,), segments=("video",),
+                    store="stats")
+
+    a = make_session(root, tap=tap, index_root=idx, tensor_root=ten)
+    drive(a, a.install(FakePatcher()), to=topts(step=12))
+    rep = a.finalize()
+    cid = rep["capture_id"]
+    # the operator deleted the tensors and kept the manifest: the id is still
+    # taken, and this is the case that used to overwrite silently
+    shutil.rmtree(a.capture_dir())
+
+    b = make_session(root, tap=tap, index_root=idx, tensor_root=ten,
+                     variant_name="a different label but the same bytes")
+    bp = b.install(FakePatcher())
+    refuses(lambda: drive(b, bp, to=topts(step=12)),
+            "(f) a second session at an id already on disk refuses, naming "
+            "the manifest and the fix",
+            (cid, "actual_ref", "replicate 0",
+             "increment `replicate` for an honest rerun; the tap wrote "
+             "nothing"))
+    tdir = os.path.join(ten, Space(idx, ten).space_id)
+    ck(not os.path.exists(os.path.join(tdir, cid))
+       and not os.path.exists(os.path.join(tdir, cid + ".partial")),
+       "and NOTHING was written: no <id> and no <id>.partial",
+       f"{sorted(os.listdir(tdir))}")
+
+    # (h) a capture_record that raises leaves the partial dir as evidence
+    idx2, ten2 = os.path.join(root, "Q"), os.path.join(root, "Qt")
+    c = make_session(root, tap=tap, index_root=idx2, tensor_root=ten2)
+    drive(c, c.install(FakePatcher()), to=topts(step=12))
+    partial = c.partial_dir()
+    real = h3_tap.api.capture_record
+
+    def boom(*a, **k):
+        raise T.ContractError("synthetic failure, on purpose")
+
+    h3_tap.api.capture_record = boom
+    try:
+        refuses(c.finalize,
+                "(h) a refused manifest leaves <id>.partial in place and says "
+                "where it is", (partial, "synthetic failure"))
+    finally:
+        h3_tap.api.capture_record = real
+    ck(os.path.isdir(partial) and tensor_files(partial),
+       "the bytes are still there to look at", f"{len(tensor_files(partial))} file(s)")
+    doc = Space(idx2, ten2).doctor()
+    kinds = [p["kind"] for p in doc["problems"]]
+    ck(kinds == ["unfinished_capture"] and not doc["ok"],
+       "and the doctor reports it as an unfinished capture",
+       json.dumps(doc["problems"])[:150])
+
+
+# ---------------------------------------------------------------- 9
+def check_render_fingerprint(root):
+    print("\n[9] the render fingerprint is evidence, not identity")
+    idx, ten = os.path.join(root, "R"), os.path.join(root, "Rt")
+    tap = T.TapSpec(blocks=(0,), steps=(12,), segments=("video",),
+                    store="stats")
+    after = torch.linspace(0, 1, 2 * 4 * 4 * 3).reshape(2, 4, 4, 3)
+
+    s = make_session(root, tap=tap, index_root=idx, tensor_root=ten)
+    drive(s, s.install(FakePatcher()), to=topts(step=12))
+    cid_before = s._capture_id
+    fp = h3_tap.render_fingerprint(after)
+    rep = s.finalize(render_fingerprint=fp)
+    notes = json.loads(T.FunctionalCaptureManifest.from_dict(
+        json.load(open(rep["path"]))).notes)
+    ck(notes["render_fingerprint"] == fp
+       and fp["n_frames"] == 2 and fp["h"] == 4 and fp["w"] == 4
+       and fp["frame0_sha256"].startswith("sha256:")
+       and fp["frames_sha256"] != fp["frame0_sha256"],
+       "(i) the fingerprint of the decoded batch lands in the manifest notes",
+       json.dumps(fp))
+    ck(rep["capture_id"] == cid_before,
+       "and it did NOT move the capture id: outputs are not identity "
+       "(DEC-CL-0006)", rep["capture_id"])
+    ck(h3_tap.render_fingerprint(after) == fp
+       and h3_tap.render_fingerprint(after + 0.01)["frames_sha256"]
+       != fp["frames_sha256"],
+       "the same pixels hash the same and different pixels do not")
+
+    idx2, ten2 = os.path.join(root, "S"), os.path.join(root, "St")
+    s2 = make_session(root, tap=tap, index_root=idx2, tensor_root=ten2)
+    drive(s2, s2.install(FakePatcher()), to=topts(step=12))
+    rep2 = s2.finalize(render_fingerprint=h3_tap.render_fingerprint("not a "
+                                                                   "tensor"))
+    notes2 = json.loads(T.FunctionalCaptureManifest.from_dict(
+        json.load(open(rep2["path"]))).notes)
+    ck(notes2["render_fingerprint"] is None,
+       "a flush wired to something that is not an image records null and "
+       "carries on", json.dumps(rep2["render_fingerprint"]))
+    ck(rep2["capture_id"] == rep["capture_id"],
+       "and the two captures are still one id, because the fingerprint is "
+       "not part of one", rep2["capture_id"])
+
+
 def main():
     root = tempfile.mkdtemp(prefix="concept_lab_tap_test_")
     try:
@@ -488,6 +720,9 @@ def main():
         check_manifest(root)
         check_refusals(root)
         check_disabled(root)
+        check_identity(root)
+        check_refuse_before_writing(root)
+        check_render_fingerprint(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

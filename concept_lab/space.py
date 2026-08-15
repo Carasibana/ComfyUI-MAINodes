@@ -360,8 +360,40 @@ class Space:
                             "detail": p,
                             "why": f"manifest says {want}, file hashes to "
                                    f"{got}"})
+        problems.extend(self._unfinished_captures())
         return {"space_id": self.space_id, "problems": problems,
                 "warnings": warnings, "ok": not problems}
+
+    def _unfinished_captures(self) -> list:
+        """`<tensor id>.partial` directories: captures that died mid-run.
+
+        The tap streams tensors into `<id>.partial` and promotes the
+        directory to `<id>` only after the manifest is filed (DEC-CL-0019),
+        so a leftover partial is a capture whose bytes nothing references. It
+        is a PROBLEM and not an error: the space is not corrupt, it is
+        carrying wreckage, and the operator is the one who deletes it.
+        """
+        out = []
+        if not os.path.isdir(self.tensor_root):
+            return out
+        for origin in sorted(os.listdir(self.tensor_root)):
+            d = os.path.join(self.tensor_root, origin)
+            if not os.path.isdir(d):
+                continue
+            for name in sorted(os.listdir(d)):
+                p = os.path.join(d, name)
+                if not name.endswith(".partial") or not os.path.isdir(p):
+                    continue
+                out.append({
+                    "kind": "unfinished_capture", "record": p,
+                    "detail": f"capture {name[:-len('.partial')]} in space "
+                              f"{origin} wrote tensors and never filed a "
+                              f"manifest",
+                    "why": "the tap promotes <id>.partial to <id> only after "
+                           "the manifest lands, so these bytes belong to a "
+                           "run that died or was refused. Nothing references "
+                           "them; delete the directory."})
+        return out
 
     # ---------------------------------------------------------- export
     def export(self, out_path: str, corpora=None, captures=None, deltas=None,
