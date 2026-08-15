@@ -147,6 +147,39 @@ def render_fingerprint(after) -> "dict | None":
     }
 
 
+def schedule_and_sigma(transformer_options, who: str = "tap", error=None):
+    """(schedule, n_steps, this call's sigma) off transformer_options.
+
+    Module level and parameterised by `who` because the injector reads the
+    step exactly the same way (h3_inject): a capture and an injection that
+    disagree about which step they are on are not comparable, and two copies
+    of this arithmetic is how they would come to disagree.
+    """
+    error = error or TapError
+    to = transformer_options or {}
+    sched_t = to.get("sample_sigmas")
+    sig_t = to.get("sigmas")
+    if sched_t is None or sig_t is None:
+        raise error(
+            f"concept_lab {who}: transformer_options carries no "
+            f"{'sample_sigmas' if sched_t is None else 'sigmas'}; "
+            "step selection would be a guess (comfy/samplers.py:510-513 "
+            "sets both)")
+    sched = [float(v) for v in torch.as_tensor(sched_t).flatten().tolist()]
+    n_steps = len(sched) - 1
+    if n_steps < 1:
+        raise error(
+            f"concept_lab {who}: sample_sigmas has {len(sched)} value(s), "
+            f"so there are {n_steps} steps to select from")
+    sigma = float(torch.as_tensor(sig_t).flatten()[0])
+    return sched, n_steps, sigma
+
+
+def step_from_sigma(sched, n_steps: int, sigma: float) -> int:
+    """The step index this sigma names, read back off the schedule."""
+    return min(range(n_steps), key=lambda k: abs(sched[k] - sigma))
+
+
 def _git_short(path: str):
     """The commit of the tree at `path`, or None. Never a guess."""
     try:
@@ -476,23 +509,8 @@ class TapSession:
         a sampler may call the model more than once per step, and a counter
         would drift on the first one that does.
         """
-        to = transformer_options or {}
-        sched_t = to.get("sample_sigmas")
-        sig_t = to.get("sigmas")
-        if sched_t is None or sig_t is None:
-            raise TapError(
-                "concept_lab tap: transformer_options carries no "
-                f"{'sample_sigmas' if sched_t is None else 'sigmas'}; "
-                "step selection would be a guess (comfy/samplers.py:510-513 "
-                "sets both)")
+        sched, n_steps, sigma = schedule_and_sigma(transformer_options)
         if self._sched is None:
-            sched = [float(v) for v in torch.as_tensor(sched_t).flatten()
-                     .tolist()]
-            n_steps = len(sched) - 1
-            if n_steps < 1:
-                raise TapError(
-                    f"concept_lab tap: sample_sigmas has {len(sched)} value(s), "
-                    f"so there are {n_steps} steps to select from")
             if self.tap.steps:
                 sel = sorted({int(s) for s in self.tap.steps})
             else:
@@ -509,10 +527,7 @@ class TapSession:
             self._sampler = {"n_steps": n_steps, "sigma_first": sched[0],
                              "sigma_last": sched[-1],
                              "label": self.sampler_label}
-        sigma = float(torch.as_tensor(sig_t).flatten()[0])
-        step = min(range(self._n_steps),
-                   key=lambda k: abs(self._sched[k] - sigma))
-        return step, sigma
+        return step_from_sigma(self._sched, self._n_steps, sigma), sigma
 
     # --------------------------------------------------------- recording
     def _record(self, block: int, img, transformer_options):

@@ -47,9 +47,10 @@ Unbuilt verbs raise and name the task that blocks them. They do not return
 an empty result. In a subsystem whose output is evidence, a quiet nothing is
 worse than a refusal, because the nothing gets written down.
 
-Two alpha nodes are registered (`MAI Concept Capture Arm` / `Flush`,
-DEC-CL-0018), through the pack's guarded loader, so a broken alpha module
-cannot take the pack down. No existing MAINodes behaviour or default moves.
+Three alpha nodes are registered (`MAI Concept Capture Arm` / `Flush`,
+DEC-CL-0018, and `MAI Concept Inject Delta`, DEC-CL-0020), through the pack's
+guarded loader, so a broken alpha module cannot take the pack down. No
+existing MAINodes behaviour or default moves.
 
 ## Layering, and why it is strict
 

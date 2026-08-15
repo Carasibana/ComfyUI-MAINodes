@@ -1,4 +1,4 @@
-"""The ComfyUI surface of concept_lab: two thin nodes, no rules.
+"""The ComfyUI surface of concept_lab: three thin nodes, no rules.
 
 There is exactly one reason these exist this early (DEC-CL-0013 said nodes
 wait for T12, DEC-CL-0018 amends its TIMING): a capture has to happen inside
@@ -16,6 +16,12 @@ concept_lab/, and every refusal comes from there too.
 The `after` input is what orders the flush behind the decode. ComfyUI runs
 the graph by data dependency, and a flush that is not downstream of anything
 can execute before the sampler has taken a single step.
+
+The third node is the mirror of the first (DEC-CL-0020): where the tap READS
+block states, `MAI Concept Inject Delta` ADDS a stored one back, so the same
+seam serves the capture and the premise test that spends it. It holds no
+rules either; the pack, the geometry guard and the controls live in
+`concept_lab/backends/h3_inject.py`.
 
 ALPHA. The pass-through gate (E0: tap-installed-disabled renders must be
 pixel-identical to the same seed unpatched) has NOT been run live yet. If
@@ -37,6 +43,7 @@ if _PACK not in sys.path:
     sys.path.insert(0, _PACK)
 
 from concept_lab import types as T                              # noqa: E402
+from concept_lab.backends import h3_inject                      # noqa: E402
 from concept_lab.backends import h3_tap                         # noqa: E402
 
 CATEGORY = "MAI/concept (alpha)"
@@ -50,7 +57,7 @@ class _AnyType(str):
 ANY = _AnyType("*")
 
 
-def _ints(s, field):
+def _ints(s, field, who="MAI Concept Capture Arm"):
     out = []
     for part in str(s or "").split(","):
         part = part.strip()
@@ -59,7 +66,7 @@ def _ints(s, field):
         try:
             out.append(int(part))
         except ValueError:
-            raise ValueError(f"MAI Concept Capture Arm: {field} wants "
+            raise ValueError(f"{who}: {field} wants "
                              f"comma-separated integers, got {part!r}")
     return tuple(out)
 
@@ -260,14 +267,105 @@ class MAIConceptCaptureFlush:
             indent=2, sort_keys=True),)
 
 
+class MAIConceptInjectDelta:
+    """Add a stored delta to the target-video rows at chosen blocks/steps."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-15. The mirror of the capture tap: "
+        "loads a delta pack (a .safetensors of per-(block, step) frame_mean "
+        "maps plus its sidecar JSON) and ADDS it, times alpha, to the "
+        "target-video rows of the block output, on a CLONE of the model.\n\n"
+        "It answers one question and holds no theory: does a delta measured "
+        "at the tap do anything when it is put back? Run it against its own "
+        "controls. control='zero' runs every line of the patch with zeroes "
+        "(if that render differs from the unpatched one, the plumbing is the "
+        "effect); control='time_shuffle' keeps the delta's energy and "
+        "destroys its timing (if that renders the same as 'none', the timing "
+        "is not what is doing the work).\n\n"
+        "The pack's (latent_t, frame_rows) must match the run's: the node "
+        "refuses before the first block otherwise. A different prompt or a "
+        "different audio length is fine, the delta lives on video rows.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL", {"tooltip": "a patched CLONE comes out; the "
+                                "input is untouched"}),
+            "pack_path": ("STRING", {"default": "",
+                          "tooltip": "absolute path to the pack "
+                                     ".safetensors; its sidecar <pack>.json "
+                                     "(or <pack>.safetensors.json) must sit "
+                                     "beside it"}),
+            "blocks": ("STRING", {"default": "",
+                       "tooltip": "comma-separated DiT blocks to inject at; "
+                                  "empty = every block the pack carries. Must "
+                                  "not collide with a tap's blocks on the "
+                                  "same model"}),
+            "alpha": ("FLOAT", {"default": 1.0, "min": -8.0, "max": 8.0,
+                      "step": 0.05,
+                      "tooltip": "scale on the delta; negative subtracts"}),
+            "step_mode": (list(h3_inject.STEP_MODES),
+                          {"default": "captured_only",
+                           "tooltip": "captured_only fires only on the steps "
+                                      "the pack was captured at; nearest_all "
+                                      "fires every step using the nearest "
+                                      "captured entry"}),
+            "mode": (list(h3_inject.MODES), {"default": "frame",
+                     "tooltip": "frame = one vector per latent frame; "
+                                "separable = frame + patch - grand mean, the "
+                                "rank-2 map (needs patch_mean in the pack)"}),
+            "control": (list(h3_inject.CONTROLS), {"default": "none",
+                        "tooltip": "the arm: none / zero (plumbing control) / "
+                                   "time_shuffle (same energy, wrong timing) "
+                                   "/ sign_flip"}),
+            "control_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffff,
+                             "tooltip": "seeds time_shuffle's permutation, on "
+                                        "the CPU, so an arm is re-runnable "
+                                        "from its label"}),
+        }, "optional": {
+            "cond_only": ("BOOLEAN", {"default": True,
+                          "tooltip": "inject only on the conditional forward; "
+                                     "CFG makes two per step and they are two "
+                                     "different conditions"}),
+            "enabled": ("BOOLEAN", {"default": True,
+                        "tooltip": "False installs the patches and adds "
+                                   "NOTHING: the pass-through control"}),
+        }}
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "inject"
+    CATEGORY = CATEGORY
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # same reason as the Arm node: an injection is an experiment, and a
+        # cached experiment is not one
+        return float("nan")
+
+    def inject(self, model, pack_path, blocks, alpha, step_mode, mode,
+               control, control_seed, cond_only=True, enabled=True):
+        pack = h3_inject.DeltaPack.load(pack_path, control=control,
+                                        control_seed=int(control_seed))
+        session = h3_inject.InjectSession(
+            pack=pack,
+            blocks=_ints(blocks, "blocks", "MAI Concept Inject Delta"),
+            alpha=float(alpha),
+            step_mode=step_mode, mode=mode, cond_only=bool(cond_only),
+            enabled=bool(enabled))
+        return (session.install(model),)
+
+
 NODE_CLASS_MAPPINGS = {
     "MAIConceptCaptureArm": MAIConceptCaptureArm,
     "MAIConceptCaptureFlush": MAIConceptCaptureFlush,
+    "MAIConceptInjectDelta": MAIConceptInjectDelta,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MAIConceptCaptureArm": "MAI Concept Capture Arm (alpha)",
     "MAIConceptCaptureFlush": "MAI Concept Capture Flush (alpha)",
+    "MAIConceptInjectDelta": "MAI Concept Inject Delta (alpha)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

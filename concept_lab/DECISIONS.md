@@ -426,3 +426,75 @@ render fingerprint). The render fingerprint is evidence and not identity
 (DEC-CL-0006 stands): `MAIConceptCaptureFlush` hashes frame 0 and the whole
 decoded batch as uint8 into the manifest notes, so E0's pass-through gate is
 a hash comparison rather than two humans watching two videos.
+
+---
+
+## DEC-CL-0020 · ACCEPTED · 2026-08-15 · The first injection is additive at the tap, in frame_mean form, with its controls built in
+
+**Decision.** The first injection is additive at the tap, in `frame_mean`
+(and optionally separable frame + patch) form, on the target-video rows,
+with `zero` / `time_shuffle` / `sign_flip` controls built in; it is an
+instrument for E0.5's premise test, not the compiler.
+
+Mechanically: `MAIConceptInjectDelta` loads a delta pack (a `.safetensors`
+of `b<block>_s<step>/frame_mean` `[latent_t, hidden]` maps plus an optional
+`patch_mean` `[frame_rows, hidden]`, with a sidecar JSON carrying
+`latent_t`, `frame_rows`, `hidden`, the captured steps and the source
+capture ids) and, at the post-block point where `TapSession._record` reads,
+adds `alpha * d_frame[t]` to every row of latent frame `t` of the video
+segment, in place in the block's OWN output dict. `separable` adds
+`alpha * (d_frame[t] + d_patch[p] - grand)`, the rank-2 map with the shared
+grand mean counted once. `captured_only` fires on the pack's steps;
+`nearest_all` fires every step off the nearest captured entry, ties to the
+earlier one. Step index, layout stash and `cond_or_uncond` handling are the
+tap's, shared rather than copied (`h3_tap.schedule_and_sigma` /
+`step_from_sigma`, `TapSession._layout_signature`).
+
+**Why.** The capture side can be right and mean nothing: a delta that
+separates R from N in a bank is a statistic until something is generated
+with it. Additive-at-the-tap is the smallest thing that spends the delta
+where it was measured, so a null result indicts the delta rather than a
+translation layer. The controls ship WITH it rather than after it because
+the two questions the first read has to answer are both control questions:
+`zero` runs every line of the patch with zeroes (if that render moves, the
+plumbing is the effect, not the delta), and `time_shuffle` keeps the
+delta's energy while destroying its timing (if that renders like `none`,
+the timing content is not what is doing the work). A control invented after
+a promising render is a control chosen to survive it.
+
+**Alternatives.** Replacing rather than adding (set the rows' frame means to
+the pack's) — rejected for the first read: it destroys the run's own
+content and makes a null result unattributable. Injecting through the
+conditioning (a new ref block) — rejected: that is a different experiment
+about the packer, and it cannot address a chosen block or step. Waiting for
+a compiler that maps a factor to a schedule — rejected: the compiler's
+first input is exactly the measurement this node produces. A distinct patch
+NAME so a tap and an inject could share a block — rejected on the source:
+the block loop reads only `patches_replace["dit"]`
+(comfy/ldm/minimax/model.py:643-655), so a patch under any other name never
+fires, and comfy keeps ONE callable per (name, block, index)
+(model_patcher.py:93-112), so a second install on one block silently
+replaces the first. The injector therefore refuses on block overlap and
+says to put the tap at a later block, where it records the injected state.
+
+**How to apply.** One pack, one arm per render, all arms in one launch
+(DEC-CL-0015 binds injections too). Read `none` against `zero` before
+reading `none` against anything else. The geometry guard is
+(latent_t, frame_rows) recomputed off the live layout the way
+`TapSession._write` computes them, checked before any block fires, because
+the manifests carry segments and a position hash rather than the packed
+signature tuple; text_len and audio_t are free to differ, so a delta may be
+spent under a different prompt. `alpha` is the dose and it is not
+calibrated: the report logs the applied norms per (block, step) on the
+ComfyUI console at the last step, and that is the number to quote.
+
+**Consequences.** `concept_lab/backends/h3_inject.py` is the second and last
+file in the subsystem that imports torch; `types.py`, `space.py` and `api.py`
+stay stdlib-only. `h3_tap`'s step arithmetic moved to two module functions so
+both sides read one implementation; `TapSession` behaviour is unchanged and
+its suite is untouched and green. `tests/test_concept_lab_inject.py` is the
+new offline suite (pack reading, zero/frame/separable arithmetic, controls,
+step mapping, geometry refusals, cond_only, tap+inject on one clone). The
+node is ALPHA and has NOT been run live: E0.5's premise test is the first
+run, and if the `zero` arm is not bit-identical to an unpatched render the
+node gets pulled rather than patched around.
