@@ -108,10 +108,11 @@ anime like this it wins at every setting; the numbers are on the
 <a href="https://huggingface.co/matlowai/MiniMax-H3-Motion-Adapter">model
 card</a>.</p>
 <video controls loop playsinline preload="metadata"
-  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_drop_full3x_triptych.mp4"></video>
-<p class="cap">Full-clip 3x de-rope on a spill: first generation, the de-rope,
-the de-rope with the adapter. The adapter converts the extra clock into
-smoothness rather than invention; alternation drops by about half.</p>
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_chaos_derope_triptych.mp4"></video>
+<p class="cap">A windowed de-rope on a chaotic burst: first generation, the
+de-rope, the de-rope with the adapter. The creature keeps its colour and
+its sparkle here; what the adapter changes is the motion, which stops
+alternating between advance and snap.</p>
 <video controls loop playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_t2c_insert_quad.mp4"></video>
 <p class="cap">Temporal insertion, the task it was trained on: a window of a
@@ -122,14 +123,23 @@ the base model (140 s); the windowed pass without the adapter at inject
 clips went 7 to 0 for the adapter.</p>
 <video controls loop playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_ref2va_colour_muting.mp4"></video>
-<p class="cap">Where it is not great. The adapter transfers to the Ref2VA
+<p class="cap">Where it is not great, one. The adapter transfers to the Ref2VA
 checkpoint and keeps its motion wins there, but it mutes colour: the
 prismatic creature comes back as a plain calico, at both denoise 0.40 and
-0.70 (saturation 46 to 38 and 54 to 40). It also over-corrects calm
-chains and costs about a decibel of anchor fidelity on native keyframes.
-Keep it off calm content; on strong-colour references lower it or accept
-the trade. This is a pilot released as an intermediate option while we try
-something considerably more ambitious that may not work.</p>
+0.70 (saturation 46 to 38 and 54 to 40).</p>
+<video controls loop playsinline preload="metadata"
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_drop_full3x_triptych.mp4"></video>
+<p class="cap">Where it is not great, two. The same muting on the fl2va
+checkpoint when the whole clip is de-roped at 3x: first generation, full
+3x de-rope, full 3x with the adapter. The creature loses its colour and
+the particle trail thins out even though the motion itself is smoother.
+So the rule is about content, not checkpoint: strong colour and particle
+effects are at risk, worst on Ref2VA and on full-clip passes. It also
+over-corrects calm chains and costs about a decibel of anchor fidelity on
+native keyframes. Keep it off calm content; on strong-colour subjects
+lower it or accept the trade. This is a pilot released as an intermediate
+option while we try something considerably more ambitious that may not
+work.</p>
 
 <h2 id="vram">What it costs, measured</h2>
 <table>

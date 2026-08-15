@@ -504,8 +504,9 @@ inject is what you tune, 0.45 for character work where the base
 over-produces, 0.30 where identity or props are the deliverable, anything
 on very fast anime; keep the tail guide on. Known costs: about 1 dB of
 anchor fidelity on native keyframes, over-correction of calm chains, and
-muted colour on the Ref2VA checkpoint (a prismatic creature came out as
-a plain calico). It is a pilot released as an intermediate option; a
+muted colour on strong-colour or particle-heavy subjects, worst on the
+Ref2VA checkpoint and on full-clip 3x passes (a prismatic creature came
+out as a plain calico both ways). It is a pilot released as an intermediate option; a
 more ambitious all-in-one adapter is in progress and may not work.
 
 ## Contact-Sheet diffusion
