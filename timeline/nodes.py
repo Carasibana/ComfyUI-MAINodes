@@ -307,6 +307,8 @@ class H3DrawnPlan:
         }, "optional": {
             "plan_json": ("STRING", {"default": "", "multiline": True,
                           "tooltip": "the plan document itself, pasted; wins over plan_path"}),
+            "ignore_uncompiled_lanes": ("BOOLEAN", {"default": False,
+                          "tooltip": "a plan may carry lanes this backend cannot compile yet (pins, regions). OFF: refuse, so nothing is silently dropped. ON: compile the density lane anyway and name every lane that was skipped"}),
         }}
 
     RETURN_TYPES = ("STRING", "INT", "INT", "INT", "INT", "STRING")
@@ -315,9 +317,18 @@ class H3DrawnPlan:
     FUNCTION = "load"
     CATEGORY = "latent/minimax/timeline"
 
-    def load(self, plan_path, plan_json=""):
+    def load(self, plan_path, plan_json="", ignore_uncompiled_lanes=False):
         plan = _read_plan(plan_path, plan_json)
         backend = H3Backend()
+        skipped = []
+        if ignore_uncompiled_lanes:
+            # which lane types compile is the BACKEND's answer, asked for
+            # rather than assumed, so this stays true as lanes land
+            runs = set(backend.capabilities()["lanes_compiled"])
+            for lane in plan.get("lanes", []):
+                if schema.lane_type(lane) not in runs and lane.get("enabled", True):
+                    lane["enabled"] = False
+                    skipped.append(str(lane.get("type")))
         problems = backend.validate(plan)
         if problems:
             raise ValueError("H3 Drawn Plan: this plan cannot be compiled: "
@@ -337,6 +348,10 @@ class H3DrawnPlan:
                  "wire into H3 Manual Hold Map with ramp OFF and bridge 0: "
                  "the compiler has already shaped this map",
                  res.report]
+        if skipped:
+            lines.append("SKIPPED (ignore_uncompiled_lanes is ON): %s. Those "
+                         "lanes are still in the plan; this pass did not run "
+                         "them" % ", ".join(sorted(set(skipped))))
         for w in res.warnings:
             lines.append("WARNING: " + w)
         return (ranges, frames, fps, w0, int(art["window"]["len"]),

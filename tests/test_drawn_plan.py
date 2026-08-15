@@ -183,7 +183,21 @@ def main():
           kind == "ValueError" and "cannot be compiled" in msg
           and "generation_density" in msg, msg)
 
-    print("\n== 5. registration")
+    print("\n== 5. lanes this backend cannot compile yet")
+    with_pin = drawn_plan()
+    with_pin["lanes"].append(schema.pin_lane(68, authority=0.6))
+    kind, msg = err_of(lambda: node.load("", json.dumps(with_pin)))
+    print("  pin, default  -> %s: %s" % (kind, msg))
+    check("a pin refuses by default: nothing is dropped behind your back",
+          kind == "ValueError" and "pin" in msg, msg)
+    r2 = node.load("", json.dumps(with_pin), ignore_uncompiled_lanes=True)
+    check("...and compiles to the same ranges when you opt in",
+          r2[0] == ranges, "%r vs %r" % (r2[0], ranges))
+    check("...saying out loud which lane it skipped",
+          "SKIPPED" in r2[5] and "pin" in r2[5],
+          "; ".join(l for l in r2[5].splitlines() if l.startswith("SKIPPED")))
+
+    print("\n== 6. registration")
     check("H3DrawnPlan is registered with a display name",
           nodes.NODE_CLASS_MAPPINGS.get("H3DrawnPlan") is nodes.H3DrawnPlan
           and "H3DrawnPlan" in nodes.NODE_DISPLAY_NAME_MAPPINGS)
