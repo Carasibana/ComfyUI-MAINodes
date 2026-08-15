@@ -486,6 +486,28 @@ playback.
 - Holds are integer, so recovering the original frame rate is exact frame
   selection.
 
+### The motion adapter (pilot)
+
+A rank-16 LoRA trained on the de-rope task itself: frames inside a motion
+burst held out, the rest kept as clean context, the model asked to fill
+the burst back in. Applied to the de-rope pass only, it teaches the base
+model to spend the stretched clock on smoothness instead of invention.
+Weights and the measurement write-up:
+[huggingface.co/matlowai/MiniMax-H3-Motion-Adapter](https://huggingface.co/matlowai/MiniMax-H3-Motion-Adapter).
+Graph: [`examples/motion_pipeline_adapter_api.json`](examples/motion_pipeline_adapter_api.json)
+(the standard pipeline with one `LoraLoaderModelOnly` on the pass-2
+model). Clips on the [demo page](https://matlowai.github.io/ComfyUI-MAINodes/#adapter).
+
+Settings, measured on clips it never saw: strength 1.0 (strength and
+inject are the same dial; 1.0 wins alternation in every paired cell);
+inject is what you tune, 0.45 for character work where the base
+over-produces, 0.30 where identity or props are the deliverable, anything
+on very fast anime; keep the tail guide on. Known costs: about 1 dB of
+anchor fidelity on native keyframes, over-correction of calm chains, and
+muted colour on the Ref2VA checkpoint (a prismatic creature came out as
+a plain calico). It is a pilot released as an intermediate option; a
+more ambitious all-in-one adapter is in progress and may not work.
+
 ## Contact-Sheet diffusion
 
 Five standalone image latents packed on the model's time axis, jointly
