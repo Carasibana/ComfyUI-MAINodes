@@ -345,6 +345,12 @@ line is it.
 | H3 Indecision Oracle (experimental) | `mode` | indecision | which signal drives the hold map: `indecision`, `jerk passthrough`, `blend max`, `blend weighted w`. Outputs mirror H3 Jerk Oracle and compile through the same threshold/bridge/ramp code, so the switch changes the signal and nothing else. See below |
 | | `step_a`, `step_b` | 6, 12 | which two X0 Tap dumps to difference. 6 to 12 on a 25-step run is the validated pair; 0 to 1 is degenerate |
 | | `blend_w` | 0.5 | weight on indecision in `blend weighted w`; blending happens after per-source rank normalization |
+| H3 Timeline Analyze (alpha) | `auto` | True | oracle profiles in, a PLAN DOCUMENT out: a per-clip JSON saying in generation densities over time how the shot should be retimed. `auto` compiles the proposal straight to a minted graph; off stops at the plan so you can edit it |
+| H3 Timeline Render (alpha) | `plan_path` | | a plan in, a legal graph minted and priced. It emits the graph path and the launch line rather than executing: launching stays with your own queue script |
+| H3 Drawn Plan (alpha) | `plan_path`, `plan_json` | | load a plan and get its compiled geometry as wireable outputs: `hold_map` (the compiler's map verbatim, for H3 Temporal Insert), `ranges` (the same map in H3 Manual Hold Map's language, which re-shapes it through that node's own snapping), window start/len, dilated length, guide frame, and a `splice_map` for H3 Segment Splice at feather 0 |
+| | `ignore_uncompiled_lanes` | False | a plan may carry lanes this backend cannot compile yet. Off refuses the plan so nothing is dropped silently; on compiles the density lane and names every lane it skipped |
+| H3 Plan Settings (alpha) | `plan_path`, `plan_json` | | the same plan's execution knobs as typed outputs: inject, steps, seed, prompt, width, height, output prefix. Wire these instead of retyping them and the graph cannot drift from the plan. `expand_to_end` is reported for reading only: the compiler already baked it into the map, so H3 Temporal Insert stays False |
+| H3 Plan Estimate (alpha) | `recorder_path` | flight recorder | what the plan costs before it runs: equivalent clip time (exact from the plan), work units, VRAM band. `seconds` comes back -1 when your box has no recorded runs, because an uncalibrated guess is worse than no answer |
 
 #### The indecision oracle (experimental, 2026-08-14)
 

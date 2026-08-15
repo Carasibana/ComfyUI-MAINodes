@@ -105,7 +105,9 @@ def main():
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, "drawn.plan.json")
         schema.save(json.loads(json.dumps(plan)), p)
-        ranges, length, fps, w0, wlen, report = node.load(p)
+        # outputs grew in the parity packet; the first six are stable and
+        # this suite is about them
+        (ranges, length, fps, w0, wlen, report) = node.load(p)[:6]
         pasted = node.load("", json.dumps(plan))
 
     print("  ranges: %s" % ranges)

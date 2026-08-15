@@ -202,6 +202,25 @@ def main():
               inside == list(range(sp["start"], sp["end"] + 1))
               and spliced.shape[0] == sp["world_len"],
               f"{len(inside)} frames replaced, {spliced.shape[0]} out")
+        # THE ONLY RUNTIME DIFFERENCE between the two doors, settled on
+        # tensors instead of on a render: the compiler route cats three
+        # slices, the node route splices; the frames must be bit-equal.
+        seg2 = torch.rand(pieces["410"][1], 4, 4, 3)
+        base2 = torch.rand(sp["world_len"], 4, 4, 3)
+        parts = [base2[:head[1]]] if head[1] else []
+        parts.append(seg2)
+        if tail[1]:
+            parts.append(base2[tail[0]:tail[0] + tail[1]])
+        compiler_route = torch.cat(parts, dim=0)
+        node_route = M.H3SegmentSplice().splice(
+            baseline=base2, segment=seg2, splice_map=d["splice_map"],
+            feather_frames=0)[0]
+        check(f"  {name}: node-route splice is BIT-EQUAL to the compiler's cat",
+              node_route.shape == compiler_route.shape
+              and torch.equal(node_route, compiler_route),
+              f"{tuple(node_route.shape)} vs {tuple(compiler_route.shape)}, "
+              f"max abs diff "
+              f"{float((node_route - compiler_route).abs().max()):.3g}")
 
     print("\n5. THE RANGES ROUTE'S LIMIT (measured, not assumed)")
     for name, exact in (("windowed 2x tail", True),
