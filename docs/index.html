@@ -137,6 +137,17 @@ matches the Hugging Face file.</p>
 de-rope, the de-rope with the adapter. The creature keeps its colour and
 its sparkle here; what the adapter changes is the motion, which stops
 alternating between advance and snap.</p>
+<video controls playsinline preload="metadata"
+  src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_rooftop_ood_triptych.mp4"></video>
+<p class="cap">The shipped graphs, end to end, on a scene the adapter never
+saw: the fight choreography moved to a rain-soaked neon rooftop, same seed
+for both arms. Stage 1 plate; the standard de-rope at inject 0.70; the
+de-rope with the adapter at inject 0.45. The adapter pass is smoother
+(alternation 0.24 to 0.19, jitter 0.09 to 0.04) and keeps the plate's
+signage where the 0.70 pass rewrote it. Wall times are in the headers,
+with the GPU each arm ran on; the card at the end has every setting. Each
+graph is at its own shipped inject, so this is a smoke test rather than an
+inject-matched study.</p>
 <video controls loop playsinline preload="metadata"
   src="https://github.com/matlowai/ComfyUI-MAINodes/raw/main/assets/adapter_ref2va_colour_muting.mp4"></video>
 <p class="cap">Where it is not great, one. The adapter transfers to the Ref2VA
