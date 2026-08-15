@@ -28,6 +28,16 @@ class H3ModelSpec(object):
     length_offset = 5
     min_legal_length = 5
 
+    # The shortest length the pixel path will actually GENERATE. The grid
+    # law's snap clamps at k=2 (motion.py _legal_ceil: "a smear target that
+    # short is not worth generating"), so anything shorter is quietly padded
+    # back up to this on its way through the nodes — which is a fact about
+    # the pipeline, not an opinion, and the compiler has to place windows
+    # around it. min_legal_length above is the VAE's floor; this is the
+    # generator's. [SRC motion.py _legal_ceil, cross-checked against the
+    # grid law in tests/test_timeline_compile.py]
+    min_generation_groups = 2
+
     # A 17-frame group is 5 latent time tokens covering (1,4,4,4,4) frames,
     # so every 5th token is a singleton on a 17-multiple frame (the native
     # keyframe anchors). [SRC comfy/ldm/minimax/model.py:30-91]
@@ -89,6 +99,12 @@ class H3ModelSpec(object):
     def audio_is_exact(self, frames):
         num, den = self.audio_latent_frames(frames)
         return self.is_legal_length(frames) and num % den == 0
+
+    @property
+    def min_generation_length(self):
+        """Derived, not stored: 39 frames for this family."""
+        return (self.temporal_group_size * self.min_generation_groups
+                + self.length_offset)
 
     def audio_exact_lengths(self, max_frames=200):
         """Derived, not stored: [39, 90, 141, 192] for the default bound."""

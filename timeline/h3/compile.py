@@ -28,7 +28,10 @@ from . import gridlaw as G
 from .recipe import PROFILE
 from .spec import SPEC
 
-COMPILER_VERSION = "h3-compile-0.2"   # 0.2: artifact/receipt split, density rename
+COMPILER_VERSION = "h3-compile-0.3"   # 0.3: no identity TimeSmear pass; a
+                                      # too-short window widens instead of
+                                      # padding the output (0.2: artifact/
+                                      # receipt split, density rename)
 
 EPS = 1e-6
 
@@ -94,29 +97,82 @@ def dither_holds(ratios, target):
     return holds
 
 
-def place_window(support_lo, support_hi, frames):
-    """Window placement from the envelope's support.
+def place_window(support_lo, support_hi, frames, min_len=None):
+    """Window placement from the envelope's support. -> (start, len, widened).
 
     Rules, all H3's: the window START sits on a 17-multiple (T2a rule 1 —
     hold spans that start on a native anchor recover exactly), the window
     LENGTH is on the 17k+5 grid, and the window must fit inside the clip.
     Falls back to the whole clip when the support cannot be bracketed.
+
+    THE MINIMUM GENERATION LENGTH (2026-08-15, minted from a render). A
+    window shorter than the model's minimum legal generation length is a
+    trap: the pixel path pads it back up on its way through, and the splice
+    around it then hands back a clip LONGER than the plan asked for. The
+    answer is to widen the REGENERATED REGION, symmetrically for v0, by
+    absorbing neighbouring source frames until it reaches that minimum — the
+    region grows, the output length does not change. The alternatives were
+    both rejected: flooring the output pads the timeline (measured: a
+    22-frame window rendered 141 frames for a 124-frame plan), and
+    generate-then-trim moves the tail splice out from under the last-frame
+    guide. min_len comes from the MODEL SPEC, never a literal.
+
+    `widened` is None when nothing was absorbed, else a dict naming how many
+    source frames each side the region grew by, for the report.
     """
+    min_len = int(SPEC.min_generation_length if min_len is None else min_len)
     if support_lo is None:
         w0 = 0
         wlen = frames if G.is_legal(frames) else G.grid_floor(frames)
-        return w0, max(wlen, 5)
+        return w0, max(wlen, 5), None
     w0 = (support_lo // G.LEGAL_STEP) * G.LEGAL_STEP
     while True:
         wlen = G.grid_ceil(support_hi - w0 + 1)
         if w0 + wlen <= frames:
-            return w0, wlen
+            break
         if w0 >= G.LEGAL_STEP:
             w0 -= G.LEGAL_STEP           # slide the window earlier and retry
             continue
         w0 = 0
         wlen = frames if G.is_legal(frames) else G.grid_floor(frames)
-        return w0, max(wlen, 5)
+        return w0, max(wlen, 5), None
+    if wlen >= min_len:
+        return w0, wlen, None
+    return _widen_to_min(w0, wlen, support_lo, support_hi, frames, min_len)
+
+
+def _widen_to_min(w0, wlen, support_lo, support_hi, frames, min_len):
+    """Grow a too-short window to the minimum generation length, centred on
+    the drawn burst as closely as the 17-phase allows.
+
+    The absorbed edges are SOURCE frames the user did not ask to change; they
+    are regenerated at density 1.0, which is what a windowed render already
+    does either side of a burst. Symmetry is an AIM, not a promise: the
+    window start has to sit on a 17-multiple, so with only one group to
+    spend the burst can land off-centre by up to 17 frames. Hard constraints
+    beat the aim in this order: the burst stays inside the region, the region
+    stays inside the clip, the start stays on the phase.
+
+    If the clip itself cannot hold a minimum-length region, the whole clip
+    becomes the region and H3Backend.validate is what refuses a clip that
+    short.
+    """
+    target = G.grid_ceil(min_len)
+    if target > frames:
+        wlen2 = max(frames if G.is_legal(frames) else G.grid_floor(frames), 5)
+        return 0, wlen2, {"from_len": wlen, "to_len": wlen2, "before": w0,
+                          "after": max(0, wlen2 - wlen - w0),
+                          "min_len": min_len, "clip_limited": True}
+    mid = (support_lo + support_hi) / 2.0
+    ideal = mid - target / 2.0                    # centred on the burst
+    lo = 0
+    hi = min(support_lo, frames - target)         # burst in, region in clip
+    start = int(round(ideal / G.LEGAL_STEP)) * G.LEGAL_STEP
+    start = max(lo, min(start, (hi // G.LEGAL_STEP) * G.LEGAL_STEP))
+    return start, target, {"from_len": wlen, "to_len": target,
+                           "before": max(0, w0 - start),
+                           "after": max(0, (start + target) - (w0 + wlen)),
+                           "min_len": min_len, "clip_limited": False}
 
 
 def compile_temporal(ratios, frames, expand_to_end=True):
@@ -127,8 +183,8 @@ def compile_temporal(ratios, frames, expand_to_end=True):
     """
     q = quantize_to_tokens(ratios)
     hot = [f for f, r in enumerate(q) if r > 1.0 + EPS]
-    w0, wlen = place_window(hot[0] if hot else None,
-                            hot[-1] if hot else None, frames)
+    w0, wlen, widened = place_window(hot[0] if hot else None,
+                                     hot[-1] if hot else None, frames)
     win = q[w0:w0 + wlen]
     want = sum(win)
     target = G.legal_ceil(int(want + 0.5))
@@ -152,6 +208,7 @@ def compile_temporal(ratios, frames, expand_to_end=True):
         "achieved_average": dilated / float(wlen) if wlen else 1.0,
         "guide_dilated_idx": sum(holds[:wlen - 1]),
         "expand_note": note,
+        "widened": widened,
         "runs": G.hold_runs_str(holds),
     }
 
@@ -290,18 +347,22 @@ def emit_graph(plan, comp, ov):
         "531": {"class_type": "H3ExactRecover",
                 "inputs": {"images": ["530", 0], "hold_map": ["404", 2]},
                 "_meta": {"title": f"recover: {dil}f -> {wlen}f world clock"}},
-        "413": {"class_type": "H3TimeSmear",
-                "inputs": {"images": ["531", 0], "dilation": 1,
-                           "hold_map": "", "fps": 24},
-                "_meta": {"title": "IDENTITY: H3TimeSmear returns CPU images so "
-                                   "ImageBatch can cat the decode onto the "
-                                   "untouched head"}},
     }
 
     # splice: head + window (+ tail). Pieces the window does not cover are
     # the ORIGINAL pixels, never a VAE round trip.
+    #
+    # The recovered window goes STRAIGHT into the splice. The hand-built
+    # recipe passed it through an H3TimeSmear at dilation 1 with no hold map
+    # to get CPU images for ImageBatch; H3ExactRecover already returns
+    # `.cpu()`, so that pass had nothing to do — and a pass with nothing to
+    # do is not free: at dilation 1 it still snaps its output up to the
+    # legal floor, which silently added 17 frames to any window shorter than
+    # that (measured 2026-08-15: a 124-frame plan rendered 141 frames). A
+    # node that is only conditionally an identity does not belong in the
+    # graph, so it is not emitted (compiler 0.3).
     tail_start = w0 + wlen
-    last = "413"
+    last = "531"
     if w0 > 0:
         g["411"] = {"class_type": "ImageFromBatch",
                     "inputs": {"image": ["402", 0], "batch_index": 0,
@@ -429,6 +490,18 @@ class H3Backend(VideoModelBackend):
             ratios, frames,
             expand_to_end=bool(schema.setting(plan, "hold_expansion_to_clip_end")))
         graph = emit_graph(plan, comp, ov)
+        wd = comp["widened"]
+        if wd:
+            warnings.append(
+                f"the drawn burst needs only {wd['from_len']} world frames, "
+                f"below the model's minimum generation length "
+                f"{wd['min_len']}: the REGENERATED REGION was widened to "
+                f"{wd['to_len']} frames by absorbing {wd['before']} source "
+                f"frames before it and {wd['after']} after. The output is "
+                f"still {frames} frames — the region grew, the timeline did "
+                f"not"
+                + (" (clip too short for a full-length window, so the whole "
+                   "clip is the region)" if wd["clip_limited"] else ""))
 
         budget_s = float(schema.setting(plan, "max_regen_seconds") or 0)
         if budget_s and comp["dilated_frames"] / float(self.spec.fps) > budget_s:
@@ -473,6 +546,7 @@ class H3Backend(VideoModelBackend):
             "drawn_average_density": comp["drawn_average"],
             "achieved_average_density": comp["achieved_average"],
             "expand_note": comp["expand_note"],
+            "widened": comp["widened"],
             "graph_sha256": _graph_hash(graph),
             "equivalent_clip_time_x": round(est.multiplier, 6),
         }
@@ -556,6 +630,11 @@ class H3Backend(VideoModelBackend):
             f"speed, more frames underneath the motion",
             f"tail guide at dilated frame {comp['guide_dilated_idx']}",
         ]
+        if comp["widened"]:
+            wd = comp["widened"]
+            lines.append(f"region widened: {wd['from_len']}f -> {wd['to_len']}f "
+                         f"(+{wd['before']} before, +{wd['after']} after) to "
+                         f"reach the minimum generation length {wd['min_len']}")
         if comp["expand_note"]:
             lines.append(comp["expand_note"])
         lines += est.lines

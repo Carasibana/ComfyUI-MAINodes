@@ -129,7 +129,18 @@ def main():
     check("class types match the hand-built recipe node for node",
           all(g[k]["class_type"] == hand[k]["class_type"]
               for k in ("403", "404", "406", "410", "522", "526", "530",
-                        "531", "413", "541")))
+                        "531", "541")))
+    # ...with ONE deliberate difference from the hand-built graph (compiler
+    # 0.3): the hand recipe passed the recovered window through an
+    # H3TimeSmear at dilation 1 for CPU images, which H3ExactRecover already
+    # returns. That pass is a no-op only above the legal floor; below it, it
+    # snapped the window up and lengthened the whole render.
+    check("no identity H3TimeSmear pass is emitted",
+          not any(n["class_type"] == "H3TimeSmear" for n in g.values())
+          and hand["413"]["class_type"] == "H3TimeSmear")
+    check("the recovered window feeds the splice directly",
+          g["412"]["inputs"]["image2"] == ["531", 0],
+          str(g["412"]["inputs"]))
     check("inject came from the plan, not from a constant",
           g["522"]["inputs"]["inject"] == 0.45
           and g["522"]["inputs"]["inject"]
@@ -432,6 +443,77 @@ def main():
     check("an uncompilable lane is refused BY NAME, not ignored",
           any("pin" in p and "not compiled" in p for p in B.validate(unsup)),
           str(B.validate(unsup)[:1]))
+
+    # ---- 8b. the minimum generation length (minted from a render 2026-08-15)
+    print("\n8b. TOO-SHORT WINDOWS: widen the region, never the timeline")
+    min_len = h3spec.SPEC.min_generation_length
+
+    def spliced_frames(graph):
+        """What the emitted graph actually hands to CreateVideo: the source
+        pieces plus the recovered window, counted the way ComfyUI will."""
+        total = 0
+        for nid, n in graph.items():
+            if n["class_type"] == "ImageFromBatch" and nid != "405":
+                total += int(n["inputs"]["length"])
+        return total          # window crop + head + tail, window recovered 1:1
+
+    tiny = schema.new_plan("/tmp/clip.mp4", frames=124, fps=24, width=1152,
+                           height=640, proposed_by="test")
+    tiny["lanes"].append(schema.generation_density_lane(
+        [[0, 1.0], [20, 1.0], [21, 2.0], [30, 2.0], [31, 1.0], [123, 1.0]]))
+    res_t = B.compile(tiny)
+    at = res_t.compiled["artifact"]
+    wd = at["widened"]
+    check("a burst too short to generate widens instead of padding",
+          wd is not None and at["window"]["len"] >= min_len,
+          f"{wd['from_len'] if wd else '?'}f -> {at['window']['len']}f "
+          f"(min {min_len})")
+    # Symmetry is an aim the 17-phase quantizes: the burst must end up as
+    # centred as a legal start allows, i.e. the source margins either side of
+    # it cannot differ by more than one group.
+    lead = 21 - at["window"]["start"]
+    trail = at["window"]["start"] + at["window"]["len"] - 1 - 30
+    check("...centred on the burst, within one 17-frame group",
+          abs(lead - trail) <= G.LEGAL_STEP and lead >= 0 and trail >= 0,
+          f"{lead} source frames before the burst, {trail} after; absorbed "
+          f"{wd['before']}/{wd['after']}")
+    check("...and says so in the warnings and the report",
+          any("widened" in w for w in res_t.warnings)
+          and "region widened" in res_t.report,
+          "; ".join(res_t.warnings)[:90])
+    check("the widened window still starts on the 17-phase and fits the clip",
+          at["window"]["start"] % G.LEGAL_STEP == 0
+          and at["window"]["start"] + at["window"]["len"] <= 124
+          and G.is_legal(at["window"]["len"]),
+          str(at["window"]))
+    check("the drawn burst is still inside the region",
+          at["window"]["start"] <= 21
+          and at["window"]["start"] + at["window"]["len"] - 1 >= 30,
+          str(at["window"]))
+    check("OUTPUT LENGTH EQUALS THE PLAN's (the 141-frame failure, fixed)",
+          spliced_frames(res_t.graph) == 124,
+          f"{spliced_frames(res_t.graph)} vs 124")
+    check("the spec's generation floor IS the grid law's snap floor",
+          min_len == G.legal_ceil(1) == G.legal_ceil(min_len) == 39,
+          f"spec {min_len}, grid law {G.legal_ceil(1)}")
+
+    for name, env in (("a mid-clip burst", [[0, 1.0], [50, 1.0], [51, 2.0],
+                                            [60, 2.0], [61, 1.0], [123, 1.0]]),
+                      ("a burst at the head", [[0, 3.0], [8, 3.0], [9, 1.0],
+                                               [123, 1.0]]),
+                      ("a burst at the tail", [[0, 1.0], [114, 1.0],
+                                               [115, 2.0], [123, 2.0]])):
+        p2 = schema.new_plan("/tmp/clip.mp4", frames=124, fps=24, width=1152,
+                             height=640, proposed_by="test")
+        p2["lanes"].append(schema.generation_density_lane(env, ceiling=4.0))
+        r2 = B.compile(p2)
+        a2 = r2.compiled["artifact"]
+        check(f"  {name}: region >= {min_len}f, output still 124f, no smear",
+              a2["window"]["len"] >= min_len
+              and spliced_frames(r2.graph) == 124
+              and not any(n["class_type"] == "H3TimeSmear"
+                          for n in r2.graph.values()),
+              f"window {a2['window']}, spliced {spliced_frames(r2.graph)}")
 
     # ---- 9. migration fixtures
     print("\n9. MIGRATION FIXTURES (plan_version 0 is EXPERIMENTAL)")

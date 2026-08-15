@@ -5,7 +5,7 @@
  "drawn_average_density": 1.9107142857142858,
  "equivalent_clip_time_x": 0.798491,
  "expand_note": null,
- "graph_sha256": "e42caf040d1a36aa61c901ffc5ea7ceaaecb1ed321a46bcab4f396b5a3141fbd",
+ "graph_sha256": "af3da32ea65e91d666284fe0ad4908a6aa37e15bf64b0029b970d0563d56de2b",
  "guide_dilated_idx": 105,
  "hold_map": {
   "holds": [
@@ -72,6 +72,7 @@
   "dilated": 32,
   "world": 17
  },
+ "widened": null,
  "window": {
   "len": 56,
   "start": 68

@@ -57,12 +57,12 @@
  },
  "compiled": {
   "h3": {
-   "fingerprint": "bf0a8c5d3b7f5b72dee703cbdd95899b84288ce139461cfd99e9921442331776",
+   "fingerprint": "c2dd5b3e929c8b97433fd6291d0ef348e136f99f3657e17d4efeb2261f63692c",
    "backend": "h3",
    "versions": {
     "model_spec": "h3-1.0",
-    "recipe_profile": "h3-recipe-2026-08-14",
-    "compiler": "h3-compile-0.1"
+    "recipe_profile": "h3-recipe-2026-08-14b",
+    "compiler": "h3-compile-0.3"
    },
    "semantic_hash": "c9845013318449a5537e446a0c4f2cdf6c5e0ca6d38cdb71e3ff1981a3b54cf3",
    "derived_from": {
@@ -214,7 +214,8 @@
     "drawn_average_density": 2.5,
     "achieved_average_density": 2.5080645161290325,
     "expand_note": null,
-    "graph_sha256": "b2e254f33a14cd1d6dfd4a34b5bc5568e8913af5913ae3985f06a7417df14dbc",
+    "widened": null,
+    "graph_sha256": "6449194599ed03e4d6fd8a12ae0c750c06a453465343c1cc28881cbfb89acc33",
     "equivalent_clip_time_x": 4.103538
    },
    "receipt": {
@@ -240,7 +241,7 @@
      "dilated length 311 is not audio-exact (nearest exact lengths (39, 90, 141, 192, 243); error 8.3 ms). sync_policy=exact_trim handles it for a single clip; do not CHAIN this segment until pad/resample/conform_at_end exist [TODO T2]"
     ],
     "sync_policy": "exact_trim",
-    "compiled_at": "2026-08-14T18:50:34"
+    "compiled_at": "2026-08-15T02:02:58"
    }
   }
  }
