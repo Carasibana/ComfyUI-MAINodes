@@ -498,3 +498,46 @@ step mapping, geometry refusals, cond_only, tap+inject on one clone). The
 node is ALPHA and has NOT been run live: E0.5's premise test is the first
 run, and if the `zero` arm is not bit-identical to an unpatched render the
 node gets pulled rather than patched around.
+
+---
+
+## DEC-CL-0021 · ACCEPTED · 2026-08-15 · Injection gains a full-state mode and a spatial-shuffle control
+
+**Decision.** `MAIConceptInjectDelta` gains `mode='full'`, which adds the
+whole stored block state (`b<block>_s<step>/full`, `[latent_t * frame_rows,
+hidden]` in the video segment's packed row order) row for row instead of a
+reduction, and `control='space_shuffle'`, which permutes the frame_rows axis
+with one seeded permutation shared by every frame. `frame_mean` injection
+was measured to act as a timing-blind global bias (E0.5, 2026-08-15), so the
+object injected must be the object measured to agree.
+
+**Why.** E0.5 spent a frame map and got a global push:
+`/mnt/work/ai/apps/ComfyUI-ModelCatalog/docs/concept_lab/E05_RESULTS_2026-08-15.md`.
+A frame map has already averaged the spatial axis away, so the arm has no
+"where" to be wrong about, and `time_shuffle` is the only control the object
+can even fail. The full state is the object the tap files and the object the
+cosines were computed on, and `space_shuffle` is the control that asks
+whether its placement is doing the work. A null on the reduction indicts the
+reduction, not the delta, and that ambiguity is what this closes.
+
+**Alternatives.** Reading the reduction harder (more blocks, more steps,
+bigger alpha) — rejected: it varies the dose of a quantity already known to
+be timing-blind. Holding the pack's full states in RAM the way the
+reductions are held — rejected: ~160 MB per (block, step) at production
+geometry. They are read one key at a time on first use and cached only in
+the model's own device and dtype, only for the (block, step) pairs a session
+selected, which is at most `blocks x steps` of them.
+
+**How to apply.** `space_shuffle` in `mode='frame'` REFUSES: frame_mean has
+no space axis and the arm would render identically to `none`, which is a
+control that cannot fail and therefore is not one. `mode='full'` refuses at
+session build if any selected (block, step) has no `full` tensor. Sidecar
+keys are unchanged; a pack may carry reductions, full states, or both, and
+the shape guard is `(latent_t, frame_rows, hidden)` as before.
+
+**Consequences.** `tests/test_concept_lab_inject.py` grows section 10 (full
+mode: exact add on video rows only, laziness, both shuffles as permutations
+of the axis they name, fp16 packs applied at the model's dtype); the pack
+reader now enumerates keys through `safe_open` rather than `load_file`, so a
+full pack's bytes are never all resident. The node is still ALPHA and the
+full mode has NOT been run live.

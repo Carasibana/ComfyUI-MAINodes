@@ -273,15 +273,21 @@ class MAIConceptInjectDelta:
     DESCRIPTION = (
         "EXPERIMENTAL (alpha), new 2026-08-15. The mirror of the capture tap: "
         "loads a delta pack (a .safetensors of per-(block, step) frame_mean "
-        "maps plus its sidecar JSON) and ADDS it, times alpha, to the "
-        "target-video rows of the block output, on a CLONE of the model.\n\n"
+        "maps, optional patch_mean maps and optional full block states, plus "
+        "its sidecar JSON) and ADDS it, times alpha, to the target-video rows "
+        "of the block output, on a CLONE of the model.\n\n"
+        "mode='full' adds the whole stored state instead of a reduction, so "
+        "the thing injected is the thing a capture measured. Those tensors "
+        "are big (~160 MB per position) and are read from the pack one at a "
+        "time, on first use, straight into the model's device and dtype.\n\n"
         "It answers one question and holds no theory: does a delta measured "
         "at the tap do anything when it is put back? Run it against its own "
         "controls. control='zero' runs every line of the patch with zeroes "
         "(if that render differs from the unpatched one, the plumbing is the "
         "effect); control='time_shuffle' keeps the delta's energy and "
         "destroys its timing (if that renders the same as 'none', the timing "
-        "is not what is doing the work).\n\n"
+        "is not what is doing the work); control='space_shuffle' does the "
+        "same to WHERE the delta sits inside a frame.\n\n"
         "The pack's (latent_t, frame_rows) must match the run's: the node "
         "refuses before the first block otherwise. A different prompt or a "
         "different audio length is fine, the delta lives on video rows.")
@@ -313,13 +319,19 @@ class MAIConceptInjectDelta:
             "mode": (list(h3_inject.MODES), {"default": "frame",
                      "tooltip": "frame = one vector per latent frame; "
                                 "separable = frame + patch - grand mean, the "
-                                "rank-2 map (needs patch_mean in the pack)"}),
+                                "rank-2 map (needs patch_mean in the pack); "
+                                "full = the whole stored block state, row for "
+                                "row (needs full states in the pack, ~160 MB "
+                                "each, read one at a time)"}),
             "control": (list(h3_inject.CONTROLS), {"default": "none",
                         "tooltip": "the arm: none / zero (plumbing control) / "
-                                   "time_shuffle (same energy, wrong timing) "
-                                   "/ sign_flip"}),
+                                   "time_shuffle (same energy, wrong "
+                                   "timing) / "
+                                   "space_shuffle (same energy, wrong place; "
+                                   "refused in mode 'frame', which has no "
+                                   "space axis) / sign_flip"}),
             "control_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffff,
-                             "tooltip": "seeds time_shuffle's permutation, on "
+                             "tooltip": "seeds the shuffle permutations, on "
                                         "the CPU, so an arm is re-runnable "
                                         "from its label"}),
         }, "optional": {

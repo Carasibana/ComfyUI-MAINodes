@@ -32,8 +32,17 @@ both pairs. text_len and audio_t are free to differ: a different prompt is
 allowed, because the delta lives on video rows.
 
 Controls are part of the instrument, not of the analysis. `zero`,
-`time_shuffle` and `sign_flip` are applied to the delta ONCE at load, so
-every arm of the first read runs identical code with different numbers.
+`time_shuffle`, `space_shuffle` and `sign_flip` are applied to the delta
+ONCE per tensor, so every arm of a read runs identical code with different
+numbers: the reductions get theirs at load, and a `full` state gets the same
+treatment on the lazy load that first needs it.
+
+A `full` state is not a reduction and is not held like one. `mode='full'`
+adds the whole stored `[latent_t * frame_rows, hidden]` block state, which
+is ~160 MB per (block, step) at production geometry, so those tensors are
+read from the pack ONE key at a time on first use and cached only in the
+model's own device and dtype, only for the (block, step) pairs the session
+actually selected. The reductions stay eager: they are kilobytes.
 """
 from __future__ import annotations
 
@@ -42,7 +51,7 @@ import os
 import re
 
 import torch
-from safetensors.torch import load_file
+from safetensors import safe_open
 
 from concept_lab.backends.h3_tap import (DIFFUSION_MODEL, PATCH_BLOCK,
                                          PATCH_NAME, TapSession,
@@ -52,11 +61,11 @@ WRAPPER_KEY = "concept_lab_inject"
 PACK_TYPE = "concept_delta_pack"
 
 STEP_MODES = ("captured_only", "nearest_all")
-MODES = ("frame", "separable")
-CONTROLS = ("none", "zero", "time_shuffle", "sign_flip")
+MODES = ("frame", "separable", "full")
+CONTROLS = ("none", "zero", "time_shuffle", "space_shuffle", "sign_flip")
 
 # b03_s12/frame_mean — block, step, which map
-_KEY_RE = re.compile(r"^b(\d+)_s(\d+)/(frame_mean|patch_mean)$")
+_KEY_RE = re.compile(r"^b(\d+)_s(\d+)/(frame_mean|patch_mean|full)$")
 
 
 class InjectError(RuntimeError):
@@ -67,16 +76,26 @@ class InjectError(RuntimeError):
 class DeltaPack:
     """A `.safetensors` of per-(block, step) deltas plus its sidecar JSON.
 
-    Loaded once, on the CPU, in float32, with the control already applied.
-    The tensors are small by construction (a frame map is `[latent_t,
-    hidden]` and a patch map `[frame_rows, hidden]`, not a state), which is
-    the whole reason the first injection is built on reductions.
+    The REDUCTIONS are loaded once, on the CPU, in float32, with the control
+    already applied: a frame map is `[latent_t, hidden]` and a patch map
+    `[frame_rows, hidden]`, kilobytes each, which is why the first injection
+    was built on them.
+
+    A `full` state is `[latent_t * frame_rows, hidden]` in the video
+    segment's own packed row order (frame-major: `reshape(latent_t,
+    frame_rows, hidden)` is the layout the block state carries), and at
+    production geometry it is ~160 MB per (block, step). Those are NOT held:
+    `full_for` reads one key from the file on demand and hands it back in the
+    caller's device and dtype, and the only cache is the session's, keyed by
+    the (block, step) pairs it selected.
     """
 
-    def __init__(self, path: str, meta: dict, entries: dict):
+    def __init__(self, path: str, meta: dict, entries: dict,
+                 full_shapes: dict | None = None):
         self.path = path
         self.meta = meta
         self.entries = entries                     # (block, step) -> dict
+        self.full_shapes = dict(full_shapes or {})  # (block, step) -> shape
         self.latent_t = int(meta["latent_t"])
         self.frame_rows = int(meta["frame_rows"])
         self.hidden = int(meta["hidden"])
@@ -132,51 +151,82 @@ class DeltaPack:
                 f"layout_signature {list(sig)} says latent_t={int(sig[1])} but "
                 f"latent_t={latent_t}")
 
-        raw = load_file(path)
         entries: dict = {}
-        for key, t in raw.items():
-            m = _KEY_RE.match(key)
-            if not m:
-                raise InjectError(
-                    f"concept_lab inject: {path} carries key {key!r}, which is "
-                    f"not b<block>_s<step>/frame_mean or .../patch_mean. An "
-                    f"unreadable key is a delta nobody can place")
-            block, step, which = int(m.group(1)), int(m.group(2)), m.group(3)
-            want = (latent_t if which == "frame_mean" else frame_rows, hidden)
-            if tuple(int(s) for s in t.shape) != want:
-                raise InjectError(
-                    f"concept_lab inject: {path} key {key!r} is "
-                    f"{tuple(int(s) for s in t.shape)} but the sidecar says it "
-                    f"must be {want} (latent_t={latent_t}, "
-                    f"frame_rows={frame_rows}, hidden={hidden})")
-            entries.setdefault((block, step), {})[which] = t.to(torch.float32)
+        full_shapes: dict = {}
+        with safe_open(path, framework="pt", device="cpu") as fh:
+            for key in fh.keys():
+                m = _KEY_RE.match(key)
+                if not m:
+                    raise InjectError(
+                        f"concept_lab inject: {path} carries key {key!r}, "
+                        f"which is not b<block>_s<step>/frame_mean, "
+                        f".../patch_mean or .../full. An unreadable key is a "
+                        f"delta nobody can place")
+                block, step = int(m.group(1)), int(m.group(2))
+                which = m.group(3)
+                want = {"frame_mean": (latent_t, hidden),
+                        "patch_mean": (frame_rows, hidden),
+                        "full": (latent_t * frame_rows, hidden)}[which]
+                if which == "full":
+                    # shape only: the state itself is read on first use
+                    got = tuple(int(s) for s in fh.get_slice(key).get_shape())
+                else:
+                    t = fh.get_tensor(key)
+                    got = tuple(int(s) for s in t.shape)
+                if got != want:
+                    raise InjectError(
+                        f"concept_lab inject: {path} key {key!r} is {got} but "
+                        f"the sidecar says it must be {want} "
+                        f"(latent_t={latent_t}, frame_rows={frame_rows}, "
+                        f"hidden={hidden})")
+                if which == "full":
+                    full_shapes[(block, step)] = got
+                    entries.setdefault((block, step), {})
+                else:
+                    entries.setdefault((block, step),
+                                       {})[which] = t.to(torch.float32)
         if not entries:
             raise InjectError(
                 f"concept_lab inject: {path} carries no b<block>_s<step> "
                 f"entries, so there is nothing to add")
         missing = sorted(k for k, v in entries.items()
-                         if "frame_mean" not in v)
+                         if "frame_mean" not in v and k not in full_shapes)
         if missing:
             raise InjectError(
-                f"concept_lab inject: entries {missing} have a patch_mean but "
-                f"no frame_mean. frame_mean is required for every (block, "
-                f"step); patch_mean is the optional spatial half")
+                f"concept_lab inject: entries {missing} have a patch_mean and "
+                f"neither a frame_mean nor a full state. Every (block, step) "
+                f"needs something addable of its own; patch_mean is the "
+                f"optional spatial half of the frame map")
 
         meta = dict(meta, _control=control, _control_seed=int(control_seed),
                     _sidecar=side)
         pack = cls(path, meta, cls._apply_control(entries, control,
-                                                  int(control_seed)))
+                                                  int(control_seed)),
+                   full_shapes)
         return pack
 
     # ---------------------------------------------------------- controls
     @staticmethod
-    def _apply_control(entries: dict, control: str, seed: int) -> dict:
-        """The arms of the first read, applied once, to the numbers only.
+    def _perm(n: int, seed: int):
+        """The seeded permutation, on the CPU, so an arm re-runs from its
+        label. One implementation, so `time_shuffle` on a frame map and
+        `time_shuffle` on a full state at the same seed are the SAME
+        reordering of latent frames."""
+        g = torch.Generator().manual_seed(int(seed))
+        return torch.randperm(int(n), generator=g)
+
+    @classmethod
+    def _apply_control(cls, entries: dict, control: str, seed: int) -> dict:
+        """The arms of the read, applied once, to the numbers only.
 
         `zero` is the pass-through control that still runs every line of the
         patch; `time_shuffle` keeps the delta's energy and destroys its
-        timing; `sign_flip` points it the other way. The permutation is drawn
-        on the CPU from `seed` so an arm is re-runnable from its label.
+        timing; `space_shuffle` keeps it and destroys its WHERE (the patch
+        map's rows, the same reordering for every frame); `sign_flip` points
+        it the other way. A control touches only the axis it names: a map
+        without that axis is passed through untouched, and the session
+        refuses the combinations where that would silently mean "no control"
+        (`space_shuffle` in mode `frame`).
         """
         if control == "none":
             return entries
@@ -187,11 +237,12 @@ class DeltaPack:
                 v = {k: torch.zeros_like(t) for k, t in v.items()}
             elif control == "sign_flip":
                 v = {k: -t for k, t in v.items()}
-            elif control == "time_shuffle":
+            elif control == "time_shuffle" and "frame_mean" in v:
                 f = v["frame_mean"]
-                g = torch.Generator().manual_seed(int(seed))
-                perm = torch.randperm(f.shape[0], generator=g)
-                v["frame_mean"] = f[perm].contiguous()
+                v["frame_mean"] = f[cls._perm(f.shape[0], seed)].contiguous()
+            elif control == "space_shuffle" and "patch_mean" in v:
+                q = v["patch_mean"]
+                v["patch_mean"] = q[cls._perm(q.shape[0], seed)].contiguous()
             out[key] = v
         return out
 
@@ -199,12 +250,52 @@ class DeltaPack:
     def steps_for(self, block: int):
         return sorted(s for b, s in self.entries if b == block)
 
+    def has_full(self, block: int, step: int) -> bool:
+        return (int(block), int(step)) in self.full_shapes
+
+    def full_for(self, block: int, step: int, device=None, dtype=None):
+        """The stored block state for one (block, step), read NOW.
+
+        This is the one thing in the subsystem that is big, so it is the one
+        thing that is not held: the key is read from the file per call, cast
+        straight into the caller's device and dtype (`copy=True`, so nothing
+        keeps the pack's mapping alive), and the control is applied to that
+        copy. Shaped `[latent_t, frame_rows, hidden]` to match the block
+        state's own view of its video rows; the file stores it flat in the
+        packed row order.
+        """
+        block, step = int(block), int(step)
+        if not self.has_full(block, step):
+            raise InjectError(
+                f"concept_lab inject: {self.path} has no "
+                f"b{block:02d}_s{step:02d}/full, so there is no state to add "
+                f"at block {block} step {step}. It carries full states for "
+                f"{sorted(self.full_shapes)}")
+        key = f"b{block:02d}_s{step:02d}/full"
+        with safe_open(self.path, framework="pt", device="cpu") as fh:
+            d = fh.get_tensor(key).to(device=device, dtype=dtype, copy=True)
+        d = d.view(self.latent_t, self.frame_rows, self.hidden)
+        c, seed = self.control, self.control_seed
+        if c == "zero":
+            d = d.zero_()
+        elif c == "sign_flip":
+            d = d.neg_()
+        elif c == "time_shuffle":
+            perm = self._perm(self.latent_t, seed).to(d.device)
+            d = d[perm].contiguous()
+        elif c == "space_shuffle":
+            perm = self._perm(self.frame_rows, seed).to(d.device)
+            d = d[:, perm].contiguous()
+        return d
+
     def summary(self) -> dict:
         return {"path": self.path, "sidecar": self.meta.get("_sidecar"),
                 "label": self.label, "latent_t": self.latent_t,
                 "frame_rows": self.frame_rows, "hidden": self.hidden,
                 "blocks": list(self.blocks), "steps": list(self.steps),
                 "n_entries": len(self.entries),
+                "full_entries": [f"b{b:02d}_s{s:02d}"
+                                 for b, s in sorted(self.full_shapes)],
                 "pack_n_steps": self.pack_n_steps,
                 "sources": list(self.meta.get("sources") or ()),
                 "n_subjects": self.meta.get("n_subjects"),
@@ -259,6 +350,33 @@ class InjectSession:
                     f"and entries {no_patch} carry only frame_mean. Either "
                     f"build the pack with the spatial half or run mode "
                     f"'frame'")
+        if mode in ("frame", "separable"):
+            no_frame = sorted(k for k in pack.entries
+                              if k[0] in self.blocks
+                              and "frame_mean" not in pack.entries[k])
+            if no_frame:
+                raise InjectError(
+                    f"concept_lab inject: mode {mode!r} needs frame_mean, and "
+                    f"entries {no_frame} carry only a full state. Run mode "
+                    f"'full', or build the pack with its reductions")
+        if mode == "full":
+            no_full = sorted(k for k in pack.entries
+                             if k[0] in self.blocks and not pack.has_full(*k))
+            if no_full:
+                raise InjectError(
+                    f"concept_lab inject: mode 'full' needs a "
+                    f"b<block>_s<step>/full state, and entries {no_full} "
+                    f"carry only reductions ({pack.path}). Build the pack "
+                    f"with the full states or run mode 'frame'")
+        if pack.control == "space_shuffle" and mode == "frame":
+            raise InjectError(
+                f"concept_lab inject: control 'space_shuffle' in mode 'frame' "
+                f"is not a control: frame_mean is one vector per latent "
+                f"frame, "
+                f"already averaged over the {pack.frame_rows} patch rows, so "
+                f"there is no space axis to permute and the arm would render "
+                f"identically to 'none'. Use 'time_shuffle' here, or "
+                f"'space_shuffle' in mode 'separable' or 'full'")
 
         self._layout = None
         self._layout_sig = None
@@ -460,11 +578,17 @@ class InjectSession:
                 f"in the state the model carries on")
         g = rows.view(self._latent_t, self._frame_rows, int(h.shape[1]))
 
-        f = self._cast_delta(block, cap, "frame", h.device, h.dtype)
-        g.add_(f, alpha=self.alpha)
-        if self.mode == "separable":
-            p = self._cast_delta(block, cap, "patch", h.device, h.dtype)
-            g.add_(p, alpha=self.alpha)
+        if self.mode == "full":
+            # the whole stored state, row for row: no broadcast, nothing
+            # averaged, the object measured is the object added
+            d = self._cast_delta(block, cap, "full", h.device, h.dtype)
+            g.add_(d, alpha=self.alpha)
+        else:
+            f = self._cast_delta(block, cap, "frame", h.device, h.dtype)
+            g.add_(f, alpha=self.alpha)
+            if self.mode == "separable":
+                p = self._cast_delta(block, cap, "patch", h.device, h.dtype)
+                g.add_(p, alpha=self.alpha)
         self.calls_injected += 1
         self.injected[(block, cap)] = self.injected.get((block, cap), 0) + 1
 
@@ -476,18 +600,31 @@ class InjectSession:
         hidden]`, already centred: the rank-2 approximation is frame + patch
         - grand mean, and the grand mean rides inside frame_mean, so it is
         subtracted from the patch map once here rather than counted twice.
+
+        `full` is `[latent_t, frame_rows, hidden]`, read from the pack HERE
+        rather than at load and never kept in a second copy: this cache is
+        the only one, it holds one state per selected (block, step), and it
+        is already in the model's device and dtype so the run does not pay
+        for a cast per call. At most `blocks x steps` of them exist, which is
+        why nothing is evicted.
         """
         key = (block, cap, which, str(device), str(dtype))
         hit = self._cast.get(key)
         if hit is not None:
             return hit
+        n = self.norms.setdefault((block, cap), {})
+        if which == "full":
+            d = self.pack.full_for(block, cap, device=device, dtype=dtype)
+            n[which] = float(torch.linalg.vector_norm(
+                d, dtype=torch.float32).item()) * abs(self.alpha)
+            self._cast[key] = d
+            return d
         e = self.pack.entries[(block, cap)]
         if which == "frame":
             d = e["frame_mean"].unsqueeze(1)
         else:
             grand = e["frame_mean"].mean(dim=0, keepdim=True)
             d = (e["patch_mean"] - grand).unsqueeze(0)
-        n = self.norms.setdefault((block, cap), {})
         n[which] = float(torch.linalg.vector_norm(d).item()) * abs(self.alpha)
         d = d.to(device=device, dtype=dtype)
         self._cast[key] = d

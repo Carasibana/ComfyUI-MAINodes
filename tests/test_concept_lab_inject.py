@@ -27,6 +27,9 @@ the tap-plus-inject collision this suite tests only exists in that structure.
   8. COND ONLY. The unconditional forward is left alone.
   9. TAP + INJECT ON ONE CLONE. Overlapping blocks refuse; a tap at a LATER
      block records the injected state.
+ 10. FULL MODE. The whole stored state is added row for row, on the video
+     rows only, lazily and at the model's dtype; the shuffles permute the
+     axis they name and nothing else.
 """
 import json
 import os
@@ -140,7 +143,9 @@ def base_img(layout=None, hidden=HIDDEN):
 
 def make_pack(root, name="pack", blocks=(0,), steps=CAPTURED,
               latent_t=LATENT_T, frame_rows=FRAME_ROWS, hidden=HIDDEN,
-              with_patch=True, seed=0, sidecar="stem", keys=None, meta_over=None):
+              with_patch=True, seed=0, sidecar="stem", keys=None,
+              meta_over=None, with_full=False, full_dtype=torch.float32,
+              with_reductions=True):
     """A delta pack on disk, the way the main session builds one with numpy.
 
     The two maps are drawn from ONE synthetic state, not independently:
@@ -148,17 +153,25 @@ def make_pack(root, name="pack", blocks=(0,), steps=CAPTURED,
     they share a grand mean exactly as a real pack's do. A pack whose halves
     disagree about their grand mean would make the separable identity in [4]
     untestable.
+
+    `with_full` writes the SAME synthetic state as a `full` key, flat in the
+    packed row order, so [10] can check the reductions and the state against
+    each other rather than against two unrelated draws.
     """
     rng = torch.Generator().manual_seed(seed)
     tensors = {}
     for b in blocks:
         for s in steps:
             state = torch.randn(latent_t, frame_rows, hidden, generator=rng)
-            tensors[f"b{int(b):02d}_s{int(s):02d}/frame_mean"] = \
-                state.mean(dim=1)
-            if with_patch:
-                tensors[f"b{int(b):02d}_s{int(s):02d}/patch_mean"] = \
-                    state.mean(dim=0)
+            if with_reductions:
+                tensors[f"b{int(b):02d}_s{int(s):02d}/frame_mean"] = \
+                    state.mean(dim=1)
+                if with_patch:
+                    tensors[f"b{int(b):02d}_s{int(s):02d}/patch_mean"] = \
+                        state.mean(dim=0)
+            if with_full:
+                tensors[f"b{int(b):02d}_s{int(s):02d}/full"] = \
+                    state.reshape(latent_t * frame_rows, hidden).to(full_dtype)
     if keys is not None:
         tensors = keys
     path = os.path.join(root, name + ".safetensors")
@@ -629,6 +642,175 @@ def check_tap_and_inject(root):
        "one injection, one capture", json.dumps(s.report()["injected"]))
 
 
+# ---------------------------------------------------------------- 10
+def _frame_norms(d):
+    return torch.linalg.vector_norm(d, dim=(1, 2))
+
+
+def _patch_norms(d):
+    return torch.linalg.vector_norm(d, dim=(0, 2))
+
+
+def check_full(root):
+    print("\n[10] full mode adds the whole stored state, lazily, row for row")
+    path = make_pack(root, "fu", with_full=True)
+    pack = DeltaPack.load(path)
+    raw = load_file(path)["b00_s12/full"]
+    ck("full" not in pack.entries[(0, 12)]
+       and pack.full_shapes[(0, 12)] == (LATENT_T * FRAME_ROWS, HIDDEN)
+       and pack.summary()["full_entries"] == ["b00_s04", "b00_s12", "b00_s20"],
+       "a full pack records the shape and does NOT hold the state",
+       json.dumps(pack.summary()["full_entries"]))
+    d = pack.full_for(0, 12)
+    ck(tuple(d.shape) == (LATENT_T, FRAME_ROWS, HIDDEN)
+       and torch.equal(d.reshape(LATENT_T * FRAME_ROWS, HIDDEN), raw),
+       "full_for reads it on demand, frame-major, byte for byte",
+       f"shape={tuple(d.shape)}")
+    ck(d.data_ptr() != pack.full_for(0, 12).data_ptr(),
+       "and hands back its own copy each call, so nothing keeps the pack's "
+       "mapping alive")
+
+    for alpha in (1.0, -0.5):
+        s = session(pack, mode="full", alpha=alpha)
+        out, bd, img = drive(s, s.install(FakePatcher()), step=12)
+        want = expect(img, [alpha * d])
+        ck(out is bd and torch.allclose(out["img"], want, atol=1e-6),
+           f"alpha={alpha}: out == block(img) + alpha*full, in the block's "
+           f"OWN dict",
+           f"max|diff|={float((out['img'] - want).abs().max()):.3e}")
+        ck(torch.equal(out["img"][:VIDEO[0]], (img * 2 + 1)[:VIDEO[0]]),
+           f"alpha={alpha}: text, ref_img and audio rows are bit-identical to "
+           f"the block's output")
+    s = session(pack, mode="full")
+    s_patched = s.install(FakePatcher())
+    for step in (4, 12, 20):
+        drive(s, s_patched, step=step)
+    ck(len([k for k in s._cast if k[2] == "full"]) == 3,
+       "one cached state per (block, step) actually selected, in the model's "
+       "device and dtype", f"cache keys={sorted(k[:3] for k in s._cast)}")
+    ck(abs(s.report()["delta_norms"]["b00_s12"]["full"]
+           - float(torch.linalg.vector_norm(d))) < 1e-4,
+       "and the report carries the norm of the state it applied",
+       json.dumps(s.report()["delta_norms"]["b00_s12"]))
+
+    bad = make_pack(root, "fu_bad", keys={
+        "b00_s04/full": torch.zeros(17, HIDDEN)})
+    refuses(lambda: DeltaPack.load(bad),
+            "a full tensor whose shape is not (latent_t*frame_rows, hidden) "
+            "refuses, naming both", ("(17, 16)", "(18, 16)"))
+    flat = DeltaPack.load(make_pack(root, "fu_flat"))
+    refuses(lambda: session(flat, mode="full"),
+            "mode 'full' on a pack with no full states refuses",
+            ("full", "(0, 4)"))
+    refuses(lambda: flat.full_for(0, 12),
+            "and full_for on a pack with no full states refuses too",
+            ("b00_s12/full",))
+    only = DeltaPack.load(make_pack(root, "fu_only", with_full=True,
+                                    with_reductions=False))
+    ck(only.blocks == [0] and only.steps == list(CAPTURED),
+       "a pack of full states ALONE loads (its entries carry no reductions)",
+       json.dumps(only.summary()["full_entries"]))
+    refuses(lambda: session(only, mode="frame"),
+            "and mode 'frame' on it refuses rather than adding nothing",
+            ("frame_mean", "full"))
+
+    print("\n[10b] the shuffles permute the axis they name, and only that one")
+    for seed in (1, 2, 3):
+        t = DeltaPack.load(path, control="time_shuffle",
+                           control_seed=seed).full_for(0, 12)
+        sp = DeltaPack.load(path, control="space_shuffle",
+                            control_seed=seed).full_for(0, 12)
+        ck(torch.allclose(sorted_(_frame_norms(t)), sorted_(_frame_norms(d)),
+                          atol=1e-5)
+           and torch.allclose(_patch_norms(t), _patch_norms(d), atol=1e-5),
+           f"time_shuffle seed={seed}: per-frame norms are permuted, "
+           f"per-patch norms are unchanged",
+           f"frame norms {[round(float(v), 3) for v in _frame_norms(t)]} vs "
+           f"{[round(float(v), 3) for v in _frame_norms(d)]}")
+        ck(torch.allclose(sorted_(_patch_norms(sp)), sorted_(_patch_norms(d)),
+                          atol=1e-5)
+           and torch.allclose(_frame_norms(sp), _frame_norms(d), atol=1e-5),
+           f"space_shuffle seed={seed}: per-patch norms are permuted, "
+           f"per-frame norms are unchanged",
+           f"patch norms {[round(float(v), 3) for v in _patch_norms(sp)]} vs "
+           f"{[round(float(v), 3) for v in _patch_norms(d)]}")
+        ck(all(any(torch.equal(t[i], d[j]) for j in range(LATENT_T))
+               for i in range(LATENT_T))
+           and all(any(torch.equal(sp[:, i], d[:, j])
+                       for j in range(FRAME_ROWS))
+                   for i in range(FRAME_ROWS)),
+           f"seed={seed}: every frame slab (and every patch column) is one of "
+           f"the originals, moved")
+    moved_t = [s for s in range(5)
+               if not torch.equal(DeltaPack.load(path, control="time_shuffle",
+                                                 control_seed=s)
+                                  .full_for(0, 12), d)]
+    moved_s = [s for s in range(5)
+               if not torch.equal(DeltaPack.load(path, control="space_shuffle",
+                                                 control_seed=s)
+                                  .full_for(0, 12), d)]
+    ck(moved_t and moved_s,
+       "at least one seed really reorders each axis",
+       f"time seeds {moved_t}, space seeds {moved_s}")
+    ck(torch.equal(DeltaPack.load(path, control="time_shuffle",
+                                  control_seed=moved_t[0]).full_for(0, 12),
+                   DeltaPack.load(path, control="time_shuffle",
+                                  control_seed=moved_t[0]).full_for(0, 12)),
+       "and the permutation is seeded, so an arm re-runs from its label",
+       f"control_seed={moved_t[0]}")
+    z = DeltaPack.load(path, control="zero").full_for(0, 12)
+    fl = DeltaPack.load(path, control="sign_flip").full_for(0, 12)
+    ck(float(z.abs().max()) == 0.0 and torch.equal(fl, -d),
+       "zero and sign_flip reach the full state too, on the lazy load")
+
+    sp_pack = DeltaPack.load(path, control="space_shuffle", control_seed=1)
+    ck(torch.equal(sp_pack.entries[(0, 12)]["frame_mean"],
+                   pack.entries[(0, 12)]["frame_mean"])
+       and not torch.equal(sp_pack.entries[(0, 12)]["patch_mean"],
+                           pack.entries[(0, 12)]["patch_mean"]),
+       "in a separable pack space_shuffle moves the patch map and leaves the "
+       "frame map alone")
+    ck(session(sp_pack, mode="separable") is not None,
+       "so mode 'separable' accepts it")
+    refuses(lambda: session(sp_pack, mode="frame"),
+            "while mode 'frame' REFUSES space_shuffle: frame_mean has no "
+            "space axis and the arm would render identically to 'none'",
+            ("space_shuffle", "frame_mean", "time_shuffle"))
+
+    print("\n[10c] a fp16 pack loads and applies at the model's dtype")
+    h16 = make_pack(root, "fu16", with_full=True, full_dtype=torch.float16)
+    p16 = DeltaPack.load(h16)
+    raw16 = load_file(h16)["b00_s12/full"]
+    ck(raw16.dtype == torch.float16, "the pack on disk is float16",
+       str(raw16.dtype))
+    d32 = p16.full_for(0, 12, dtype=torch.float32)
+    ck(d32.dtype == torch.float32
+       and torch.equal(d32.reshape(LATENT_T * FRAME_ROWS, HIDDEN),
+                       raw16.to(torch.float32)),
+       "full_for casts to the dtype it is asked for, exactly")
+    s16 = session(p16, mode="full")
+    out, _bd, img = drive(s16, s16.install(FakePatcher()), step=12)
+    ck(out["img"].dtype == torch.float32
+       and torch.allclose(out["img"], expect(img, [d32]), atol=1e-6),
+       "and a float32 model state gets the float16 delta cast up, not down",
+       f"max|diff|={float((out['img'] - expect(img, [d32])).abs().max()):.3e}")
+    s16h = session(p16, mode="full")
+    out16, _b, img16 = drive(s16h, s16h.install(FakePatcher()), step=12,
+                             img=base_img().to(torch.float16))
+    cached = [v for k, v in s16h._cast.items() if k[2] == "full"][0]
+    want16 = (img16 * 2 + 1).clone()
+    want16[VIDEO[0]:VIDEO[1]].view(LATENT_T, FRAME_ROWS, HIDDEN).add_(
+        raw16.view(LATENT_T, FRAME_ROWS, HIDDEN))
+    ck(out16["img"].dtype == torch.float16 and cached.dtype == torch.float16
+       and torch.equal(out16["img"], want16),
+       "a float16 model state keeps float16: the delta is cached and added at "
+       "the model's dtype, bit for bit", f"cached dtype={cached.dtype}")
+
+
+def sorted_(t):
+    return torch.sort(t).values
+
+
 def main():
     root = tempfile.mkdtemp(prefix="concept_lab_inject_test_")
     try:
@@ -646,6 +828,7 @@ def main():
         check_geometry(root)
         check_cond_only(root)
         check_tap_and_inject(root)
+        check_full(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
