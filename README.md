@@ -4,6 +4,8 @@ Custom nodes for MiniMax-H3. Two groups: **Motion Lab** (a test-time fix
 for fast-motion smearing) and **Contact-Sheet diffusion** (five views of
 one subject from one reference image).
 
+Like it? A star helps. Want to feed the GPU? [Sponsor the experiments](#support-mainodes).
+
 ## Motion Lab
 
 H3 smears bursty motion: backflips, fast sword arcs, whip-fast reversals.
@@ -543,6 +545,15 @@ not run. The nodes in this pack themselves have no such dependency.
 
 Restart ComfyUI. Nodes appear under `latent/minimax/motion`,
 `image/minimax/motion`, and `sampling/custom_sampling/schedulers`.
+
+## Support MAINodes
+
+MAINodes is free and open source. If it saved you time, fixed a workflow
+or made something cool possible, you can help fund the next round of GPU
+time, benchmarking and increasingly questionable experiments:
+
+- [Support MAINodes on Ko-fi](https://ko-fi.com/matlowai)
+- Or just star the repo; that helps too.
 
 ## License
 
