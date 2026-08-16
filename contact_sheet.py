@@ -49,7 +49,7 @@ def _resize(image, width, height):
 
 
 class H3ContactSheet(io.ComfyNode):
-    """Prompt + one reference image -> conditioning + five-slot AV latent."""
+    """Prompt (+ optional reference image) -> conditioning + five-slot AV latent."""
 
     @classmethod
     def define_schema(cls):
@@ -57,16 +57,19 @@ class H3ContactSheet(io.ComfyNode):
             node_id="H3ContactSheet",
             display_name="H3 Contact Sheet (five views)",
             category="model/conditioning/minimax",
-            description="Five coordinated views of one subject from one reference "
-                        "image. Reference rides as <Picture 1> — keep that tag in "
-                        "the prompt. Needs a contact-sheet LoRA on the model.",
+            description="Five coordinated views of one subject. With a reference "
+                        "image it rides as <Picture 1> — keep that tag in the "
+                        "prompt. Leave ref_image unconnected for text-only sheets "
+                        "(drop the tag). Needs a contact-sheet LoRA on the model.",
             inputs=[
                 io.Clip.Input("clip"),
                 io.Vae.Input("vae"),
                 io.String.Input("prompt", multiline=True, dynamic_prompts=True,
                                 default="the camera orbits the subject of <Picture 1> "
                                         "ninety degrees clockwise"),
-                io.Image.Input("ref_image"),
+                io.Image.Input("ref_image", optional=True,
+                               tooltip="Optional. Unconnected = text-to-sheet: no "
+                                       "reference rows, prompt only."),
                 io.Int.Input("size", default=1024, min=512, max=2048, step=CANVAS_MULTIPLE,
                              tooltip="Square size of each generated view. 512 = LoRA "
                                      "training size (fastest), 1024 = sweet spot, 2048 "
@@ -76,23 +79,29 @@ class H3ContactSheet(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, vae, prompt, ref_image, size) -> io.NodeOutput:
-        # aspect-preserving down-only scale of the ref to the generation's
-        # pixel area, /32 snap — identical to the ref2va "match" policy and
-        # the training-time match-resize
-        h, w = ref_image.shape[1], ref_image.shape[2]
-        scale = min(1.0, math.sqrt((size * size) / (w * h)))
-        tw = max(CANVAS_MULTIPLE, round(w * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
-        th = max(CANVAS_MULTIPLE, round(h * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
-        resized = _resize(ref_image[:1], tw, th)
-        z = vae.encode(resized)
+    def execute(cls, clip, vae, prompt, size, ref_image=None) -> io.NodeOutput:
+        if ref_image is None:
+            # text-to-sheet: same five-slot latent, plain text conditioning,
+            # no reference rows in the packed sequence
+            tokens = clip.tokenize(prompt)
+            cond = clip.encode_from_tokens_scheduled(tokens)
+        else:
+            # aspect-preserving down-only scale of the ref to the generation's
+            # pixel area, /32 snap — identical to the ref2va "match" policy and
+            # the training-time match-resize
+            h, w = ref_image.shape[1], ref_image.shape[2]
+            scale = min(1.0, math.sqrt((size * size) / (w * h)))
+            tw = max(CANVAS_MULTIPLE, round(w * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+            th = max(CANVAS_MULTIPLE, round(h * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+            resized = _resize(ref_image[:1], tw, th)
+            z = vae.encode(resized)
 
-        tokens = clip.tokenize(prompt, minimax_ref_items=[{"type": "image", "data": resized}])
-        cond = clip.encode_from_tokens_scheduled(tokens)
-        cond = node_helpers.conditioning_set_values(cond, {
-            "minimax_refs": [{"kind": "image", "latent_h": th // 16,
-                              "latent_w": tw // 16, "latent": z}],
-        })
+            tokens = clip.tokenize(prompt, minimax_ref_items=[{"type": "image", "data": resized}])
+            cond = clip.encode_from_tokens_scheduled(tokens)
+            cond = node_helpers.conditioning_set_values(cond, {
+                "minimax_refs": [{"kind": "image", "latent_h": th // 16,
+                                  "latent_w": tw // 16, "latent": z}],
+            })
 
         device = comfy.model_management.intermediate_device()
         video = torch.zeros([1, 24, SHEET_SLOTS, size // 16, size // 16], device=device)
