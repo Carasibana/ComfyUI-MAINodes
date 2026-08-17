@@ -47,6 +47,36 @@ Unbuilt verbs raise and name the task that blocks them. They do not return
 an empty result. In a subsystem whose output is evidence, a quiet nothing is
 worse than a refusal, because the nothing gets written down.
 
+**Set your expectations accordingly.** Most of the interesting half of this
+subsystem is not built, several of the built parts have only ever run on one
+rig, and the parts that do run are alpha in the ordinary sense: they will
+break, they will change shape, and nothing here is a stable interface yet.
+If you are looking for something to use, use the rest of the pack. If you
+are looking for something to poke at, read on.
+
+## Contributing
+
+Contributions are welcome, and the honest framing is that this is an early
+research subsystem rather than a product. The most useful things anyone can
+bring:
+
+- **Break the layering.** `types.py` and `space.py` must stay importable in a
+  process with no torch and no comfy. If you find a path that violates that,
+  that is a bug worth reporting even if nothing visibly fails.
+- **A second rig.** Every number that exists came off one machine and one
+  model quant. A capture that behaves differently elsewhere is a real result.
+- **Controls we have not thought of.** The whole design rests on the control
+  being shape-matched, and a control that turns out to be sloppy invalidates
+  whatever it was controlling. Arguing with a control is the highest-value
+  thing you can do here.
+- **The unbuilt verbs**, if you want to build rather than audit. They raise
+  with the task id that blocks them, and `DECISIONS.md` records why each was
+  scoped the way it was before you spend an evening on it.
+
+Design decisions are recorded as `DEC-CL-nnnn` entries in `DECISIONS.md`. A
+change that contradicts one is fine, but say which one and why, because the
+reasoning is the artifact.
+
 Three alpha nodes are registered (`MAI Concept Capture Arm` / `Flush`,
 DEC-CL-0018, and `MAI Concept Inject Delta`, DEC-CL-0020), through the pack's
 guarded loader, so a broken alpha module cannot take the pack down. No
