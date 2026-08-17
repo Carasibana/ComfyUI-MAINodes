@@ -1738,7 +1738,25 @@ class H3V2VInit:
         "(frames 0, 17, 34, ...), where the singleton tokens hold exactly "
         "one frame each and the step is tightest. Masks whose frame count "
         "differs from the clip length are nearest-neighbour resampled "
-        "first; a 2D or single-frame mask behaves as before.")
+        "first; a 2D or single-frame mask behaves as before.\n\n"
+        "AUDIO ROWS (alpha): by default they start from zeros, so pass 2 "
+        "invents its own performance at NATURAL rate and drags the mouth to "
+        "match it. On a de-roped clip that is the whole dialogue defect - "
+        "recovery then compresses those lips (and, at reference_mix 0, that "
+        "speech) by the hold factor, so held regions come back rushed while "
+        "the unheld tail sounds fine. Wire audio_latent with the baseline "
+        "track stretched onto THIS dilated clock (H3 Audio Smear -> "
+        "VAEEncodeAudio), pick an audio_mode, and pass 2 renders a genuinely "
+        "slowed performance instead - which is what Exact Recover and Audio "
+        "Recover were assuming all along.")
+
+    # the audio half of the injection bargain, in words
+    AUDIO_MODES = {
+        "invent freely (original behaviour)": 1.0,
+        "follow the original performance (0.5)": 0.5,
+        "follow loosely, re-render more (0.7)": 0.7,
+        "pin the original outright (0.0)": 0.0,
+    }
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1770,6 +1788,24 @@ class H3V2VInit:
                            "token grid ((1,4,4,4,4) frames per 17). A moving boundary CAN pop; put "
                            "intended transitions on 17-frame phase. Manual mask only, ignored by "
                            "the oracle path and by 2D / single-frame masks"}),
+            "audio_latent": ("LATENT", {"tooltip": "(alpha) VAEEncodeAudio of H3 Audio Smear's output: "
+                     "the baseline track stretched onto THIS dilated clock. Leave unwired for the "
+                     "original behaviour (audio starts from zeros and pass 2 invents its own "
+                     "performance at natural rate, which is what makes held regions come back "
+                     "rushed after recovery)"}),
+            "audio_mode": (["custom (use audio_strength)"] + list(cls.AUDIO_MODES),
+                {"default": "custom (use audio_strength)",
+                 "tooltip": "plain-language presets for the audio rows; anything but 'custom' "
+                            "overrides audio_strength. All but the first need audio_latent wired "
+                            "(H3 Audio Smear -> VAEEncodeAudio). Start with 'follow the original "
+                            "performance': it is what makes a de-roped clip keep its dialogue"}),
+            "audio_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                "tooltip": "(alpha) how much of the audio rows pass 2 re-renders. 1.0 (default) = "
+                           "unchanged behaviour. With audio_latent wired, 0.5-0.7 keeps the seeded "
+                           "performance's bulk timing and re-renders detail, the same bargain "
+                           "H3 Inject Schedule makes on the video side; 0.0 pins the track outright. "
+                           "H3 runs ONE joint pass, so the sigma schedule cannot set this per "
+                           "modality - it rides the audio half of the noise mask"}),
         }}
 
     RETURN_TYPES = ("LATENT",)
@@ -1778,11 +1814,19 @@ class H3V2VInit:
 
     def build(self, samples, length=0, oracle_samples=None, freeze_threshold=0.0,
               freeze_grow=2, mask=None, mask_feather=0, invert_mask=False,
-              time_varying=False):
+              time_varying=False, audio_latent=None, audio_strength=1.0,
+              audio_mode="custom (use audio_strength)"):
         import torch.nn.functional as F
 
         import comfy.nested_tensor
         from comfy_extras.nodes_minimax_h3 import temporal_shape
+
+        if audio_mode in self.AUDIO_MODES:        # words win over the raw dial
+            audio_strength = self.AUDIO_MODES[audio_mode]
+        if audio_latent is None and audio_strength != 1.0:
+            print("[H3V2VInit] audio_strength/audio_mode asks pass 2 to follow an audio "
+                  "init, but audio_latent is not wired: the rows are still ZEROS, so it "
+                  "has nothing to follow. Wire H3 Audio Smear -> VAEEncodeAudio.")
 
         video = _video_component(samples)
         if not length:
@@ -1792,6 +1836,21 @@ class H3V2VInit:
             f"latent has {video.shape[2]} tokens, length {length} needs {t_lat}")
         audio = torch.zeros(video.shape[0], 32, 2, audio_t,
                             device=video.device, dtype=video.dtype)
+        if audio_latent is not None:
+            # seed the audio rows with the smeared baseline performance. The
+            # encode is sized by the wav length, so it lands a token or two off
+            # the grid the video half demands; crop/pad rather than refuse.
+            a = audio_latent["samples"] if isinstance(audio_latent, dict) else audio_latent
+            a = a.to(device=video.device, dtype=video.dtype)
+            if a.dim() == 3:                       # [C, 2, T] -> [1, C, 2, T]
+                a = a[None]
+            if a.shape[-1] > audio_t:
+                a = a[..., :audio_t]
+            elif a.shape[-1] < audio_t:
+                a = torch.nn.functional.pad(a, (0, audio_t - a.shape[-1]))
+            if a.shape[0] != audio.shape[0]:
+                a = a[:1].expand(audio.shape[0], -1, -1, -1)
+            audio = a.contiguous()
         out = {"samples": comfy.nested_tensor.NestedTensor((video, audio))}
 
         if mask is not None:
@@ -1822,7 +1881,7 @@ class H3V2VInit:
             if m.shape[0] == 1:
                 m = m.expand(t_lat, h, w)
             vid_mask = m[None, None].to(video.device)
-            aud_mask = torch.ones(1, 32, 2, audio_t)
+            aud_mask = torch.full((1, 32, 2, audio_t), float(audio_strength))
             out["noise_mask"] = comfy.nested_tensor.NestedTensor(
                 (vid_mask.contiguous(), aud_mask))
         elif oracle_samples is not None and freeze_threshold > 0:
@@ -1844,9 +1903,15 @@ class H3V2VInit:
             if m.shape[-2:] != (h, w):
                 m = F.interpolate(m, size=(h, w), mode="nearest")
             vid_mask = m[0, 0].expand(t_lat, h, w)[None, None].to(video.device)
-            aud_mask = torch.ones(1, 32, 2, audio_t)
+            aud_mask = torch.full((1, 32, 2, audio_t), float(audio_strength))
             out["noise_mask"] = comfy.nested_tensor.NestedTensor(
                 (vid_mask.contiguous(), aud_mask))
+        if "noise_mask" not in out and audio_strength != 1.0:
+            # audio-only injection: no video mask was asked for, so the video
+            # half denoises exactly as it did before this input existed
+            out["noise_mask"] = comfy.nested_tensor.NestedTensor(
+                (torch.ones(1, 1, t_lat, video.shape[3], video.shape[4]),
+                 torch.full((1, 32, 2, audio_t), float(audio_strength))))
         return (out,)
 
 
@@ -2412,6 +2477,15 @@ class H3AudioRecover:
         "audio in unheld spans passes through untouched, so dialog "
         "outside the bursts is unaffected either way.")
 
+    # words rather than a bare 0..1, because the two endpoints mean different
+    # things depending on whether pass 2 was given an audio init at all
+    SOURCES = {
+        "keep the original performance (safe default)": 1.0,
+        "use pass 2's foley - ONLY IF the audio rows were seeded": 0.0,
+        "blend, favour the original": 0.75,
+        "blend, favour pass 2": 0.25,
+    }
+
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
@@ -2426,14 +2500,26 @@ class H3AudioRecover:
                                                    "audio quality varies, especially with turbo passes), "
                                                    "0 = regenerated foley only (leaner, one performance). "
                                                    "Mid values blend two takes and are happiest near the ends"}),
+            "audio_source": (["custom (use reference_mix)"] + list(cls.SOURCES),
+                {"default": "custom (use reference_mix)",
+                 "tooltip": "plain-language presets; anything but 'custom' overrides reference_mix. "
+                            "WHICH ONE IS RIGHT DEPENDS ON WHETHER PASS 2's AUDIO ROWS WERE SEEDED "
+                            "(H3 Audio Smear -> H3 V2V Init audio_latent). Unseeded, pass 2 invents "
+                            "speech at natural rate and this node compresses it, so held regions come "
+                            "back rushed - keep the original. Seeded, pass 2 really did perform slowly, "
+                            "so the retime is valid and its foley is scored for the NEW motion"}),
         }}
 
     RETURN_TYPES = ("AUDIO",)
     FUNCTION = "recover"
     CATEGORY = "audio/minimax/motion"
 
-    def recover(self, audio, hold_map, fps=24, reference=None, reference_mix=1.0):
+    def recover(self, audio, hold_map, fps=24, reference=None, reference_mix=1.0,
+                audio_source="custom (use reference_mix)"):
         import math
+
+        if audio_source in self.SOURCES:          # words win over the raw dial
+            reference_mix = self.SOURCES[audio_source]
 
         import torchaudio  # noqa: F401  (phase_vocoder)
 
@@ -2522,6 +2608,114 @@ class H3AudioRecover:
             if ref.shape[0] != y.shape[0]:
                 ref = ref[:1].expand(y.shape[0], -1)
             y = (1 - reference_mix) * y[:, :n_out] + reference_mix * ref[:, :n_out]
+        return ({"waveform": y.reshape(b, c, -1).contiguous(), "sample_rate": sr},)
+
+
+class H3AudioSmear:
+    """Expand a world-clock track onto the dilated clock: Audio Recover run
+    backwards, off the same hold map."""
+
+    DESCRIPTION = (
+        "The audio twin of H3 Time Smear: stretches the baseline clip's audio "
+        "onto the SAME dilated timeline the smeared video init lives on, so "
+        "the second pass can be seeded with a slowed performance instead of "
+        "inventing its own.\n\n"
+        "Why this exists: the de-rope tells pass 2 to move slowly through the "
+        "smeared video init, and the picture obeys, but audio has no init, so "
+        "the model writes fresh speech at NATURAL rate and drags the mouth to "
+        "match it. Recovery then compresses that mouth (and, at "
+        "reference_mix 0, that speech) by the hold factor, which is why held "
+        "regions come back rushed while the unheld tail sounds fine. Seed the "
+        "audio rows with this node's output and the slowed performance becomes "
+        "the thing pass 2 renders, so Exact Recover and Audio Recover are both "
+        "compressing something that really was slow.\n\n"
+        "Wire the same hold_map you gave H3 Time Smear, and the BASELINE "
+        "(pass-1) audio. Feed the result to VAEEncodeAudio and then to H3 V2V "
+        "Init's audio_latent. Pitch is preserved; the stretch is a phase "
+        "vocoder, so its fine detail is rough. That is fine: the injection "
+        "strength is what re-renders detail (0.5-0.7, the same dial the video "
+        "side uses).")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "audio": ("AUDIO", {"tooltip": "baseline (pass-1) audio, on the world clock"}),
+            "hold_map": ("STRING", {"default": ""}),
+            "fps": ("INT", {"default": 24, "min": 1, "max": 120}),
+        }}
+
+    RETURN_TYPES = ("AUDIO",)
+    FUNCTION = "smear"
+    CATEGORY = "audio/minimax/motion"
+
+    def smear(self, audio, hold_map, fps=24):
+        import math
+
+        import torchaudio  # noqa: F401  (phase_vocoder)
+
+        holds = json.loads(hold_map)["holds"]
+        wav = audio["waveform"].detach().float().cpu()
+        sr = audio["sample_rate"]
+        b, c, n = wav.shape
+        x = wav.reshape(b * c, n)
+
+        runs = []                                        # consecutive equal holds
+        for h in holds:
+            if runs and runs[-1][0] == h:
+                runs[-1][1] += 1
+            else:
+                runs.append([h, 1])
+
+        n_fft, hop = 2048, 512
+        window = torch.hann_window(n_fft)
+        phase_adv = torch.linspace(0, math.pi * hop, n_fft // 2 + 1)[..., None]
+        spf = sr / float(fps)
+        xfade = max(1, int(round(0.005 * sr)))
+        segs, joins, cursor = [], [], 0.0
+        prev_tgt = 0
+        for h, count in runs:
+            # mirror of the recover geometry: src is what this run occupies on
+            # the WORLD clock, tgt is the room it gets on the dilated one.
+            src = count * spf
+            tgt = int(round(h * count * spf))
+            s0, s1 = int(round(cursor)), int(round(cursor + src))
+            cursor += src
+            # pre-roll for the crossfade: f output samples cost f/h source
+            # samples, taken from BEFORE s0, so both sides of the join carry
+            # the same material at their own rate.
+            f = 0 if not segs else min(xfade, tgt, prev_tgt, s0 * max(h, 1))
+            prev_tgt = tgt
+            seg = x[:, s0 - max(1, f // max(h, 1)):min(s1, n)] if f else x[:, s0:min(s1, n)]
+            if seg.shape[1] == 0:
+                segs.append(torch.zeros(x.shape[0], tgt))
+                joins.append(0)
+                continue
+            if h > 1:
+                spec = torch.stft(seg, n_fft, hop, window=window,
+                                  return_complex=True)
+                # rate < 1 LENGTHENS; this is the only line that differs in
+                # direction from H3AudioRecover
+                spec = torchaudio.functional.phase_vocoder(spec, 1.0 / float(h),
+                                                           phase_adv)
+                # length= is load-bearing here for the same reason it is in
+                # recover: istft returns a hop multiple and the pad below would
+                # otherwise append digital silence at every run's tail.
+                seg = torch.istft(spec, n_fft, hop, window=window,
+                                  length=f + tgt)
+            if seg.shape[1] < f + tgt:
+                seg = torch.nn.functional.pad(seg, (0, f + tgt - seg.shape[1]))
+            segs.append(seg[:, :f + tgt])
+            joins.append(f)
+        parts = []
+        for seg, f in zip(segs, joins):
+            if f:
+                t = torch.arange(1, f + 1, dtype=seg.dtype) / f
+                prev = parts[-1].clone()
+                prev[:, -f:] = (prev[:, -f:] * torch.cos(t * (math.pi / 2))
+                                + seg[:, :f] * torch.sin(t * (math.pi / 2)))
+                parts[-1] = prev
+            parts.append(seg[:, f:])
+        y = torch.cat(parts, dim=1)
         return ({"waveform": y.reshape(b, c, -1).contiguous(), "sample_rate": sr},)
 
 
@@ -4105,6 +4299,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3InjectSchedule": H3InjectSchedule,
     "H3JerkHeatmap": H3JerkHeatmap,
     "H3AudioRecover": H3AudioRecover,
+    "H3AudioSmear": H3AudioSmear,
     "H3ProbeSchedule": H3ProbeSchedule,
     "H3ExpertSchedule": H3ExpertSchedule,
     "H3TrajectoryBank": H3TrajectoryBank,
@@ -4133,6 +4328,7 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3InjectSchedule": "H3 Inject Schedule (v2v sigmas, 0.70)",
     "H3JerkHeatmap": "H3 Jerk Heatmap (oracle overlay tile)",
     "H3AudioRecover": "H3 Audio Recover (hold-map atempo, pitch kept)",
+    "H3AudioSmear": "H3 Audio Smear (hold-map stretch, pitch kept) [alpha]",
     "H3ProbeSchedule": "H3 Probe Schedule (early-oracle head)",
     "H3ExpertSchedule": "H3 Expert Schedule (base head, turbo tail)",
     "H3TrajectoryBank": "H3 Trajectory Bank (checkpoint every step)",
