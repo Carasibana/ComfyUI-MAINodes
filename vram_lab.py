@@ -209,7 +209,7 @@ def _attend(qc, K, V, heads, head_chunks, transformer_options):
 
 
 
-# --------------------------------------------------------------------------- int8 K/V store (A5, approximation tier)
+# --------------------------------------------------------------------------- kvi8r: rotated int8 K/V store (A5, approximation tier)
 
 _HAD = {}
 
@@ -226,7 +226,7 @@ def _hadamard(n, device, dtype):
 
 
 class _Int8KV:
-    """K/V buffers stored as int8 rows with a per-row (per token, per head)
+    """kvi8r: K/V buffers stored as int8 rows with a per-row (per token, per head)
     fp16 scale after a fixed orthonormal Hadamard rotation of the head dim.
     Half the bytes of bf16 (S x heads x 128 + scales). Rotation spreads outlier
     channels before rounding and is undone exactly on dequant (orthogonal), so
@@ -509,9 +509,9 @@ class H3StreamedBlocks:
                 "final_layer_gemm": (["exact (whole GEMM, one fp32 buffer)", "streamed (chunked GEMM, ~1e-6 fp32 diffs)"],
                                      {"default": "exact (whole GEMM, one fp32 buffer)",
                                       "tooltip": "exact: same head GEMM as stock, transient = one fp32 [rows, hidden] (bit-equal). streamed: GEMM per chunk, transient ~chunk-sized, but fp32 cuBLAS is not chunk-invariant (numerically-equivalent tier)."}),
-                "kv_store": (["bf16 (exact)", "int8 per-row, rotated (approximate)"],
+                "kv_store": (["bf16 (exact)", "kvi8r: rotated int8 K/V (approximate)"],
                              {"default": "bf16 (exact)",
-                              "tooltip": "K and V held as int8 with one fp16 scale per row (per token, per head), after a fixed orthonormal 128-wide Hadamard rotation of the head dim that is undone exactly on dequant (the rotation only spreads outlier channels before rounding). Attention runs blockwise, dequantising one K/V block at a time (kv_block, default 32768). Halves the K/V bytes. NOT bit-equal to stock: a same-seed render is a sibling take. First cut (2026-08-18): the de-rope side by side passed the operator's eyes; peak VRAM not yet lower than bf16 (dequant transients) and ~26% slower at 217k tokens; a second cut with smaller blocks and a bf16 rotation is next."}),
+                              "tooltip": "kvi8r = rotated int8 K/V. K and V held as int8 with one fp16 scale per row (per token, per head), after a fixed orthonormal 128-wide Hadamard rotation of the head dim that is undone exactly on dequant (the rotation only spreads outlier channels before rounding). Attention runs blockwise, dequantising one K/V block at a time (kv_block, default 32768). Halves the K/V bytes. NOT bit-equal to stock: a same-seed render is a sibling take. First cut (2026-08-18): the de-rope side by side passed the operator's eyes; peak VRAM not yet lower than bf16 (dequant transients) and ~26% slower at 217k tokens; a second cut with smaller blocks and a bf16 rotation is next."}),
                 "self_check": ("BOOLEAN", {"default": False,
                                            "tooltip": "Diagnostic: on block 0's first call, run stock and streamed on the same input and log per-phase divergence. Costs one extra block forward."}),
             }
@@ -533,7 +533,7 @@ class H3StreamedBlocks:
             return (model,)
         cfg = {"q_chunk": q_chunk, "kv_chunk": kv_chunk, "mlp_chunk": mlp_chunk,
                "min_tokens": min_tokens, "kv_block": kv_block, "self_check": bool(self_check),
-               "kv_int8": str(kv_store).startswith("int8")}
+               "kv_int8": str(kv_store).startswith("kvi8r")}
         m = model.clone()
         for i, block in enumerate(blocks):
             m.set_model_patch_replace(_make_replacement(block, cfg, i), "dit", "double_block", i)

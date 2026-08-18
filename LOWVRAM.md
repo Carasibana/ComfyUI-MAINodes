@@ -151,6 +151,21 @@ PCIe 5 x16 and a fast NVMe; a PCIe 4 desktop halves the bandwidth, which is
 still nothing against a 300 s step. A machine whose RAM cannot hold the
 weight file's page cache and whose SSD is slow could show it on short clips.
 
+## kvi8r (rotated int8 K/V), alpha, first cut
+
+`H3 Streamed Blocks` has a `kv_store` option `kvi8r: rotated int8 K/V
+(approximate)`: K and V are held as int8 with one fp16 scale per (token, head)
+row after a fixed orthonormal 128-wide Hadamard rotation that is undone
+exactly on dequant, and attention runs blockwise, dequantising one K/V block
+at a time. It halves the K/V bytes. It is not bit-equal to stock: a same-seed
+render is a sibling take. On 2026-08-18 the operator judged the de-rope side by
+side "almost perfect" and the 90-frame T2VA "looks fine" (files in
+`docs/measurements/A5_kvint8/` of the private notes; a sensor-bank pass over
+seeds is still owed). As built it is not yet a memory win (the first cut spends
+the saving on fp32 dequant transients: forward peak +12.5 vs +11.9 GiB at 217k
+tokens) and it is ~26% slower at that length; the second cut (8k blocks, bf16
+rotation, fused dequant) is what should move the 16 GB line. Default off.
+
 ## What is exact, and what is not
 
 - `H3 Streamed Blocks` on int8 and W4A8 checkpoints: bit-equal to stock. The
