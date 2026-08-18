@@ -54,10 +54,19 @@ log = logging.getLogger("MAINodes.vram_lab")
 
 # --------------------------------------------------------------------------- helpers
 
-def _ranges(n, size):
+def _ranges(n, size, min_tail=512):
+    """Row chunks of `size`; a tail shorter than `min_tail` is folded into the
+    previous chunk. Row-wise ops are exact at any chunk size, but comfy_kitchen
+    picks a different int8 GEMM kernel for m <= 128 rows (`_prefer_turing_fused_int8`)
+    and its fp32 epilogue is not proven identical across kernels, so never emit
+    a tiny tail (2026-08-18)."""
     if size <= 0 or size >= n:
         return [(0, n)]
-    return [(a, min(a + size, n)) for a in range(0, n, size)]
+    out = [(a, min(a + size, n)) for a in range(0, n, size)]
+    if len(out) > 1 and out[-1][1] - out[-1][0] < min_tail:
+        a, _ = out.pop()
+        out[-1] = (out[-1][0], n)
+    return out
 
 
 _SM_CACHE = {}
