@@ -2509,6 +2509,23 @@ class H3JerkHeatmap:
         return (torch.stack(out),)
 
 
+def _vocoder_rate_for(spec, rate, hop, need):
+    """Clamp a phase-vocoder rate so the ISTFT can cover `need` samples.
+
+    torch.istft(center=True) yields n_frames*hop valid samples; asking for
+    more (length=) reaches into the last window's Hann tail and trips
+    "window overlap add min". phase_vocoder emits ceil(n_in/rate) frames, so
+    the guard is rate <= n_in*hop/need. It bites only when the source segment
+    was clipped short (H3's audio runs on a 40 Hz clock, so a clip's audio can
+    be up to +-12.5 ms off frames/fps, and the LAST stretched run of a map
+    then has fewer source samples than its frame count implies). Reported by
+    a user 2026-08-18: [3]*12 last run, 93 frames vs 48160 requested."""
+    n_in = spec.shape[-1]
+    if n_in <= 0 or need <= 0:
+        return rate
+    return min(float(rate), (n_in * hop) / float(need))
+
+
 class H3AudioRecover:
     """Retime the regenerated clip's jointly-generated audio back to the
     original clock, using the same hold map as the video."""
@@ -2623,8 +2640,8 @@ class H3AudioRecover:
             if h > 1:
                 spec = torch.stft(seg, n_fft, hop, window=window,
                                   return_complex=True)
-                spec = torchaudio.functional.phase_vocoder(spec, float(h),
-                                                           phase_adv)
+                spec = torchaudio.functional.phase_vocoder(
+                    spec, _vocoder_rate_for(spec, float(h), hop, f + tgt), phase_adv)
                 # length= is load-bearing: without it istft returns a
                 # hop-multiple that falls short of the target and the pad
                 # below appends digital silence at every held run's tail --
@@ -2748,8 +2765,8 @@ class H3AudioSmear:
                                   return_complex=True)
                 # rate < 1 LENGTHENS; this is the only line that differs in
                 # direction from H3AudioRecover
-                spec = torchaudio.functional.phase_vocoder(spec, 1.0 / float(h),
-                                                           phase_adv)
+                spec = torchaudio.functional.phase_vocoder(
+                    spec, _vocoder_rate_for(spec, 1.0 / float(h), hop, f + tgt), phase_adv)
                 # length= is load-bearing here for the same reason it is in
                 # recover: istft returns a hop multiple and the pad below would
                 # otherwise append digital silence at every run's tail.
