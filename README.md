@@ -279,6 +279,23 @@ baseline track onto the dilated clock, `VAEEncodeAudio` encodes it, and
 `H3 V2V Init`'s `audio_latent` seeds it at `follow the original
 performance (0.5)`.
 
+**This is the balanced setting, and it is the one to start from.** Pass 1
+runs 12 steps on the base model, pass 2 runs the turbo LoRA at
+`total_steps 6` with inject 0.50, so about three steps actually execute on
+the de-rope. On 192 frames at 1 MP on an RTX PRO 6000 Blackwell that is
+**12 minutes end to end**. The same graph without turbo, at 25 steps for
+both passes, took 36 minutes on the Max-Q card, which runs roughly 13%
+slower on sustained 1 MP work, so call it 32 minutes equivalent. Nearly
+three times the wall time, and the turbo arm was the one that got the
+playback verdict.
+
+**The audio init itself is free.** Pass 2 measured 6:06 with the seed
+against about 7:20 without it on the same card, which is inside run to run
+variation. It also costs nothing in picture quality: 91.8 against 91.3 on
+laplacian variance, inside the noise floor of the video encoder itself.
+And because the seed only touches pass 2, re-running a graph after wiring
+it serves pass 1 from cache.
+
 It writes two finals so you can hear the difference the seed makes:
 `_recovered` keeps the original performance (the safe route, and the one
 we ship as the default), and `_seededfoley` takes pass 2's own foley
