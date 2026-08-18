@@ -8,6 +8,25 @@ Like it? A star helps. Want to feed the GPU? [Sponsor the experiments](#support-
 
 ## What's new
 
+**Long de-ropes on small cards** (2026-08-18, alpha). A de-rope pass at
+d_max 4 on an 8 to 12 second clip is ~200k packed tokens, and the stock H3
+block materialises its fused QKV and SwiGLU tensors for the whole sequence
+(8.6 and 15.4 GiB at that length), which is what OOMs 24 GB cards and, at
+1376x768, a 96 GB one. `H3 Streamed Blocks` runs every DiT block in token
+chunks with the same math (int8 and W4A8 activations quantise per row and
+accumulate in int32, so the result is bit-equal to stock; measured on
+same-seed renders, video and audio) and streams the output head the same
+way. With ComfyUI's dynamic VRAM and `--fast-disk`, the same 702-frame pass
+that OOMed a 96 GB card renders on a 16 GB card in a 32 GB machine at the
+same seconds per step (316 vs 311), because the step is attention-bound at
+that length and the weight traffic hides under it. Alongside it: `H3 Memory
+Probe` (per-block, per-phase VRAM and RSS ledger with a hoverable timeline,
+plus an optional allocator trace), `H3 Free Cache` (return the allocator
+pool before VAE decode; 17 GiB back on the long pass), `H3 Evict Text
+Encoder`. All opt-in, nothing changes unless the node is in the graph. The
+memory numbers behind them are in the docstrings of `vram_lab.py`; small
+cards are described in [ALPHA.md](ALPHA.md#vram-lab).
+
 **Dialogue survives a de-rope now** (2026-08-17). A de-rope used to break
 speech, and the way it broke was confusing: the body came back at the right
 speed and the mouth did not, so held regions sounded rushed while the tail

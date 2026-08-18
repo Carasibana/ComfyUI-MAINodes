@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """VRAM Lab (alpha, 2026-08-18): exact low-memory execution of MiniMax-H3 blocks.
 
-The problem, measured (ModelCatalog docs/SPATIAL_WALK_AND_MEMORY_2026-08-17.md
-s.13, s.17): a full-length H3 forward materialises, per DiT block, the fused
+The problem, measured 2026-08-17/18 on an RTX PRO 6000 (numbers below): a full-length H3 forward materialises, per DiT block, the fused
 QKV projection ``[N, 3*7168]`` and the SwiGLU pre-activation ``[N, 2*14336]``
 for the whole packed sequence. At ~217k tokens (an 8 s clip de-roped at
 d_max 4) those two tensors are 8.7 GiB and 15.4 GiB, and the MLP-phase peak is
@@ -26,10 +25,13 @@ activations per row, so chunking rows is bit-identical (measured
 2026-08-18 on comfy_kitchen TensorWiseINT8), and every other weight format
 goes through the module's own forward, weight streaming included.
 
-Turtle mode (``kv_block > 0``): phase 2 attends K/V in blocks and combines
-with the flash kernel's log-sum-exp (online softmax). Measured to one bf16
-ulp against a single call. It exists so a card that cannot hold full K/V
-can still finish; it is slow by design.
+``kv_block > 0`` (experimental): phase 2 attends K/V in blocks and combines
+with the flash kernel's log-sum-exp (online softmax), measured to one bf16
+ulp against a single call. AS BUILT it does NOT lower memory: K and V are
+still materialised in full by phase 1, and the blockwise combine adds
+buffers (measured +13.0 GiB forward peak vs +11.9 plain at 216k tokens,
+~7% slower). A real "turtle" needs K/V staged in host RAM and streamed per
+block; until then leave it at 0.
 
 Composition: MLP chunking here is optional (``mlp_chunk = 0`` leaves the
 model's own ``mlp.forward`` alone, so KJNodes' MiniMax H3 Chunk FeedForward
@@ -94,8 +96,7 @@ def _min_query_chunk(device, heads_per_call, q_block=128, margin=2):
     512 queries (224 blocks) was bit-equal. Query chunking is exact only while
     every chunk has at least ~SMs query blocks, so we require margin x SMs.
 
-    Measured boundary (ModelCatalog docs/measurements/M3c_sdpa_short_q_2026-08-18.md,
-    same card, 215k K/V): flash leaves its split-KV path exactly when
+    Measured boundary (same card, 215k K/V, 2026-08-18): flash leaves its split-KV path exactly when
     heads_per_call x ceil(L/64) >= 0.8 x 2 x SMs (PyTorch flash_api.cpp
     set_params_splitkv / num_splits_heuristic): L >= 321 / 641 / 1345 for
     56 / 28 / 14 heads. This function returns 896 / 1792 / 3456 there, a
@@ -361,7 +362,7 @@ def streamed_final_layer_forward(fl, x, t_emb, video_seg, audio_seg, chunk=16384
     """Row-chunked FinalLayer.forward. Stock (comfy/ldm/minimax/model.py:295)
     builds `norm(x[span]) * (1 + scale) + shift` for the whole target span and
     the fp32 modulation promotes it to fp32 twice: 2 x 4.28 GiB at 216k tokens,
-    measured the forward's peak (ModelCatalog docs/measurements/M0e). Every op
+    measured as the forward's peak on a 216k-token de-rope (2026-08-18). Every op
     is per row (RMSNorm, per-element mod, per-row fp32 linear), so the same
     math per chunk yields the same [rows, out] result with ~chunk-sized
     transients. Whether the fp32 cuBLAS GEMM stays bit-equal under a different
@@ -417,7 +418,7 @@ class H3StreamedBlocks:
                 "min_tokens": ("INT", {"default": 32768, "min": 0, "max": 1048576, "step": 1024,
                                        "tooltip": "Below this packed sequence length the stock block runs (short clips gain nothing)."}),
                 "kv_block": ("INT", {"default": 0, "min": 0, "max": 262144, "step": 1024,
-                                     "tooltip": "Turtle mode: attend K/V in blocks of this many tokens with an exact log-sum-exp combine. 0 = off. Slow by design; for cards that cannot hold full K/V."}),
+                                     "tooltip": "EXPERIMENTAL, leave at 0. Attends K/V in blocks with a log-sum-exp combine (1 bf16 ulp). As built it does not lower memory (K/V are still fully built; measured +1.1 GiB and ~7% slower at 216k tokens); kept for the host-staged K/V design to come."}),
             },
             "optional": {
                 "final_layer_chunk": ("INT", {"default": 16384, "min": 0, "max": 262144, "step": 1024,
@@ -708,7 +709,7 @@ def _dump_trace(run_dir, dev, tag):
 
 class H3FreeCache:
     """Passthrough that returns the allocator's cached-but-free VRAM to the
-    driver before the next stage. Measured motivation (ModelCatalog M0e): the
+    driver before the next stage. Measured motivation (2026-08-18): the
     VAE decode after a long H3 pass grew the pool 69.6 -> 77.9 GiB while live
     tensors were LOWER than during sampling; decode-shaped blocks could not
     reuse sampling's freed ones. Costs a few ms; changes no math."""

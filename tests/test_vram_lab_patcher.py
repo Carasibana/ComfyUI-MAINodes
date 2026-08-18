@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Gate (a'''): through ModelPatcher.apply_model, stock patcher vs H3StreamedBlocks-patched clone."""
+"""Gate (a'''): through ModelPatcher.apply_model, stock patcher vs H3StreamedBlocks-patched clone.
+
+Run from the ComfyUI root with the ComfyUI venv and the checkpoint path in H3_CKPT:
+    H3_CKPT=models/diffusion_models/minimax_h3/<int8 or w4a8 file>.safetensors CUDA_VISIBLE_DEVICES=0 python custom_nodes/ComfyUI-MAINodes/tests/test_vram_lab_patcher.py
+"""
 import os, sys
 sys.path.insert(0, os.getcwd())
 import torch

@@ -96,6 +96,35 @@ interactive widget and the drag-in workflows.
 
 ---
 
+## VRAM Lab
+
+`H3 Streamed Blocks`, `H3 Memory Probe`, `H3 Free Cache`, `H3 Evict Text
+Encoder` (`vram_lab.py`, 2026-08-18). Alpha because it has run on one
+machine (RTX PRO 6000 Blackwell, 188 SMs) and its exactness is a kernel
+property, not a code property: query chunking is bit-equal only while every
+chunk keeps PyTorch's flash kernel off its split-KV path (measured boundary
+`heads x ceil(L/64) >= 0.8 x 2 x SMs`; the node sizes chunks from the SM
+count with a 2.6x margin and carries a `self_check` that compares stock and
+streamed on the first block's real input). int8 and W4A8 checkpoints are
+bit-equal by mechanism (row-wise activation scales, int32 accumulate);
+NVFP4/FP8 would need one shared activation scale and are untested; bf16 is
+numerically equivalent, not identical. `kv_block` is experimental and as
+built does not lower memory (leave it at 0). The output head has an exact
+mode (default) and a chunked-GEMM mode that changes the clip after 25 steps
+by ~1e-6 per step of fp32 difference; that mode is labelled and off.
+
+What was measured, one graph (294 f -> 702 f de-rope at 1376x768, ~217k
+tokens): torch activations peak +11.9 GiB over the weight floor at any
+card; a 16 GB card in a 32 GB machine renders it with ComfyUI's dynamic VRAM
+and `--fast-disk` at 316 s/step; a 96 GB card resident is 311 s/step. RAM is
+the small-machine ceiling in normal mode (CPU copies of the models without
+`--fast-disk`, and CPU-side IMAGE intermediates); the text encoder costs
+1 to 2.5 GiB of peak on a 16 GB card and about 3 s per new prompt, and
+either eviction or the conditioning bank removes it. Untested: other GPUs,
+Windows, ROCm, non-flash attention backends (cuDNN and mem-efficient are
+chunk-invariant at every length here but 1.1 to 2x slower; no two backends
+are bit-equal to each other).
+
 ## Where to look next
 
 | | |
