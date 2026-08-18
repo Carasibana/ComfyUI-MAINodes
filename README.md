@@ -6,6 +6,40 @@ one subject from one reference image).
 
 Like it? A star helps. Want to feed the GPU? [Sponsor the experiments](#support-mainodes).
 
+## What's new
+
+**Dialogue survives a de-rope now** (2026-08-17). A de-rope used to break
+speech, and the way it broke was confusing: the body came back at the right
+speed and the mouth did not, so held regions sounded rushed while the tail
+sounded fine. The cause is that the picture gets an init and obeys it while
+the audio starts from zeros, so pass 2 writes a fresh performance at natural
+rate and moves the mouth to that. Recovery then compresses something that was
+never slow. New node `H3 Audio Smear` stretches the baseline track onto the
+same dilated clock so pass 2 renders a genuinely slowed take instead. See
+[Dialogue through a de-rope](#dialogue-through-a-de-rope) for the three nodes
+to add to a graph you already have.
+
+**The graph to start from** is
+[`motion_pipeline_ref2va_audioinit.json`](examples/motion_pipeline_ref2va_audioinit.json):
+full-reference mode with the audio init wired, 12 steps on the base model for
+pass 1 and the turbo LoRA at 6 steps for the de-rope. On 192 frames at 1 MP
+that is **12 minutes end to end**, against 36 for the same graph at 25 steps
+both passes without turbo. The audio init itself is free in both currencies,
+costing no measurable time and no measurable sharpness.
+
+## What is stable, and what is not
+
+**Stable:** the Motion Lab de-rope pipeline and Contact-Sheet diffusion, both
+described below. Their dials have measured numbers behind them in
+[TUNING.md](TUNING.md), and their example graphs run out of the box.
+
+**Not stable:** Concept Lab, the timeline surface, the motion adapter pilot,
+the manual mask paths, and the audio init above, which works but has only
+been heard on a narrow slice of material. [ALPHA.md](ALPHA.md) says which is
+which and where each has and has not been tested. Alpha nodes carry
+`(alpha)` in the ComfyUI menu and load behind a guarded loader, so a broken
+one cannot take the pack down.
+
 ## Motion Lab
 
 H3 smears bursty motion: backflips, fast sword arcs, whip-fast reversals.
