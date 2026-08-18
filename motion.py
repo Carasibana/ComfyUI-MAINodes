@@ -37,6 +37,36 @@ LEGAL_STEP = 17  # legal pixel lengths are 17k+5
 COST_EXP = 1.7
 
 
+def _torchaudio():
+    """Import torchaudio, and say what to do when it will not load.
+
+    The audio nodes import it lazily, so a broken install does NOT fail at
+    startup: the pack loads, the node registers, the graph validates, and it
+    dies mid-render after the sampler has already been paid for. torchaudio's
+    own message for the common cause (a CUDA build that disagrees with torch)
+    names two version numbers and no remedy, which reads like the graph is at
+    fault. Say otherwise.
+    """
+    try:
+        import torchaudio
+        return torchaudio
+    except Exception as e:                       # ImportError, RuntimeError, OSError
+        try:
+            v, cu = torch.__version__, torch.version.cuda
+        except Exception:
+            v = cu = "unknown"
+        raise RuntimeError(
+            "This node needs torchaudio (phase vocoder / resample) and it "
+            f"failed to import: {e}\n"
+            f"torch is {v} built against CUDA {cu}. If torchaudio reports a "
+            "different CUDA version, it came from a different build than "
+            "torch - typically after an upgrade that pulled a stock wheel "
+            "over a nightly one, because requirements.txt names torchaudio "
+            "with no version and no index. Reinstall torchaudio from the SAME "
+            "index as your torch and restart ComfyUI. Your graph is fine."
+        ) from e
+
+
 def _video_component(samples):
     z = samples["samples"]
     if hasattr(z, "is_nested") and z.is_nested:
@@ -2521,7 +2551,7 @@ class H3AudioRecover:
         if audio_source in self.SOURCES:          # words win over the raw dial
             reference_mix = self.SOURCES[audio_source]
 
-        import torchaudio  # noqa: F401  (phase_vocoder)
+        torchaudio = _torchaudio()
 
         holds = json.loads(hold_map)["holds"]
         wav = audio["waveform"].detach().float().cpu()   # [B, C, N]
@@ -2602,7 +2632,7 @@ class H3AudioRecover:
         if reference is not None and reference_mix > 0:
             ref = reference["waveform"].detach().float().cpu().reshape(-1, reference["waveform"].shape[-1])
             if reference["sample_rate"] != sr:
-                import torchaudio as _ta
+                _ta = _torchaudio()
                 ref = _ta.functional.resample(ref, reference["sample_rate"], sr)
             n_out = min(y.shape[1], ref.shape[1])
             if ref.shape[0] != y.shape[0]:
@@ -2651,7 +2681,7 @@ class H3AudioSmear:
     def smear(self, audio, hold_map, fps=24):
         import math
 
-        import torchaudio  # noqa: F401  (phase_vocoder)
+        torchaudio = _torchaudio()
 
         holds = json.loads(hold_map)["holds"]
         wav = audio["waveform"].detach().float().cpu()
@@ -3408,7 +3438,7 @@ class H3SegmentSplice:
             bw = baseline_audio["waveform"].detach().float().cpu()
             swav = segment_audio["waveform"].detach().float().cpu()
             if segment_audio["sample_rate"] != sr:
-                import torchaudio
+                torchaudio = _torchaudio()
                 shp = swav.shape
                 swav = torchaudio.functional.resample(
                     swav.reshape(-1, shp[-1]), segment_audio["sample_rate"],
