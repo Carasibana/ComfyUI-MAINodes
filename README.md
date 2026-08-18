@@ -268,10 +268,48 @@ is the same idea sized for iteration: 0.2 MP in, 0.4 MP out, about 95
 seconds end to end. Use it to find out whether the choreography lands
 before paying for a final.
 
-[`motion_pipeline_ref2va.json`](examples/motion_pipeline_ref2va.json)
+[`motion_pipeline_ref2va_audioinit.json`](examples/motion_pipeline_ref2va_audioinit.json)
 runs the pipeline in full-reference mode, with the six-section prompt
 contract and a reference image (wired to ComfyUI's stock `example.png`
-so it runs out of the box -- swap in your own).
+so it runs out of the box -- swap in your own). It also seeds pass 2's
+AUDIO rows with the baseline performance, which is what keeps dialogue
+intact through a de-rope: without a seed, pass 2 writes fresh speech at
+natural rate and drags the mouth to match it, and recovery then
+compresses those lips by the hold factor, so held regions come back
+rushed while the unheld tail sounds fine. `H3 Audio Smear` stretches the
+baseline track onto the dilated clock, `VAEEncodeAudio` encodes it, and
+`H3 V2V Init`'s `audio_latent` seeds it at `follow the original
+performance (0.5)`.
+
+**This is the balanced setting, and it is the one to start from.** Pass 1
+runs 12 steps on the base model, pass 2 runs the turbo LoRA at
+`total_steps 6` with inject 0.50, so about three steps actually execute on
+the de-rope. On 192 frames at 1 MP on an RTX PRO 6000 Blackwell that is
+**12 minutes end to end**. The same graph without turbo, at 25 steps for
+both passes, took 36 minutes on the Max-Q card, which runs roughly 13%
+slower on sustained 1 MP work, so call it 32 minutes equivalent. Nearly
+three times the wall time, and the turbo arm was the one that got the
+playback verdict.
+
+**The audio init itself is free.** Pass 2 measured 6:06 with the seed
+against about 7:20 without it on the same card, which is inside run to run
+variation. It also costs nothing in picture quality: 91.8 against 91.3 on
+laplacian variance, inside the noise floor of the video encoder itself.
+And because the seed only touches pass 2, re-running a graph after wiring
+it serves pass 1 from cache.
+
+It writes two finals so you can hear the difference the seed makes:
+`_recovered` keeps the original performance (the safe route, and the one
+we ship as the default), and `_seededfoley` takes pass 2's own foley
+retimed to the world clock -- legitimate ONLY because the rows were
+seeded. Alpha: measured on a handful of clips, all sword-fight material
+with two speakers. Speech over music, a single speaker and hold factors
+other than 4 are untested.
+
+[`motion_pipeline_ref2va.json`](examples/motion_pipeline_ref2va.json)
+is the same graph WITHOUT the audio init, kept as the archived version.
+Reach for it only if you want the older behaviour; on any clip with
+dialogue, prefer the audioinit graph above.
 
 **There is a resolution floor.** Below roughly 0.4 MP the subject smears
 regardless of configuration, and every quality judgement we took from a
@@ -488,6 +526,75 @@ playback.
 - Holds are integer, so recovering the original frame rate is exact frame
   selection.
 
+### Dialogue through a de-rope
+
+If your clip has speech in it, the de-rope will break it, and the way it
+breaks is not obvious from the output.
+
+Here is what happens. The de-rope stretches time, regenerates, then
+compresses back. The picture goes along with that: the smeared init tells
+pass 2 to move slowly, and it does. The audio has no init. It starts from
+zeros, so pass 2 writes a fresh performance at natural speaking rate and
+moves the mouth to match that. Recovery then compresses the whole clip by
+the hold factor. The body comes back at the right speed because it really
+was slowed. The mouth does not, because it never was. On a clip that
+dilated 2.4x, held regions come back sounding rushed while the tail sounds
+fine, which is a confusing symptom because half the clip is correct.
+
+The fix is to give the audio an init too. `H3 Audio Smear` stretches the
+baseline track onto the same dilated clock the video init lives on, using
+the same hold map. Encode that with `VAEEncodeAudio`, wire it into
+`H3 V2V Init`'s `audio_latent`, and set `audio_mode` to
+`follow the original performance (0.5)`. Pass 2 now renders a genuinely
+slowed take, so compressing it afterwards is a valid thing to do.
+
+Two graphs ship with this, both full-reference mode:
+[`motion_pipeline_ref2va_audioinit.json`](examples/motion_pipeline_ref2va_audioinit.json)
+has the seed wired and writes both audio routes as separate finals, and
+[`motion_pipeline_ref2va.json`](examples/motion_pipeline_ref2va.json) is the
+same graph without it, kept as the archived version. Diff the two if you
+would rather read the change than follow the steps below.
+
+**To adopt it in a graph you already have, add three things:**
+
+1. `H3 Audio Smear` -- `audio` from the VAEDecodeAudio of your FIRST pass
+   (the baseline performance, not pass 2's), `hold_map` from the same
+   `H3 Time Smear` output you already feed to `H3 Audio Recover`, `fps` 24.
+2. `VAEEncodeAudio` -- audio from the smear, vae is your audio VAE.
+3. On `H3 V2V Init`, wire `audio_latent` from that encode and set
+   `audio_mode` to `follow the original performance (0.5)`.
+
+Nothing else changes. Both new inputs are optional and default to the old
+behaviour, so a graph without them behaves exactly as it did before.
+
+**Which audio to ship.** `H3 Audio Recover` now takes plain-language
+options instead of a bare 0 to 1 dial, because the two ends mean different
+things depending on whether you seeded the rows:
+
+- `keep the original performance (safe default)` is the one to use. Your
+  first pass's audio is already on the world clock and has never been
+  through a vocoder, so it is the best-sounding track you have. The seed's
+  job is to make the picture agree with it.
+- `use pass 2's foley - ONLY IF the audio rows were seeded` gives you
+  foley scored for the new motion. Without a seed this is the rushed
+  defect described above. With one it is a real option, though it comes
+  back thinner: two phase-vocoder passes and a VAE round trip cost about a
+  third of the presence band between 3.4 and 8 kHz.
+
+**What it costs the picture: nothing measurable.** Same graph with and
+without the seed, everything else held, came out 91.8 against 91.3 on
+laplacian variance, which is inside the noise floor of the video encoder
+itself. It moves most pixels, because it is steering a joint audio-video
+latent and the two halves are denoised together, but it does not soften.
+
+**Where this has and has not been tested.** It has been run on a handful
+of clips, all sword-fight material with two speakers trading lines over
+fast motion, at hold factors around 4 and dilations from 2.4x to 2.7x.
+It has not been tried on a single speaker, on speech over music, on
+non-anime footage, or at other hold factors. Treat it as alpha, and
+listen to the tail of a clip as well as the start, because the tail is
+where an unheld region will sound normal whether or not anything is wrong.
+
 ### The motion adapter (pilot)
 
 A rank-16 LoRA trained on the de-rope task itself: frames inside a motion
@@ -524,11 +631,28 @@ denoised, decoded independently. Use with a Turnaround LoRA from
 Nodes: **H3 Contact Sheet**, **H3 Contact Sheet Decode**.
 Drag-in workflow: [`examples/contact_sheet.json`](examples/contact_sheet.json)
 (API twin alongside) — point the LoadImage at your reference image, pick
-your downloaded LoRA file, queue. Stock loaders and sampler throughout;
+your downloaded LoRA file, queue. `ref_image` is optional: leave it
+unconnected for a text-only sheet (drop the `<Picture 1>` tag from the
+prompt); [`examples/contact_sheet_t2i.json`](examples/contact_sheet_t2i.json)
+is that graph. Stock loaders and sampler throughout;
 28 steps of res_multistep at denoise 1.0, LoRA strength 0.75. A scripted
 example is in [`example_api_workflow.py`](example_api_workflow.py).
 Previously published as ComfyUI-H3-ContactSheet; that repo remains up for
 existing installs.
+
+## Alpha work
+
+This pack ships finished work and unfinished work in the same install.
+The Motion Lab pipeline and the contact sheet above are the finished part.
+Alongside them are a research subsystem (Concept Lab), a timeline surface,
+the audio init for dialogue, the motion adapter pilot, and the manual mask
+paths, all at varying degrees of unfinished.
+
+**[ALPHA.md](ALPHA.md) says which is which**, what each one can and cannot
+do today, and where each has and has not been tested. Alpha nodes carry
+`(alpha)` in the ComfyUI menu, they load behind a guarded loader so a
+broken one cannot take the pack down, and none of them changes existing
+behaviour or defaults.
 
 ## Install
 

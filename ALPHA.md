@@ -1,0 +1,106 @@
+# What is alpha here, and how alpha is it
+
+This pack ships finished work and unfinished work in the same install. The
+finished work is the Motion Lab de-rope pipeline and the contact sheet; it
+has been measured, it has example graphs, and its dials have numbers behind
+them in TUNING.md. Everything on this page is the other kind.
+
+Alpha here means one or more of: it has run on one machine and no others,
+the interesting half of it is not built, its interface will change, or it
+is a real capability that simply has not been tested on enough material to
+know where it stops working. Each entry below says which.
+
+Nothing on this page changes existing behaviour or defaults. Alpha nodes
+carry `(alpha)` in the name you see in the ComfyUI menu, and the subsystems
+load behind a guarded loader, so a broken alpha module cannot take the rest
+of the pack down with it.
+
+If you find something wrong, an issue with the symptom and the graph is
+worth more than a fix. Symptom-and-dial pairs belong in TUNING.md.
+
+---
+
+## Concept Lab
+
+`concept_lab/`, and the nodes `MAI Concept Capture Arm / Flush` and
+`MAI Concept Inject Delta`.
+
+A research subsystem on the bet that a reusable concept does not have to
+live in trained weights and can instead live in a measured functional
+delta: measure what a piece of conditioning actually does to the model,
+factor that into reusable components, compile them back through the model's
+own conditioning channels.
+
+**State: the interesting half is not built.** What exists is the data
+layer (contracts, workspace, verbs, three surfaces over them) and an H3
+capture tap that rides along on a render. What does not exist is anything
+that turns a capture into a factor, or a factor into conditioning. Unbuilt
+verbs raise and name the task that blocks them rather than returning an
+empty result, because in a subsystem whose output is evidence a quiet
+nothing is worse than a refusal.
+
+Full status table, the layering rules, and a Contributing section naming
+the four things most worth receiving: **`concept_lab/README.md`**. The
+design decisions and their reasoning are in `concept_lab/DECISIONS.md`.
+
+## The timeline surface
+
+Nodes: `H3 Drawn Plan`, `H3 Plan Settings`, `H3 Plan Estimate`,
+`H3 Timeline Analyze`, `H3 Timeline Render`, `H3 Flight Recorder Start` and
+`Stop`.
+
+A plan document as the single source of truth: something proposes a plan,
+a human edits it, a compiler turns it into a legal graph. The node surface
+reaches parity with the compiler route, and the splice is proven on tensors.
+
+**State: real but young.** The interface is expected to move, and the
+editing experience around it is not built. If you are looking for the
+production route, use the ordinary de-rope graphs.
+
+## The audio init for dialogue
+
+`H3 Audio Smear`, plus `audio_latent` / `audio_mode` on `H3 V2V Init` and
+`audio_source` on `H3 Audio Recover`.
+
+Fixes a real defect: a de-rope breaks speech, because the picture gets an
+init and obeys it while the audio starts from zeros, so pass 2 writes a
+fresh performance at natural rate and moves the mouth to that. Seeding the
+audio rows with the baseline performance stretched onto the same dilated
+clock makes pass 2 render a genuinely slowed take. The README's
+"Dialogue through a de-rope" section has the adoption steps.
+
+**State: it works, on material we have not varied enough.** The geometry
+is solid: the smear/recover round trip is sample-exact in both directions
+with envelope correlation 0.975, and the init costs nothing measurable in
+picture quality. But it has been heard on a handful of clips, all
+two-speaker sword-fight material at hold factors around 4 and dilations
+between 2.4x and 2.7x. A single speaker, speech over music, non-anime
+footage, and other hold factors are all unmeasured. If you try one of
+those, that result is worth reporting whichever way it goes.
+
+## The motion adapter (pilot)
+
+A rank-16 LoRA trained on the de-rope task itself, applied to the de-rope
+pass only. Documented with its measured settings and its known costs in the
+README's "The motion adapter (pilot)" section, and released as an
+intermediate option rather than a finished one. A more ambitious all-in-one
+adapter is in progress and may not work.
+
+## Manual mask paths
+
+The `(alpha)`-tagged inputs on `H3 V2V Init` and `H3 Motion Composite`:
+manual region masks, final-alpha masks, and the time-varying mask path.
+These are exercised by the checklist in **`TESTING_ALPHA.md`**, which
+covers the 2026-08-09 node batch and still wants human passes on the
+interactive widget and the drag-in workflows.
+
+---
+
+## Where to look next
+
+| | |
+|---|---|
+| `concept_lab/README.md` | Concept Lab status, layering, contributing |
+| `TESTING_ALPHA.md` | hands-on checklist for the manual mask and editor batch |
+| `TUNING.md` | dials with measured numbers, for the finished pipeline |
+| `ROADMAP.md` | where the unfinished parts are meant to go |

@@ -41,11 +41,11 @@ import torch
 try:                                    # normal import, as a package member
     from .motion import (COST_EXP, H3AudioRecover, H3ExactRecover,
                          H3SegmentSplice, H3TimeSmear, H3V2VInit, _legal_ceil,
-                         _tok_start_frame, _token_count)
+                         _tok_start_frame, _token_count, _torchaudio)
 except ImportError:                     # standalone (test harness) import
     from motion import (COST_EXP, H3AudioRecover, H3ExactRecover,
                         H3SegmentSplice, H3TimeSmear, H3V2VInit, _legal_ceil,
-                        _tok_start_frame, _token_count)
+                        _tok_start_frame, _token_count, _torchaudio)
 
 log = logging.getLogger(__name__)
 
@@ -332,7 +332,7 @@ def _splice_audio(base, seg, a, b, fps, xf_in, xf_out, rms_search=0):
     y = base["waveform"].detach().float().cpu().clone()
     s = seg["waveform"].detach().float().cpu()
     if seg["sample_rate"] != sr:
-        import torchaudio
+        torchaudio = _torchaudio("resample")
         shp = s.shape
         s = torchaudio.functional.resample(
             s.reshape(-1, shp[-1]), seg["sample_rate"], sr).reshape(
