@@ -266,10 +266,31 @@ is the same idea sized for iteration: 0.2 MP in, 0.4 MP out, about 95
 seconds end to end. Use it to find out whether the choreography lands
 before paying for a final.
 
-[`motion_pipeline_ref2va.json`](examples/motion_pipeline_ref2va.json)
+[`motion_pipeline_ref2va_audioinit.json`](examples/motion_pipeline_ref2va_audioinit.json)
 runs the pipeline in full-reference mode, with the six-section prompt
 contract and a reference image (wired to ComfyUI's stock `example.png`
-so it runs out of the box -- swap in your own).
+so it runs out of the box -- swap in your own). It also seeds pass 2's
+AUDIO rows with the baseline performance, which is what keeps dialogue
+intact through a de-rope: without a seed, pass 2 writes fresh speech at
+natural rate and drags the mouth to match it, and recovery then
+compresses those lips by the hold factor, so held regions come back
+rushed while the unheld tail sounds fine. `H3 Audio Smear` stretches the
+baseline track onto the dilated clock, `VAEEncodeAudio` encodes it, and
+`H3 V2V Init`'s `audio_latent` seeds it at `follow the original
+performance (0.5)`.
+
+It writes two finals so you can hear the difference the seed makes:
+`_recovered` keeps the original performance (the safe route, and the one
+we ship as the default), and `_seededfoley` takes pass 2's own foley
+retimed to the world clock -- legitimate ONLY because the rows were
+seeded. Alpha: measured on a handful of clips, all sword-fight material
+with two speakers. Speech over music, a single speaker and hold factors
+other than 4 are untested.
+
+[`motion_pipeline_ref2va.json`](examples/motion_pipeline_ref2va.json)
+is the same graph WITHOUT the audio init, kept as the archived version.
+Reach for it only if you want the older behaviour; on any clip with
+dialogue, prefer the audioinit graph above.
 
 **There is a resolution floor.** Below roughly 0.4 MP the subject smears
 regardless of configuration, and every quality judgement we took from a
