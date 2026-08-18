@@ -208,14 +208,89 @@ def _attend(qc, K, V, heads, head_chunks, transformer_options):
     return out
 
 
+
+# --------------------------------------------------------------------------- int8 K/V store (A5, approximation tier)
+
+_HAD = {}
+
+
+def _hadamard(n, device, dtype):
+    """Orthonormal Hadamard n x n (n power of two), cached per device/dtype."""
+    key = (n, str(device), dtype)
+    if key not in _HAD:
+        h = torch.ones((1, 1), dtype=torch.float32)
+        while h.shape[0] < n:
+            h = torch.cat([torch.cat([h, h], 1), torch.cat([h, -h], 1)], 0)
+        _HAD[key] = (h / (n ** 0.5)).to(device=device, dtype=dtype)
+    return _HAD[key]
+
+
+class _Int8KV:
+    """K/V buffers stored as int8 rows with a per-row (per token, per head)
+    fp16 scale after a fixed orthonormal Hadamard rotation of the head dim.
+    Half the bytes of bf16 (S x heads x 128 + scales). Rotation spreads outlier
+    channels before rounding and is undone exactly on dequant (orthogonal), so
+    the only error is the int8 rounding: absmax/127 per 128-wide row. This is
+    NOT bit-equal to stock: approximation tier, judged by the sensor bank."""
+
+    def __init__(self, heads, S, hd, device):
+        self.heads, self.S, self.hd = heads, S, hd
+        self.q = torch.empty((1, heads, S, hd), dtype=torch.int8, device=device)
+        self.s = torch.empty((1, heads, S, 1), dtype=torch.float16, device=device)
+        self.H = _hadamard(hd, device, torch.float32)
+
+    def store(self, a, b, x):        # x [1, heads, b-a, hd] bf16
+        xr = x.float() @ self.H                                   # rotate
+        sc = xr.abs().amax(dim=-1, keepdim=True).clamp_min_(1e-8) / 127.0
+        self.q[:, :, a:b] = torch.round(xr / sc).clamp_(-127, 127).to(torch.int8)
+        self.s[:, :, a:b] = sc.to(torch.float16)
+        del xr, sc
+
+    def load(self, a, b, dtype):     # -> [1, heads, b-a, hd] dtype, contiguous
+        xr = self.q[:, :, a:b].float() * self.s[:, :, a:b].float()
+        return (xr @ self.H.T).to(dtype).contiguous()             # un-rotate
+
+    def bytes(self):
+        return self.q.numel() + self.s.numel() * 2
+
+
+def _blockwise_attention_q(qc, Kq, Vq, block, out_dtype):
+    """Blockwise attention against int8 K/V stores: dequantise one block at a
+    time (transient = one bf16 block), online-softmax combine as in
+    _blockwise_attention."""
+    op = torch.ops.aten._scaled_dot_product_flash_attention.default
+    S = Kq.S
+    acc = None
+    lse_acc = None
+    for a, b in _ranges(S, block):
+        kb = Kq.load(a, b, qc.dtype)
+        vb = Vq.load(a, b, qc.dtype)
+        r = op(qc, kb, vb, 0.0, False, False)
+        del kb, vb
+        o, lse = r[0], r[1]
+        if acc is None:
+            acc, lse_acc = o.float(), lse
+        else:
+            new = torch.logaddexp(lse_acc, lse)
+            acc = acc * torch.exp(lse_acc - new).unsqueeze(-1) + o.float() * torch.exp(lse - new).unsqueeze(-1)
+            lse_acc = new
+        del r, o, lse
+    return acc.to(out_dtype)
+
+
 # --------------------------------------------------------------------------- the block
 
-def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner):
-    """K, V for the whole sequence, chunk by chunk (Q computed and dropped)."""
+def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=False):
+    """K, V for the whole sequence, chunk by chunk (Q computed and dropped).
+    kv_int8: store them as _Int8KV (half the bytes; approximation tier)."""
     S = x.shape[0]
     attn = block.attn
-    K = torch.empty((1, heads, S, hd), dtype=x.dtype, device=x.device)
-    V = torch.empty((1, heads, S, hd), dtype=x.dtype, device=x.device)
+    if kv_int8:
+        K = _Int8KV(heads, S, hd, x.device)
+        V = _Int8KV(heads, S, hd, x.device)
+    else:
+        K = torch.empty((1, heads, S, hd), dtype=x.dtype, device=x.device)
+        V = torch.empty((1, heads, S, hd), dtype=x.dtype, device=x.device)
     for a, b in _ranges(S, kv_chunk):
         s = b - a
         h = _mod_scale_shift_range(block.norm1(x[a:b]), shift_msa, scale_msa, mod_segments, a, b)
@@ -223,8 +298,12 @@ def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chun
         q, k, v = qkv.split(inner, dim=-1)
         rope_c = rope_freqs[:, a:b].contiguous() if rope_freqs is not None else None
         _, k = _norm_rope(attn, q, k, rope_c, s)
-        K[0, :, a:b] = k.transpose(0, 1)
-        V[0, :, a:b] = v.view(s, heads, hd).transpose(0, 1)
+        if kv_int8:
+            K.store(a, b, k.transpose(0, 1).unsqueeze(0))
+            V.store(a, b, v.view(s, heads, hd).transpose(0, 1).unsqueeze(0))
+        else:
+            K[0, :, a:b] = k.transpose(0, 1)
+            V[0, :, a:b] = v.view(s, heads, hd).transpose(0, 1)
         del h, qkv, q, k, v, rope_c
     return K, V
 
@@ -245,7 +324,10 @@ def _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments,
         q, _ = _norm_rope(attn, q, k, rope_c, s)
         qc = q.transpose(0, 1).unsqueeze(0).contiguous()      # [1, heads, s, hd]
         del h, qkv, q, k, _v, rope_c
-        if kv_block and kv_block > 0:
+        if isinstance(K, _Int8KV):
+            o = _blockwise_attention_q(qc, K, V, kv_block if kv_block and kv_block > 0 else 32768, x.dtype)
+            o = o.transpose(1, 2).reshape(1, s, inner)
+        elif kv_block and kv_block > 0:
             o = _blockwise_attention(qc, K, V, kv_block, x.dtype)          # [1, heads, s, hd]
             o = o.transpose(1, 2).reshape(1, s, inner)
         else:
@@ -267,7 +349,7 @@ def _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chun
 
 
 def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transformer_options,
-                           q_chunk=16384, kv_chunk=16384, mlp_chunk=16384, kv_block=0, probe=None, index=None):
+                           q_chunk=16384, kv_chunk=16384, mlp_chunk=16384, kv_block=0, probe=None, index=None, kv_int8=False):
     """Exact replacement for DiTBlock.forward with chunk-bounded transients.
 
     The three phases are separate named functions so an allocator trace
@@ -283,7 +365,7 @@ def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transforme
 
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.adaln_proj(t_emb)
 
-    K, V = _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner)
+    K, V = _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=kv_int8)
     if probe is not None:
         probe.mark(index, "kv")
     _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments, rope_freqs,
@@ -313,7 +395,7 @@ def _self_check(block, args, extra, cfg, tag):
     for name, c in variants.items():
         out = streamed_block_forward(block, x.clone(), args["t_emb"], args["mod_segments"], args["rope_freqs"],
                                      args["transformer_options"], q_chunk=c["q_chunk"], kv_chunk=c["kv_chunk"],
-                                     mlp_chunk=c["mlp_chunk"], kv_block=c["kv_block"])
+                                     mlp_chunk=c["mlp_chunk"], kv_block=c["kv_block"], kv_int8=cfg.get("kv_int8", False))
         d = (out.float() - ref.float()).abs()
         parts.append(f"{name}: max {d.max().item():.3e} ({d.max().item() / ulp:.2f} ulp) mean {d.mean().item():.2e}")
         del out, d
@@ -339,7 +421,8 @@ def _make_replacement(block, cfg, index=0):
         probe = to.get("h3_memprobe") if isinstance(to, dict) else None
         x = streamed_block_forward(block, x, args["t_emb"], args["mod_segments"], args["rope_freqs"],
                                    to, q_chunk=cfg["q_chunk"], kv_chunk=cfg["kv_chunk"],
-                                   mlp_chunk=cfg["mlp_chunk"], kv_block=cfg["kv_block"], probe=probe, index=index)
+                                   mlp_chunk=cfg["mlp_chunk"], kv_block=cfg["kv_block"], probe=probe, index=index,
+                                   kv_int8=cfg.get("kv_int8", False))
         return {"img": x}
     return _named(fn, f"block{index:02d}")
 
@@ -426,6 +509,9 @@ class H3StreamedBlocks:
                 "final_layer_gemm": (["exact (whole GEMM, one fp32 buffer)", "streamed (chunked GEMM, ~1e-6 fp32 diffs)"],
                                      {"default": "exact (whole GEMM, one fp32 buffer)",
                                       "tooltip": "exact: same head GEMM as stock, transient = one fp32 [rows, hidden] (bit-equal). streamed: GEMM per chunk, transient ~chunk-sized, but fp32 cuBLAS is not chunk-invariant (numerically-equivalent tier)."}),
+                "kv_store": (["bf16 (exact)", "int8 per-row, rotated (approximate)"],
+                             {"default": "bf16 (exact)",
+                              "tooltip": "K and V held as int8 with one fp16 scale per row (per token, per head), after a fixed orthonormal 128-wide Hadamard rotation of the head dim that is undone exactly on dequant (the rotation only spreads outlier channels before rounding). Attention runs blockwise, dequantising one K/V block at a time (kv_block, default 32768). Halves the K/V bytes. NOT bit-equal to stock: a same-seed render is a sibling take. First cut (2026-08-18): the de-rope side by side passed the operator's eyes; peak VRAM not yet lower than bf16 (dequant transients) and ~26% slower at 217k tokens; a second cut with smaller blocks and a bf16 rotation is next."}),
                 "self_check": ("BOOLEAN", {"default": False,
                                            "tooltip": "Diagnostic: on block 0's first call, run stock and streamed on the same input and log per-phase divergence. Costs one extra block forward."}),
             }
@@ -439,14 +525,15 @@ class H3StreamedBlocks:
                    "projection work at long lengths. See vram_lab.py for the ledger.")
 
     def patch(self, model, q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block, self_check=False, final_layer_chunk=16384,
-              final_layer_gemm="exact (whole GEMM, one fp32 buffer)"):
+              final_layer_gemm="exact (whole GEMM, one fp32 buffer)", kv_store="bf16 (exact)"):
         dm = getattr(getattr(model, "model", None), "diffusion_model", None)
         blocks = getattr(dm, "blocks", None)
         if not blocks or not hasattr(blocks[0], "attn") or not hasattr(blocks[0].attn, "qkv_proj"):
             log.warning("H3StreamedBlocks: model does not look like MiniMax H3 (no blocks[*].attn.qkv_proj); unchanged")
             return (model,)
         cfg = {"q_chunk": q_chunk, "kv_chunk": kv_chunk, "mlp_chunk": mlp_chunk,
-               "min_tokens": min_tokens, "kv_block": kv_block, "self_check": bool(self_check)}
+               "min_tokens": min_tokens, "kv_block": kv_block, "self_check": bool(self_check),
+               "kv_int8": str(kv_store).startswith("int8")}
         m = model.clone()
         for i, block in enumerate(blocks):
             m.set_model_patch_replace(_make_replacement(block, cfg, i), "dit", "double_block", i)
@@ -460,8 +547,8 @@ class H3StreamedBlocks:
                 return streamed_final_layer_forward(_fl, x, t_emb, video_seg, audio_seg, chunk=_c,
                                                     probe=getattr(dm, "_h3_memprobe", None), exact_gemm=_e)
             m.add_object_patch("diffusion_model.final_layer.forward", _fl_forward)
-        log.info("H3StreamedBlocks: %d blocks patched (q %d, kv %d, mlp %d, min %d, kv_block %d, final_layer_chunk %d, %s)",
-                 len(blocks), q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block, final_layer_chunk, final_layer_gemm)
+        log.info("H3StreamedBlocks: %d blocks patched (q %d, kv %d, mlp %d, min %d, kv_block %d, final_layer_chunk %d, %s, kv_store %s)",
+                 len(blocks), q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block, final_layer_chunk, final_layer_gemm, kv_store)
         return (m,)
 
 
