@@ -466,6 +466,7 @@ class _MemLedger:
 
     def flush(self):
         import json
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, "w") as f:
             for r in self.rows:
                 f.write(json.dumps(r) + "\n")
@@ -586,11 +587,18 @@ class H3MemoryProbe:
             x = args[0] if args else None
             shape = tuple(x.shape) if hasattr(x, "shape") else ()
             if state["n"] > 0 and not state["done"] and not state["recording"]:
-                torch.cuda.memory._record_memory_history(enabled="all", context="all", stacks="python",
-                                                         max_entries=int(max_entries), device=dev,
-                                                         record_pinned_host_memory=True)
-                state["recording"] = True
-                log.info("H3MemoryProbe[%s]: allocator trace ON (fwd %d)", tag, state["fwd"])
+                try:
+                    torch.cuda.memory._record_memory_history(enabled="all", context="all", stacks="python",
+                                                             max_entries=int(max_entries), device=dev,
+                                                             record_pinned_host_memory=True)
+                    state["recording"] = True
+                    log.info("H3MemoryProbe[%s]: allocator trace ON (fwd %d)", tag, state["fwd"])
+                except RuntimeError as e:
+                    # ComfyUI enables cudaMallocAsync by default; torch's recorder needs the
+                    # native caching allocator. Ledger still runs.
+                    state["done"] = True
+                    log.warning("H3MemoryProbe[%s]: allocator trace unavailable (%s). Start ComfyUI with "
+                                "--disable-cuda-malloc to record it; the ledger still runs.", tag, str(e)[:120])
             if led is not None:
                 led.begin_forward(shape)
             try:
@@ -614,6 +622,7 @@ class H3MemoryProbe:
 
 def _dump_trace(run_dir, dev, tag):
     try:
+        os.makedirs(run_dir, exist_ok=True)
         snap = torch.cuda.memory._snapshot(device=dev)
         import pickle
         with open(os.path.join(run_dir, "snapshot.pickle"), "wb") as f:
