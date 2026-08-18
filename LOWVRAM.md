@@ -96,6 +96,29 @@ somewhere other than the encode node (`EmptyMiniMaxH3LatentAV` for T2VA, the
 latent bank for a banked pass 1), or the encode node runs anyway for its
 latent output.
 
+## How far you can go (extrapolated from the lines above)
+
+The activation line predicted the 906-frame point on the 24 GB card before it
+was measured (14.9 GiB both ways), so the table below is the line, not a
+guess; treat it as +-1 frame-block. "Max tokens" assumes dynamic VRAM keeps
+the minimum of resident weights (2 to 3 GB measured) and ~1 GB of context.
+
+| card | max packed tokens | frames at 1376x768, single de-rope pass | RAM at that length, single pass / full pipeline |
+|---|---|---|---|
+| 16 GB | ~230k | ~740 (measured: 702 renders, 906 does not) | ~28 / ~40 GB |
+| 24 GB | ~380k | ~1230 (measured: 906 renders at 515 s/step) | ~33 / ~45 GB |
+| 32 GB | ~530k | ~1720 | ~39 / ~51 GB |
+
+RAM per frame is ~12 MB (one fp32 IMAGE at 1376x768) on top of a ~19 GB base
+for a single pass with `--fast-disk`; the full pipeline holds two to three
+more IMAGEs of the clip. Past ~1100 frames the step time (attention grows with
+the square of the sequence: 316 s at 702 frames, 515 at 906, ~650 at 1110)
+is the practical limit before memory is. Other canvases: convert to tokens
+with `latent_frames x (W/32) x (H/32)`, where `latent_frames = (frames-5)/17*5+2`.
+
+The example graph has not yet been rendered end to end on the fenced card;
+its pieces have (same nodes, same passes). That gate is next.
+
 ## Why no speed penalty
 
 At 217k tokens about 250 of the ~315 seconds per forward are attention, which
