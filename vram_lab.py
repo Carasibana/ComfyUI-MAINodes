@@ -42,6 +42,8 @@ same-seed difference clip against the stock block.
 """
 import logging
 import math
+import os
+import time
 
 import torch
 
@@ -207,18 +209,10 @@ def _attend(qc, K, V, heads, head_chunks, transformer_options):
 
 # --------------------------------------------------------------------------- the block
 
-def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transformer_options,
-                           q_chunk=16384, kv_chunk=16384, mlp_chunk=16384, kv_block=0):
-    """Exact replacement for DiTBlock.forward with chunk-bounded transients."""
+def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner):
+    """K, V for the whole sequence, chunk by chunk (Q computed and dropped)."""
     S = x.shape[0]
     attn = block.attn
-    heads, hd = attn.heads, attn.head_dim
-    inner = heads * hd
-    head_chunks = transformer_options.get("minimax_head_chunks", 1) if isinstance(transformer_options, dict) else 1
-
-    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.adaln_proj(t_emb)
-
-    # ---- phase 1: K, V for the whole sequence, chunk by chunk
     K = torch.empty((1, heads, S, hd), dtype=x.dtype, device=x.device)
     V = torch.empty((1, heads, S, hd), dtype=x.dtype, device=x.device)
     for a, b in _ranges(S, kv_chunk):
@@ -227,12 +221,18 @@ def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transforme
         qkv = attn.qkv_proj(h)
         q, k, v = qkv.split(inner, dim=-1)
         rope_c = rope_freqs[:, a:b].contiguous() if rope_freqs is not None else None
-        _, k = _norm_rope(attn, q, k, rope_c, s)              # q computed and dropped
+        _, k = _norm_rope(attn, q, k, rope_c, s)
         K[0, :, a:b] = k.transpose(0, 1)
         V[0, :, a:b] = v.view(s, heads, hd).transpose(0, 1)
         del h, qkv, q, k, v, rope_c
+    return K, V
 
-    # ---- phase 2: Q per chunk, attention against full K/V, out_proj, gated residual in place
+
+def _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments, rope_freqs,
+                   transformer_options, q_chunk, kv_block, heads, hd, inner, head_chunks):
+    """Q per chunk, attention against full K/V, out_proj, gated residual in place."""
+    S = x.shape[0]
+    attn = block.attn
     heads_per_call = max(1, heads // max(1, min(int(head_chunks or 1), heads)))
     q_ranges = _balanced_ranges(S, q_chunk, _min_query_chunk(x.device, heads_per_call))
     for a, b in q_ranges:
@@ -241,7 +241,7 @@ def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transforme
         qkv = attn.qkv_proj(h)
         q, k, _v = qkv.split(inner, dim=-1)
         rope_c = rope_freqs[:, a:b].contiguous() if rope_freqs is not None else None
-        q, _ = _norm_rope(attn, q, k, rope_c, s)              # k recomputed and dropped
+        q, _ = _norm_rope(attn, q, k, rope_c, s)
         qc = q.transpose(0, 1).unsqueeze(0).contiguous()      # [1, heads, s, hd]
         del h, qkv, q, k, _v, rope_c
         if kv_block and kv_block > 0:
@@ -253,14 +253,46 @@ def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transforme
         o = attn.out_proj(o.squeeze(0))
         _mod_gate_range(x, gate_msa, o, mod_segments, a, b)
         del o
-    del K, V
 
-    # ---- phase 3: MLP per chunk
+
+def _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk):
+    """MLP per chunk, gated residual in place."""
+    S = x.shape[0]
     for a, b in _ranges(S, mlp_chunk):
         h = _mod_scale_shift_range(block.norm2(x[a:b]), shift_mlp, scale_mlp, mod_segments, a, b)
         o = block.mlp(h)
         _mod_gate_range(x, gate_mlp, o, mod_segments, a, b)
         del h, o
+
+
+def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transformer_options,
+                           q_chunk=16384, kv_chunk=16384, mlp_chunk=16384, kv_block=0, probe=None, index=None):
+    """Exact replacement for DiTBlock.forward with chunk-bounded transients.
+
+    The three phases are separate named functions so an allocator trace
+    (torch.cuda.memory._record_memory_history / memory_viz, see H3MemoryProbe)
+    labels every band by phase from the Python stack alone; `probe` (an
+    H3MemoryProbe ledger, read from transformer_options["h3_memprobe"]) gets a
+    zero-sync mark after each phase.
+    """
+    attn = block.attn
+    heads, hd = attn.heads, attn.head_dim
+    inner = heads * hd
+    head_chunks = transformer_options.get("minimax_head_chunks", 1) if isinstance(transformer_options, dict) else 1
+
+    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.adaln_proj(t_emb)
+
+    K, V = _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner)
+    if probe is not None:
+        probe.mark(index, "kv")
+    _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments, rope_freqs,
+                   transformer_options, q_chunk, kv_block, heads, hd, inner, head_chunks)
+    del K, V
+    if probe is not None:
+        probe.mark(index, "attn")
+    _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk)
+    if probe is not None:
+        probe.mark(index, "mlp")
     return x
 
 
@@ -302,11 +334,24 @@ def _make_replacement(block, cfg, index=0):
         if cfg.get("self_check") and index == 0 and not state["checked"]:
             state["checked"] = True
             _self_check(block, args, extra, cfg, f"block{index}")
+        to = args["transformer_options"]
+        probe = to.get("h3_memprobe") if isinstance(to, dict) else None
         x = streamed_block_forward(block, x, args["t_emb"], args["mod_segments"], args["rope_freqs"],
-                                   args["transformer_options"], q_chunk=cfg["q_chunk"], kv_chunk=cfg["kv_chunk"],
-                                   mlp_chunk=cfg["mlp_chunk"], kv_block=cfg["kv_block"])
+                                   to, q_chunk=cfg["q_chunk"], kv_chunk=cfg["kv_chunk"],
+                                   mlp_chunk=cfg["mlp_chunk"], kv_block=cfg["kv_block"], probe=probe, index=index)
         return {"img": x}
-    return fn
+    return _named(fn, f"block{index:02d}")
+
+
+def _named(fn, name):
+    """Return `fn` under a new code-object name so it shows as `name` in Python
+    stacks (allocator traces label bands by frame name; there is no other
+    per-call label channel)."""
+    import types
+    code = fn.__code__.replace(co_name=name)
+    g = types.FunctionType(code, fn.__globals__, name, fn.__defaults__, fn.__closure__)
+    g.__qualname__ = name
+    return g
 
 
 # --------------------------------------------------------------------------- node
@@ -359,5 +404,232 @@ class H3StreamedBlocks:
         return (m,)
 
 
-NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks}
-NODE_DISPLAY_NAME_MAPPINGS = {"H3StreamedBlocks": "H3 Streamed Blocks (exact low-VRAM, alpha)"}
+
+# --------------------------------------------------------------------------- memory probe
+
+def _rss():
+    """(RssAnon, RssFile) of this process in bytes from /proc/self/status; ~µs.
+    RssAnon is the host RAM the process really holds (mirrors, retained
+    allocator arenas, pinned buffers); RssFile is mmap'd model files."""
+    anon = file = 0
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("RssAnon:"):
+                    anon = int(line.split()[1]) * 1024
+                elif line.startswith("RssFile:"):
+                    file = int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return anon, file
+
+
+class _MemLedger:
+    """Zero-sync memory ledger: reads the caching allocator's host-side counters
+    (allocated, peak since last mark, reserved) at phase boundaries. No device
+    sync: allocations happen at launch time, so the counters are exact on the
+    host timeline; the timestamps are launch times, not completion times."""
+
+    def __init__(self, path, dev):
+        self.path = path
+        self.dev = dev
+        self.fwd = -1
+        self.rows = []
+        self.t0 = time.perf_counter()
+
+    def begin_forward(self, shape):
+        self.fwd += 1
+        torch.cuda.reset_peak_memory_stats(self.dev)
+        self._base = torch.cuda.memory_allocated(self.dev)
+        self.rows.append({"fwd": self.fwd, "block": None, "phase": "start", "t": time.perf_counter() - self.t0,
+                          "alloc": self._base, "peak": self._base,
+                          "reserved": torch.cuda.memory_reserved(self.dev), "shape": list(shape),
+                          "rss_anon": _rss()[0], "rss_file": _rss()[1]})
+
+    def mark(self, block, phase):
+        st = torch.cuda.memory_stats(self.dev)
+        self.rows.append({"fwd": self.fwd, "block": block, "phase": phase, "t": time.perf_counter() - self.t0,
+                          "alloc": st.get("allocated_bytes.all.current", 0),
+                          "peak": st.get("allocated_bytes.all.peak", 0),
+                          "reserved": st.get("reserved_bytes.all.current", 0),
+                          "rss_anon": _rss()[0], "rss_file": _rss()[1]})
+        torch.cuda.reset_peak_memory_stats(self.dev)
+
+    def end_forward(self):
+        st = torch.cuda.memory_stats(self.dev)
+        self.rows.append({"fwd": self.fwd, "block": None, "phase": "end", "t": time.perf_counter() - self.t0,
+                          "alloc": st.get("allocated_bytes.all.current", 0),
+                          "peak": st.get("allocated_bytes.all.peak", 0),
+                          "reserved": st.get("reserved_bytes.all.current", 0),
+                          "rss_anon": _rss()[0], "rss_file": _rss()[1]})
+        self.flush()
+
+    def flush(self):
+        import json
+        with open(self.path, "w") as f:
+            for r in self.rows:
+                f.write(json.dumps(r) + "\n")
+        try:
+            with open(os.path.splitext(self.path)[0] + ".html", "w") as f:
+                f.write(_ledger_html(self.rows))
+        except Exception as e:  # noqa: BLE001
+            log.debug("ledger html failed: %s", e)
+
+    def summary(self):
+        rows = [r for r in self.rows if r["fwd"] == self.fwd]
+        if not rows:
+            return ""
+        peak = max(r["peak"] for r in rows)
+        top = max(rows, key=lambda r: r["peak"])
+        return (f"fwd {self.fwd}: base {rows[0]['alloc'] / 2**30:.1f} GiB, peak {peak / 2**30:.1f} GiB "
+                f"(at block {top['block']} {top['phase']}), reserved {rows[-1]['reserved'] / 2**30:.1f} GiB, "
+                f"{rows[-1]['t'] - rows[0]['t']:.1f} s; RSS anon {rows[0]['rss_anon'] / 2**30:.1f} -> {rows[-1]['rss_anon'] / 2**30:.1f} GiB "
+                f"(max {max(r['rss_anon'] for r in rows) / 2**30:.1f})")
+
+
+
+_PHASE_COLOR = {"start": "#888", "kv": "#4c78a8", "attn": "#f58518", "mlp": "#54a24b", "end": "#888"}
+
+
+def _ledger_html(rows):
+    """Self-contained SVG timeline of the ledger (no external assets): allocated,
+    per-phase peak, reserved and process RSS in GiB against wall time, one
+    forward per band; hover a mark for its numbers. Deep dive = trace.html."""
+    if not rows:
+        return "<p>empty ledger</p>"
+    G = 2.0 ** 30
+    W, H, L, T, B = 1400, 520, 70, 30, 60
+    t0 = rows[0]["t"]
+    tmax = max(r["t"] for r in rows) - t0 or 1.0
+    ymax = max(max(r["peak"], r["reserved"], r.get("rss_anon", 0)) for r in rows) / G * 1.05 or 1.0
+    xs = lambda t: L + (t - t0) / tmax * (W - L - 20)
+    ys = lambda v: T + (H - T - B) * (1 - v / ymax)
+
+    def path(key):
+        return " ".join(f"{'M' if i == 0 else 'L'}{xs(r['t']):.1f},{ys(r[key] / G):.1f}" for i, r in enumerate(rows))
+
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" style="max-width:100%;font:12px sans-serif;background:#fff">']
+    for g in range(0, int(ymax) + 1, max(1, int(ymax // 10) or 1)):
+        out.append(f'<line x1="{L}" x2="{W-20}" y1="{ys(g):.1f}" y2="{ys(g):.1f}" stroke="#eee"/>'
+                   f'<text x="{L-6}" y="{ys(g)+4:.1f}" text-anchor="end" fill="#666">{g} GiB</text>')
+    # forward bands
+    fwds = sorted({r["fwd"] for r in rows})
+    for fw in fwds:
+        rr = [r for r in rows if r["fwd"] == fw]
+        x0, x1 = xs(rr[0]["t"]), xs(rr[-1]["t"])
+        out.append(f'<rect x="{x0:.1f}" y="{T}" width="{max(1.0, x1-x0):.1f}" height="{H-T-B}" fill="{"#f7f7f7" if fw % 2 else "#fff"}"/>'
+                   f'<text x="{x0+3:.1f}" y="{T+12}" fill="#999">fwd {fw}</text>')
+    out.append(f'<path d="{path("reserved")}" fill="none" stroke="#bbb" stroke-width="1.5"/>')
+    out.append(f'<path d="{path("peak")}" fill="none" stroke="#e45756" stroke-width="1" stroke-dasharray="3,2"/>')
+    out.append(f'<path d="{path("alloc")}" fill="none" stroke="#222" stroke-width="1.5"/>')
+    if any(r.get("rss_anon") for r in rows):
+        out.append(f'<path d="{path("rss_anon")}" fill="none" stroke="#9467bd" stroke-width="1.5"/>')
+    for r in rows:
+        c = _PHASE_COLOR.get(r["phase"], "#333")
+        tip = (f"fwd {r['fwd']}  block {r['block']}  {r['phase']}\\nt = {r['t']-t0:.1f} s\\nallocated {r['alloc']/G:.2f} GiB\\n"
+               f"peak since last mark {r['peak']/G:.2f} GiB\\nreserved {r['reserved']/G:.2f} GiB\\nRSS anon {r.get('rss_anon',0)/G:.2f} GiB, file {r.get('rss_file',0)/G:.2f} GiB")
+        out.append(f'<circle cx="{xs(r["t"]):.1f}" cy="{ys(r["peak"]/G):.1f}" r="3" fill="{c}"><title>{tip}</title></circle>')
+    lg = [("#222", "allocated"), ("#e45756", "peak since last mark"), ("#bbb", "reserved"), ("#9467bd", "process RSS (anon)"),
+          ("#4c78a8", "mark: kv"), ("#f58518", "mark: attn"), ("#54a24b", "mark: mlp")]
+    for i, (col, name) in enumerate(lg):
+        x = L + i * 190
+        out.append(f'<rect x="{x}" y="{H-28}" width="14" height="10" fill="{col}"/><text x="{x+18}" y="{H-19}" fill="#333">{name}</text>')
+    out.append(f'<text x="{W/2:.0f}" y="{H-2}" text-anchor="middle" fill="#666">wall time, {tmax:.0f} s span; hover a mark</text></svg>')
+    return ("<!doctype html><meta charset=utf-8><title>H3 memory ledger</title>"
+            "<style>body{margin:12px;font-family:sans-serif}</style><h3>H3MemoryProbe ledger</h3>" + "".join(out))
+
+class H3MemoryProbe:
+    """See what holds VRAM, per block and phase, and optionally record the
+    allocator trace for a hoverable timeline (torch memory_viz)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "tag": ("STRING", {"default": "probe", "tooltip": "Run label; files land in out_dir/<tag>_<time>/"}),
+                "ledger": ("BOOLEAN", {"default": True,
+                                       "tooltip": "Per-forward JSONL of allocator counters at every H3StreamedBlocks phase boundary (start, block i kv/attn/mlp, end). No device sync, negligible cost. Stock blocks contribute start/end only."}),
+                "record_history_forwards": ("INT", {"default": 0, "min": 0, "max": 64,
+                                                    "tooltip": "Record the caching allocator's alloc/free trace (with Python stacks) for this many model forwards, then dump snapshot.pickle and trace.html (standalone; hover a band for the stack that allocated it). 0 = off. ~20k events per H3 forward at 200k tokens; a few percent while recording."}),
+                "max_entries": ("INT", {"default": 300000, "min": 10000, "max": 5000000, "step": 10000,
+                                        "tooltip": "Ring size for the allocator trace."}),
+                "out_dir": ("STRING", {"default": "output/h3_memprobe",
+                                       "tooltip": "Relative to the ComfyUI working directory. Not /tmp."}),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL", "STRING")
+    RETURN_NAMES = ("model", "report")
+    FUNCTION = "patch"
+    CATEGORY = "MAINodes/VRAM Lab"
+    DESCRIPTION = ("Memory instrument for the H3 diffusion model: a per-block/per-phase ledger of PyTorch's "
+                   "allocator counters (with H3StreamedBlocks upstream), and an optional allocator trace "
+                   "rendered to a hoverable HTML timeline. Off = no cost; not installed at all.")
+
+    def patch(self, model, tag, ledger, record_history_forwards, max_entries, out_dir):
+        import folder_paths
+        import comfy.patcher_extension as pe
+        dev = comfy.model_management.get_torch_device()
+        base = out_dir if os.path.isabs(out_dir) else os.path.join(os.path.dirname(folder_paths.get_output_directory()), out_dir)
+        run_dir = os.path.join(base, f"{tag}_{time.strftime('%Y%m%d_%H%M%S')}")
+        os.makedirs(run_dir, exist_ok=True)
+        led = _MemLedger(os.path.join(run_dir, "ledger.jsonl"), dev) if ledger else None
+        state = {"fwd": 0, "recording": False, "done": False, "n": int(record_history_forwards)}
+
+        m = model.clone()
+        if led is not None:
+            to = m.model_options.setdefault("transformer_options", {})
+            to["h3_memprobe"] = led
+
+        def wrapper(executor, *args, **kwargs):
+            x = args[0] if args else None
+            shape = tuple(x.shape) if hasattr(x, "shape") else ()
+            if state["n"] > 0 and not state["done"] and not state["recording"]:
+                torch.cuda.memory._record_memory_history(enabled="all", context="all", stacks="python",
+                                                         max_entries=int(max_entries), device=dev,
+                                                         record_pinned_host_memory=True)
+                state["recording"] = True
+                log.info("H3MemoryProbe[%s]: allocator trace ON (fwd %d)", tag, state["fwd"])
+            if led is not None:
+                led.begin_forward(shape)
+            try:
+                return executor(*args, **kwargs)
+            finally:
+                if led is not None:
+                    led.end_forward()
+                    log.info("H3MemoryProbe[%s]: %s", tag, led.summary())
+                state["fwd"] += 1
+                if state["recording"] and state["fwd"] >= state["n"]:
+                    _dump_trace(run_dir, dev, tag)
+                    torch.cuda.memory._record_memory_history(enabled=None, device=dev)
+                    state["recording"] = False
+                    state["done"] = True
+
+        m.add_wrapper_with_key(pe.WrappersMP.DIFFUSION_MODEL, "h3_memprobe", wrapper)
+        rep = f"H3MemoryProbe: {run_dir} (ledger {'on' if ledger else 'off'}, trace forwards {record_history_forwards})"
+        log.info(rep)
+        return (m, rep)
+
+
+def _dump_trace(run_dir, dev, tag):
+    try:
+        snap = torch.cuda.memory._snapshot(device=dev)
+        import pickle
+        with open(os.path.join(run_dir, "snapshot.pickle"), "wb") as f:
+            pickle.dump(snap, f)
+        try:
+            from torch.cuda._memory_viz import trace_plot
+            html = trace_plot(snap, device=None)
+            with open(os.path.join(run_dir, "trace.html"), "w") as f:
+                f.write(html)
+        except Exception as e:  # noqa: BLE001
+            log.warning("H3MemoryProbe[%s]: trace_plot failed (%s); snapshot.pickle kept for pytorch.org/memory_viz", tag, e)
+        log.info("H3MemoryProbe[%s]: allocator trace written to %s", tag, run_dir)
+    except Exception as e:  # noqa: BLE001
+        log.warning("H3MemoryProbe[%s]: snapshot failed: %s", tag, e)
+
+
+NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3MemoryProbe": H3MemoryProbe}
+NODE_DISPLAY_NAME_MAPPINGS = {"H3StreamedBlocks": "H3 Streamed Blocks (exact low-VRAM, alpha)",
+                              "H3MemoryProbe": "H3 Memory Probe (ledger + allocator trace, alpha)"}
