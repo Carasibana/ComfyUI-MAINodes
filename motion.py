@@ -1873,6 +1873,13 @@ class H3V2VInit:
             print("[H3V2VInit] audio_strength/audio_mode asks pass 2 to follow an audio "
                   "init, but audio_latent is not wired: the rows are still ZEROS, so it "
                   "has nothing to follow. Wire H3 Audio Smear -> VAEEncodeAudio.")
+        if audio_latent is not None and audio_strength == 1.0:
+            # the likelier half of the mistake: the wiring is done and the last
+            # step is not, so the seed is written and then fully renoised away
+            print("[H3V2VInit] audio_latent is wired but audio_strength is 1.0, which "
+                  "re-renders the audio rows completely: the seeded performance is "
+                  "discarded and this behaves exactly as if nothing were wired. Set "
+                  "audio_mode to 'follow the original performance (0.5)'.")
 
         video = _video_component(samples)
         if not length:
