@@ -621,28 +621,19 @@ example is in [`example_api_workflow.py`](example_api_workflow.py).
 Previously published as ComfyUI-H3-ContactSheet; that repo remains up for
 existing installs.
 
-## Concept Lab (alpha, and mostly not built)
+## Alpha work
 
-A research subsystem living in `concept_lab/`, on the bet that a reusable
-concept does not have to live in trained weights and can instead live in a
-measured functional delta: measure what a piece of conditioning actually
-does to the model, factor that into reusable components, compile the
-components back through the model's own conditioning channels.
+This pack ships finished work and unfinished work in the same install.
+The Motion Lab pipeline and the contact sheet above are the finished part.
+Alongside them are a research subsystem (Concept Lab), a timeline surface,
+the audio init for dialogue, the motion adapter pilot, and the manual mask
+paths, all at varying degrees of unfinished.
 
-**Read this before you get excited.** What exists is the data layer and an
-H3 capture tap that rides along on a render. What does not exist is
-anything that turns a capture into a factor, or a factor into
-conditioning, which is to say the interesting half. Several of the parts
-that do run have only ever run on one machine. Nothing here is a stable
-interface, and the three nodes it registers are named `(alpha)` for a
-reason. If you want something to use, use the Motion Lab above. If you
-want something to poke at, `concept_lab/README.md` has the full status
-table, the layering rules, and a Contributing section that names the four
-things most worth receiving.
-
-It loads through a guarded loader, so a broken alpha module cannot take
-the rest of the pack down, and nothing it does changes any existing
-behaviour or default.
+**[ALPHA.md](ALPHA.md) says which is which**, what each one can and cannot
+do today, and where each has and has not been tested. Alpha nodes carry
+`(alpha)` in the ComfyUI menu, they load behind a guarded loader so a
+broken one cannot take the pack down, and none of them changes existing
+behaviour or defaults.
 
 ## Install
 
