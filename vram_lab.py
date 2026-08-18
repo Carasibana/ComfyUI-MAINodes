@@ -354,6 +354,50 @@ def _named(fn, name):
     return g
 
 
+
+# --------------------------------------------------------------------------- final layer
+
+def streamed_final_layer_forward(fl, x, t_emb, video_seg, audio_seg, chunk=16384, probe=None, exact_gemm=True):
+    """Row-chunked FinalLayer.forward. Stock (comfy/ldm/minimax/model.py:295)
+    builds `norm(x[span]) * (1 + scale) + shift` for the whole target span and
+    the fp32 modulation promotes it to fp32 twice: 2 x 4.28 GiB at 216k tokens,
+    measured the forward's peak (ModelCatalog docs/measurements/M0e). Every op
+    is per row (RMSNorm, per-element mod, per-row fp32 linear), so the same
+    math per chunk yields the same [rows, out] result with ~chunk-sized
+    transients. Whether the fp32 cuBLAS GEMM stays bit-equal under a different
+    M is a kernel property: gated, not assumed."""
+    shift, scale = fl.adaln_proj(t_emb)
+
+    def head(a, b, row, out_mod):
+        n = b - a
+        if exact_gemm:
+            # exact tier: chunk only the norm/mod/fp32 promotion into ONE fp32 buffer,
+            # then run the head GEMM at the stock M (same cuBLAS kernel -> bit-equal).
+            # Transient: one [n, hidden] fp32 (4.28 GiB at 213k rows) instead of ~10.7.
+            hbuf = torch.empty((n, x.shape[1]), dtype=torch.float32, device=x.device)
+            for c0, c1 in _ranges(n, chunk):
+                hbuf[c0:c1] = fl.norm(x[a + c0:a + c1]) * (1.0 + scale[row]) + shift[row]
+            out = out_mod(hbuf)
+            del hbuf
+            return out
+        # numerically-equivalent tier: chunk the GEMM too (fp32 cuBLAS picks kernels by M;
+        # measured max |d| ~5e-6 vs stock on random weights). Transient ~chunk-sized.
+        parts = []
+        for c0, c1 in _ranges(n, chunk):
+            h = (fl.norm(x[a + c0:a + c1]) * (1.0 + scale[row]) + shift[row]).to(torch.float32)
+            parts.append(out_mod(h))
+            del h
+        return parts[0] if len(parts) == 1 else torch.cat(parts, dim=0)
+
+    va, vb, vrow = video_seg
+    aa, ab, arow = audio_seg
+    v = head(va, vb, vrow, fl.video_out)
+    a = head(aa, ab, arow, fl.audio_out)
+    if probe is not None:
+        probe.mark(None, "final")
+    return v, a
+
+
 # --------------------------------------------------------------------------- node
 
 class H3StreamedBlocks:
@@ -376,6 +420,11 @@ class H3StreamedBlocks:
                                      "tooltip": "Turtle mode: attend K/V in blocks of this many tokens with an exact log-sum-exp combine. 0 = off. Slow by design; for cards that cannot hold full K/V."}),
             },
             "optional": {
+                "final_layer_chunk": ("INT", {"default": 16384, "min": 0, "max": 262144, "step": 1024,
+                                              "tooltip": "Rows per chunk through the output head's norm -> mod -> fp32 promotion. Stock promotes the whole span to fp32 twice (~10 GiB at 216k tokens, the forward's peak). 0 = stock."}),
+                "final_layer_gemm": (["exact (whole GEMM, one fp32 buffer)", "streamed (chunked GEMM, ~1e-6 fp32 diffs)"],
+                                     {"default": "exact (whole GEMM, one fp32 buffer)",
+                                      "tooltip": "exact: same head GEMM as stock, transient = one fp32 [rows, hidden] (bit-equal). streamed: GEMM per chunk, transient ~chunk-sized, but fp32 cuBLAS is not chunk-invariant (numerically-equivalent tier)."}),
                 "self_check": ("BOOLEAN", {"default": False,
                                            "tooltip": "Diagnostic: on block 0's first call, run stock and streamed on the same input and log per-phase divergence. Costs one extra block forward."}),
             }
@@ -388,7 +437,8 @@ class H3StreamedBlocks:
                    "fused QKV or SwiGLU tensors. Same math as the stock block; costs ~4% extra "
                    "projection work at long lengths. See vram_lab.py for the ledger.")
 
-    def patch(self, model, q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block, self_check=False):
+    def patch(self, model, q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block, self_check=False, final_layer_chunk=16384,
+              final_layer_gemm="exact (whole GEMM, one fp32 buffer)"):
         dm = getattr(getattr(model, "model", None), "diffusion_model", None)
         blocks = getattr(dm, "blocks", None)
         if not blocks or not hasattr(blocks[0], "attn") or not hasattr(blocks[0].attn, "qkv_proj"):
@@ -399,8 +449,18 @@ class H3StreamedBlocks:
         m = model.clone()
         for i, block in enumerate(blocks):
             m.set_model_patch_replace(_make_replacement(block, cfg, i), "dit", "double_block", i)
-        log.info("H3StreamedBlocks: %d blocks patched (q %d, kv %d, mlp %d, min %d, kv_block %d)",
-                 len(blocks), q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block)
+        fl = getattr(dm, "final_layer", None)
+        if final_layer_chunk and fl is not None and hasattr(fl, "video_out") and hasattr(fl, "audio_out"):
+            _exact = str(final_layer_gemm).startswith("exact")
+
+            def _fl_forward(x, t_emb, video_seg, audio_seg, _fl=fl, _c=int(final_layer_chunk), _e=_exact):
+                if x.shape[0] < cfg["min_tokens"]:
+                    return type(_fl).forward(_fl, x, t_emb, video_seg, audio_seg)
+                return streamed_final_layer_forward(_fl, x, t_emb, video_seg, audio_seg, chunk=_c,
+                                                    probe=getattr(dm, "_h3_memprobe", None), exact_gemm=_e)
+            m.add_object_patch("diffusion_model.final_layer.forward", _fl_forward)
+        log.info("H3StreamedBlocks: %d blocks patched (q %d, kv %d, mlp %d, min %d, kv_block %d, final_layer_chunk %d, %s)",
+                 len(blocks), q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block, final_layer_chunk, final_layer_gemm)
         return (m,)
 
 
@@ -579,11 +639,14 @@ class H3MemoryProbe:
         state = {"fwd": 0, "recording": False, "done": False, "n": int(record_history_forwards)}
 
         m = model.clone()
+        dm = getattr(getattr(m, "model", None), "diffusion_model", None)
         if led is not None:
             to = m.model_options.setdefault("transformer_options", {})
             to["h3_memprobe"] = led
 
         def wrapper(executor, *args, **kwargs):
+            if led is not None and dm is not None:
+                dm._h3_memprobe = led   # for patched pieces that do not receive transformer_options (final layer)
             x = args[0] if args else None
             shape = tuple(x.shape) if hasattr(x, "shape") else ()
             if state["n"] > 0 and not state["done"] and not state["recording"]:
@@ -604,6 +667,8 @@ class H3MemoryProbe:
             try:
                 return executor(*args, **kwargs)
             finally:
+                if dm is not None and hasattr(dm, "_h3_memprobe"):
+                    del dm._h3_memprobe
                 if led is not None:
                     led.end_forward()
                     log.info("H3MemoryProbe[%s]: %s", tag, led.summary())
