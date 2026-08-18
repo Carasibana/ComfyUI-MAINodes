@@ -704,6 +704,39 @@ def _dump_trace(run_dir, dev, tag):
         log.warning("H3MemoryProbe[%s]: snapshot failed: %s", tag, e)
 
 
-NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3MemoryProbe": H3MemoryProbe}
+
+
+class H3FreeCache:
+    """Passthrough that returns the allocator's cached-but-free VRAM to the
+    driver before the next stage. Measured motivation (ModelCatalog M0e): the
+    VAE decode after a long H3 pass grew the pool 69.6 -> 77.9 GiB while live
+    tensors were LOWER than during sampling; decode-shaped blocks could not
+    reuse sampling's freed ones. Costs a few ms; changes no math."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"samples": ("LATENT",)},
+                "optional": {"also_gc": ("BOOLEAN", {"default": True, "tooltip": "gc.collect() first so dead Python refs release their tensors too."})}}
+
+    RETURN_TYPES = ("LATENT", "STRING")
+    RETURN_NAMES = ("samples", "report")
+    FUNCTION = "free"
+    CATEGORY = "MAINodes/VRAM Lab"
+    DESCRIPTION = "Empty the CUDA caching allocator (torch.cuda.empty_cache) between stages; passthrough for a LATENT so it can sit right before VAE Decode."
+
+    def free(self, samples, also_gc=True):
+        import gc
+        dev = comfy.model_management.get_torch_device()
+        before = torch.cuda.memory_reserved(dev)
+        if also_gc:
+            gc.collect()
+        comfy.model_management.soft_empty_cache(force=True)
+        after = torch.cuda.memory_reserved(dev)
+        rep = f"H3FreeCache: reserved {before / 2**30:.2f} -> {after / 2**30:.2f} GiB (live {torch.cuda.memory_allocated(dev) / 2**30:.2f})"
+        log.info(rep)
+        return (samples, rep)
+
+NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3MemoryProbe": H3MemoryProbe, "H3FreeCache": H3FreeCache}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3StreamedBlocks": "H3 Streamed Blocks (exact low-VRAM, alpha)",
-                              "H3MemoryProbe": "H3 Memory Probe (ledger + allocator trace, alpha)"}
+                              "H3MemoryProbe": "H3 Memory Probe (ledger + allocator trace, alpha)",
+                              "H3FreeCache": "H3 Free Cache (empty allocator between stages)"}
