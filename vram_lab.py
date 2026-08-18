@@ -60,6 +60,50 @@ def _ranges(n, size):
     return [(a, min(a + size, n)) for a in range(0, n, size)]
 
 
+_SM_CACHE = {}
+
+
+def _sm_count(device):
+    key = str(device)
+    if key not in _SM_CACHE:
+        try:
+            _SM_CACHE[key] = torch.cuda.get_device_properties(device).multi_processor_count
+        except Exception:
+            _SM_CACHE[key] = 128
+    return _SM_CACHE[key]
+
+
+def _min_query_chunk(device, heads_per_call, q_block=128, margin=2):
+    """Smallest query chunk that keeps the flash kernel on its non-split path.
+
+    Measured 2026-08-18 on an RTX PRO 6000 (188 SMs, 56 heads): a 259-query
+    tail (168 query blocks < 188 SMs) made SDPA take its split-KV path and the
+    result stopped being bit-equal to the full-length call (43% of elements
+    off by ~2e-4, which diffusion amplified into a visibly different clip);
+    512 queries (224 blocks) was bit-equal. Query chunking is exact only while
+    every chunk has at least ~SMs query blocks, so we require margin x SMs.
+    """
+    return q_block * math.ceil(margin * _sm_count(device) / max(1, heads_per_call))
+
+
+def _balanced_ranges(n, size, min_size):
+    """Split [0, n) into chunks of at most `size` tokens, all of length >= min_size
+    (the tail is folded into its neighbour rather than left short). One chunk if
+    n < 2 * min_size."""
+    if size <= 0 or size >= n or n < 2 * min_size:
+        return [(0, n)]
+    parts = max(1, math.ceil(n / size))
+    while parts > 1 and n / parts < min_size:
+        parts -= 1
+    base, extra = divmod(n, parts)
+    out, a = [], 0
+    for i in range(parts):
+        b = a + base + (1 if i < extra else 0)
+        out.append((a, b))
+        a = b
+    return out
+
+
 def _mod_scale_shift_range(h, shift, scale, segments, c0, c1):
     """h is norm(x[c0:c1]); apply the per-segment affine restricted to [c0, c1)."""
     for a, b, row in segments:
@@ -169,7 +213,9 @@ def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transforme
         del h, qkv, q, k, v, rope_c
 
     # ---- phase 2: Q per chunk, attention against full K/V, out_proj, gated residual in place
-    for a, b in _ranges(S, q_chunk):
+    heads_per_call = max(1, heads // max(1, min(int(head_chunks or 1), heads)))
+    q_ranges = _balanced_ranges(S, q_chunk, _min_query_chunk(x.device, heads_per_call))
+    for a, b in q_ranges:
         s = b - a
         h = _mod_scale_shift_range(block.norm1(x[a:b]), shift_msa, scale_msa, mod_segments, a, b)
         qkv = attn.qkv_proj(h)
@@ -198,11 +244,44 @@ def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transforme
     return x
 
 
-def _make_replacement(block, cfg):
+def _self_check(block, args, extra, cfg, tag):
+    """Run stock and streamed on the same input and log per-phase divergence. Diagnostic only."""
+    x = args["img"]
+    S = x.shape[0]
+    ref = extra["original_block"](dict(args, img=x.clone()))["img"]
+    scale = ref.float().abs().max().item()
+    ulp = 2.0 ** (math.floor(math.log2(max(scale, 1e-30))) - 7)
+    variants = {"full": cfg,
+                "q_only": dict(cfg, kv_chunk=S, mlp_chunk=S),
+                "kv_only": dict(cfg, q_chunk=S, mlp_chunk=S),
+                "mlp_only": dict(cfg, q_chunk=S, kv_chunk=S),
+                "none": dict(cfg, q_chunk=S, kv_chunk=S, mlp_chunk=S)}
+    parts = []
+    for name, c in variants.items():
+        out = streamed_block_forward(block, x.clone(), args["t_emb"], args["mod_segments"], args["rope_freqs"],
+                                     args["transformer_options"], q_chunk=c["q_chunk"], kv_chunk=c["kv_chunk"],
+                                     mlp_chunk=c["mlp_chunk"], kv_block=c["kv_block"])
+        d = (out.float() - ref.float()).abs()
+        parts.append(f"{name}: max {d.max().item():.3e} ({d.max().item() / ulp:.2f} ulp) mean {d.mean().item():.2e}")
+        del out, d
+    to = args["transformer_options"]
+    keys = sorted(k for k in to.keys()) if isinstance(to, dict) else type(to).__name__
+    log.warning("H3StreamedBlocks self_check[%s] S=%d segs=%d rope=%s x=%s/%s to_keys=%s | %s",
+                tag, S, len(args["mod_segments"]), tuple(args["rope_freqs"].shape) if args["rope_freqs"] is not None else None,
+                x.dtype, x.is_contiguous(), keys, " | ".join(parts))
+    del ref
+
+
+def _make_replacement(block, cfg, index=0):
+    state = {"checked": False}
+
     def fn(args, extra):
         x = args["img"]
         if x.shape[0] < cfg["min_tokens"]:
             return extra["original_block"](args)
+        if cfg.get("self_check") and index == 0 and not state["checked"]:
+            state["checked"] = True
+            _self_check(block, args, extra, cfg, f"block{index}")
         x = streamed_block_forward(block, x, args["t_emb"], args["mod_segments"], args["rope_freqs"],
                                    args["transformer_options"], q_chunk=cfg["q_chunk"], kv_chunk=cfg["kv_chunk"],
                                    mlp_chunk=cfg["mlp_chunk"], kv_block=cfg["kv_block"])
@@ -230,6 +309,10 @@ class H3StreamedBlocks:
                                        "tooltip": "Below this packed sequence length the stock block runs (short clips gain nothing)."}),
                 "kv_block": ("INT", {"default": 0, "min": 0, "max": 262144, "step": 1024,
                                      "tooltip": "Turtle mode: attend K/V in blocks of this many tokens with an exact log-sum-exp combine. 0 = off. Slow by design; for cards that cannot hold full K/V."}),
+            },
+            "optional": {
+                "self_check": ("BOOLEAN", {"default": False,
+                                           "tooltip": "Diagnostic: on block 0's first call, run stock and streamed on the same input and log per-phase divergence. Costs one extra block forward."}),
             }
         }
 
@@ -240,17 +323,17 @@ class H3StreamedBlocks:
                    "fused QKV or SwiGLU tensors. Same math as the stock block; costs ~4% extra "
                    "projection work at long lengths. See vram_lab.py for the ledger.")
 
-    def patch(self, model, q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block):
+    def patch(self, model, q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block, self_check=False):
         dm = getattr(getattr(model, "model", None), "diffusion_model", None)
         blocks = getattr(dm, "blocks", None)
         if not blocks or not hasattr(blocks[0], "attn") or not hasattr(blocks[0].attn, "qkv_proj"):
             log.warning("H3StreamedBlocks: model does not look like MiniMax H3 (no blocks[*].attn.qkv_proj); unchanged")
             return (model,)
         cfg = {"q_chunk": q_chunk, "kv_chunk": kv_chunk, "mlp_chunk": mlp_chunk,
-               "min_tokens": min_tokens, "kv_block": kv_block}
+               "min_tokens": min_tokens, "kv_block": kv_block, "self_check": bool(self_check)}
         m = model.clone()
         for i, block in enumerate(blocks):
-            m.set_model_patch_replace(_make_replacement(block, cfg), "dit", "double_block", i)
+            m.set_model_patch_replace(_make_replacement(block, cfg, i), "dit", "double_block", i)
         log.info("H3StreamedBlocks: %d blocks patched (q %d, kv %d, mlp %d, min %d, kv_block %d)",
                  len(blocks), q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block)
         return (m,)
