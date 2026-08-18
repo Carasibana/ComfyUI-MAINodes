@@ -70,8 +70,12 @@ was 27.4 GB on the 16 GB card and 25.8 GB on the 24 GB card for a single
 decodes, the smear IMAGE, the heat map: a 702-frame fp32 IMAGE is 8.9 GB), and
 59 GB without `--fast-disk`. Add your own headroom: an idle Ubuntu desktop is
 ~2 GB, an idle Windows 11 desktop 4 to 8 GB, ComfyUI itself 3 to 5 GB before
-any model. So: 16 GB card + 32 GB RAM works on a lean Linux box and is
-already paging on Windows; 48 to 64 GB is comfortable. Under our 64 GB fence
+any model. So, measured: a single 702-frame pass and the 124-frame example
+graph fit a 16 GB card + 32 GB RAM (lean Linux; already paging on Windows);
+**the full 702-frame de-rope pipeline does not fit 32 GB** (it was OOM-killed at
+the smear under a 32 GB fence, 2026-08-18 19:00) and needs ~48 GB today, 64 GB
+to be comfortable. Holding intermediates as fp16/uint8 by consumer type is
+the next change and should bring the full pipeline back under 32 GB. Under our 64 GB fence
 the kernel reclaimed page cache before killing anything; a Windows box would
 pagefile instead, which is slower but alive.
 
