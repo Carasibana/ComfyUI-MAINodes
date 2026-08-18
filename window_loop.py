@@ -332,7 +332,7 @@ def _splice_audio(base, seg, a, b, fps, xf_in, xf_out, rms_search=0):
     y = base["waveform"].detach().float().cpu().clone()
     s = seg["waveform"].detach().float().cpu()
     if seg["sample_rate"] != sr:
-        torchaudio = _torchaudio()
+        torchaudio = _torchaudio("resample")
         shp = s.shape
         s = torchaudio.functional.resample(
             s.reshape(-1, shp[-1]), seg["sample_rate"], sr).reshape(
