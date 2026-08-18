@@ -736,7 +736,41 @@ class H3FreeCache:
         log.info(rep)
         return (samples, rep)
 
-NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3MemoryProbe": H3MemoryProbe, "H3FreeCache": H3FreeCache}
+
+
+class H3EvictTextEncoder:
+    """Passthrough for CONDITIONING that unloads the text encoder (the CLIP
+    patcher and its clones) the moment encoding is done - the same call
+    ckinpdx's MMH3Tools makes inside its nodes. Under --gpu-only it is a no-op
+    (offload device is the GPU); in normal mode it frees the TE's VRAM before
+    the DiT loads instead of letting the planner evict it on demand. Exists to
+    MEASURE whether explicit eviction matters on a small card (2026-08-18)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"conditioning": ("CONDITIONING",), "clip": ("CLIP",)}}
+
+    RETURN_TYPES = ("CONDITIONING", "STRING")
+    RETURN_NAMES = ("conditioning", "report")
+    FUNCTION = "evict"
+    CATEGORY = "MAINodes/VRAM Lab"
+    DESCRIPTION = "Unload the text encoder right after encoding (passthrough for the conditioning)."
+
+    def evict(self, conditioning, clip):
+        dev = comfy.model_management.get_torch_device()
+        before = comfy.model_management.get_free_memory(dev)
+        try:
+            comfy.model_management.unload_model_and_clones(clip.patcher)
+        except Exception as e:  # noqa: BLE001
+            log.warning("H3EvictTextEncoder: unload failed: %s", e)
+        comfy.model_management.soft_empty_cache()
+        after = comfy.model_management.get_free_memory(dev)
+        rep = f"H3EvictTextEncoder: device free {before / 2**30:.1f} -> {after / 2**30:.1f} GiB"
+        log.info(rep)
+        return (conditioning, rep)
+
+NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3MemoryProbe": H3MemoryProbe, "H3FreeCache": H3FreeCache, "H3EvictTextEncoder": H3EvictTextEncoder}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3StreamedBlocks": "H3 Streamed Blocks (exact low-VRAM, alpha)",
                               "H3MemoryProbe": "H3 Memory Probe (ledger + allocator trace, alpha)",
-                              "H3FreeCache": "H3 Free Cache (empty allocator between stages)"}
+                              "H3FreeCache": "H3 Free Cache (empty allocator between stages)",
+                              "H3EvictTextEncoder": "H3 Evict Text Encoder (unload after encode)"}
