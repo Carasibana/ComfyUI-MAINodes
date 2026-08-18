@@ -82,6 +82,17 @@ def _min_query_chunk(device, heads_per_call, q_block=128, margin=2):
     off by ~2e-4, which diffusion amplified into a visibly different clip);
     512 queries (224 blocks) was bit-equal. Query chunking is exact only while
     every chunk has at least ~SMs query blocks, so we require margin x SMs.
+
+    Measured boundary (ModelCatalog docs/measurements/M3c_sdpa_short_q_2026-08-18.md,
+    same card, 215k K/V): flash leaves its split-KV path exactly when
+    heads_per_call x ceil(L/64) >= 0.8 x 2 x SMs (PyTorch flash_api.cpp
+    set_params_splitkv / num_splits_heuristic): L >= 321 / 641 / 1345 for
+    56 / 28 / 14 heads. This function returns 896 / 1792 / 3456 there, a
+    2.6-2.8x margin over the measured line, so it is not the constraint on
+    chunk size in practice. The heuristic constants are PyTorch's and can
+    move; self_check stays the authority. cuDNN and mem-efficient SDPA are
+    chunk-invariant at every length (and 1.1-2x slower); no two backends are
+    bit-equal to each other, and stock renders run flash, so we stay on flash.
     """
     return q_block * math.ceil(margin * _sm_count(device) / max(1, heads_per_call))
 
