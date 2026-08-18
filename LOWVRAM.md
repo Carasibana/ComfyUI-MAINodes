@@ -1,8 +1,10 @@
 # Low VRAM, low RAM: the de-rope on a 16 GB card
 
 Status 2026-08-18: alpha. Everything below was measured on one machine, fenced
-down to look like small ones. Nothing has been run on a real 16 GB card yet;
-that is the next thing, and it is a dogfood ask, not a research question.
+down to look like small ones (real renders on the real GPU with the VRAM held
+by a balloon and the RAM capped by a cgroup). Nothing has been run on a
+physically different 16 GB card yet; that is the next thing, and it is a
+dogfood ask, not a research question.
 
 ## The short version
 
@@ -116,8 +118,15 @@ the square of the sequence: 316 s at 702 frames, 515 at 906, ~650 at 1110)
 is the practical limit before memory is. Other canvases: convert to tokens
 with `latent_frames x (W/32) x (H/32)`, where `latent_frames = (frames-5)/17*5+2`.
 
-The example graph has not yet been rendered end to end on the fenced card;
-its pieces have (same nodes, same passes). That gate is next.
+**The example graph itself, end to end on the fenced 16 GB card in a 32 GB
+machine** (2026-08-18 18:25): rendered in 6:14 wall. Pass 1 (Ref2VA, 12 base
+steps, 124 frames) 147 s, oracle + smear + audio smear + VAE encode 30 s,
+pass 2 (6 turbo steps) 150 s, decode 21 s, recover and three saves. Process
+VRAM peak 16.1 GiB (dynamic VRAM sized itself to the card), RSS peak 24.8 GB,
+cgroup peak 30.9 GB (RSS plus the reclaimable page cache of the weight files:
+that is how little air a 32 GB box has even at 124 frames). The text encoder
+held 13 GB of the card until `H3 Evict Text Encoder` freed it
+(`device free 1.3 -> 14.6 GiB`).
 
 ## Why no speed penalty
 
