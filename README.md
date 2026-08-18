@@ -24,8 +24,11 @@ Probe` (per-block, per-phase VRAM and RSS ledger with a hoverable timeline,
 plus an optional allocator trace), `H3 Free Cache` (return the allocator
 pool before VAE decode; 17 GiB back on the long pass), `H3 Evict Text
 Encoder`. All opt-in, nothing changes unless the node is in the graph. The
-memory numbers behind them are in the docstrings of `vram_lab.py`; small
-cards are described in [ALPHA.md](ALPHA.md#vram-lab).
+memory numbers behind them are in the docstrings of `vram_lab.py`; the
+small-card recipe, what to expect and the environment it was measured in are
+in [LOWVRAM.md](LOWVRAM.md), with the example graph
+`examples/motion_pipeline_lowvram.json`; the alpha status is in
+[ALPHA.md](ALPHA.md#vram-lab).
 
 **Dialogue survives a de-rope now** (2026-08-17). A de-rope used to break
 speech, and the way it broke was confusing: the body came back at the right
