@@ -507,6 +507,75 @@ playback.
 - Holds are integer, so recovering the original frame rate is exact frame
   selection.
 
+### Dialogue through a de-rope
+
+If your clip has speech in it, the de-rope will break it, and the way it
+breaks is not obvious from the output.
+
+Here is what happens. The de-rope stretches time, regenerates, then
+compresses back. The picture goes along with that: the smeared init tells
+pass 2 to move slowly, and it does. The audio has no init. It starts from
+zeros, so pass 2 writes a fresh performance at natural speaking rate and
+moves the mouth to match that. Recovery then compresses the whole clip by
+the hold factor. The body comes back at the right speed because it really
+was slowed. The mouth does not, because it never was. On a clip that
+dilated 2.4x, held regions come back sounding rushed while the tail sounds
+fine, which is a confusing symptom because half the clip is correct.
+
+The fix is to give the audio an init too. `H3 Audio Smear` stretches the
+baseline track onto the same dilated clock the video init lives on, using
+the same hold map. Encode that with `VAEEncodeAudio`, wire it into
+`H3 V2V Init`'s `audio_latent`, and set `audio_mode` to
+`follow the original performance (0.5)`. Pass 2 now renders a genuinely
+slowed take, so compressing it afterwards is a valid thing to do.
+
+Two graphs ship with this, both full-reference mode:
+[`motion_pipeline_ref2va_audioinit.json`](examples/motion_pipeline_ref2va_audioinit.json)
+has the seed wired and writes both audio routes as separate finals, and
+[`motion_pipeline_ref2va.json`](examples/motion_pipeline_ref2va.json) is the
+same graph without it, kept as the archived version. Diff the two if you
+would rather read the change than follow the steps below.
+
+**To adopt it in a graph you already have, add three things:**
+
+1. `H3 Audio Smear` -- `audio` from the VAEDecodeAudio of your FIRST pass
+   (the baseline performance, not pass 2's), `hold_map` from the same
+   `H3 Time Smear` output you already feed to `H3 Audio Recover`, `fps` 24.
+2. `VAEEncodeAudio` -- audio from the smear, vae is your audio VAE.
+3. On `H3 V2V Init`, wire `audio_latent` from that encode and set
+   `audio_mode` to `follow the original performance (0.5)`.
+
+Nothing else changes. Both new inputs are optional and default to the old
+behaviour, so a graph without them behaves exactly as it did before.
+
+**Which audio to ship.** `H3 Audio Recover` now takes plain-language
+options instead of a bare 0 to 1 dial, because the two ends mean different
+things depending on whether you seeded the rows:
+
+- `keep the original performance (safe default)` is the one to use. Your
+  first pass's audio is already on the world clock and has never been
+  through a vocoder, so it is the best-sounding track you have. The seed's
+  job is to make the picture agree with it.
+- `use pass 2's foley - ONLY IF the audio rows were seeded` gives you
+  foley scored for the new motion. Without a seed this is the rushed
+  defect described above. With one it is a real option, though it comes
+  back thinner: two phase-vocoder passes and a VAE round trip cost about a
+  third of the presence band between 3.4 and 8 kHz.
+
+**What it costs the picture: nothing measurable.** Same graph with and
+without the seed, everything else held, came out 91.8 against 91.3 on
+laplacian variance, which is inside the noise floor of the video encoder
+itself. It moves most pixels, because it is steering a joint audio-video
+latent and the two halves are denoised together, but it does not soften.
+
+**Where this has and has not been tested.** It has been run on a handful
+of clips, all sword-fight material with two speakers trading lines over
+fast motion, at hold factors around 4 and dilations from 2.4x to 2.7x.
+It has not been tried on a single speaker, on speech over music, on
+non-anime footage, or at other hold factors. Treat it as alpha, and
+listen to the tail of a clip as well as the start, because the tail is
+where an unheld region will sound normal whether or not anything is wrong.
+
 ### The motion adapter (pilot)
 
 A rank-16 LoRA trained on the de-rope task itself: frames inside a motion
