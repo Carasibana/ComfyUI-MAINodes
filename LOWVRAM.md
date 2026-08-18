@@ -2,7 +2,13 @@
 
 Status 2026-08-18: alpha. Everything below was measured on one machine, fenced
 down to look like small ones (real renders on the real GPU with the VRAM held
-by a balloon and the RAM capped by a cgroup). Nothing has been run on a
+by a balloon and the RAM capped by a cgroup). **Fence sizes are slightly
+generous:** the card is 95.6 GiB and the balloons held 79 / 71 / 63 GiB, so the
+"16 / 24 / 32 GB" cards below were really 16.6 / 24.6 / 32.6 GiB. A real 16 GB
+card has ~15.5 GiB usable, so read the 16 GB rows as "at the edge", not
+"comfortable": dynamic VRAM fills whatever the card has with resident weights,
+which is why process peaks read as the card size. A confirming run at a true
+15.0 GiB fence is the next measurement. Nothing has been run on a
 physically different 16 GB card yet; that is the next thing, and it is a
 dogfood ask, not a research question.
 
