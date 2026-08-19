@@ -17,6 +17,14 @@ run on a physically different 16 GB card, which is the next thing.
 3. Queue. The 124-frame reference clip takes about 7 minutes end to end on
    the fenced 15 GiB card (RSS 25 GB).
 
+If `H3 Streamed Blocks` is not in the node search (category `MAINodes/VRAM
+Lab`, display name "H3 Streamed Blocks (exact low-VRAM, alpha)"), look at
+the ComfyUI console for one line at startup: `[MAINodes] vram_lab not
+loaded: ...`. The module needs a recent ComfyUI (developed on 0.33.0; it
+imports `comfy.ldm.minimax.model` and comfy_kitchen's native rope op via
+`comfy.quant_ops.ck`) and PyTorch flash attention; the pack loads the rest
+of its nodes without it and prints why. Paste that line in an issue.
+
 **What the graph does to make a small card happy:**
 
 - the DiT at 4-bit weights / 8-bit activations (`minimax_h3_ref2va_pruned_w4a8_mixed`, 11 GB), the text encoder in NVFP4, the video VAE as int8_convrot (2.2 GiB less than fp16, decode 1.5x faster, 60 dB PSNR against it);
