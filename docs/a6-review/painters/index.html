@@ -39,12 +39,25 @@ tr:hover td{background:var(--bg2)}tr.sel td:first-child{box-shadow:inset 3px 0 v
 .wipewrap{position:relative}.wipewrap video{position:absolute;inset:0;width:100%;height:100%}.wipewrap{aspect-ratio:1376/768}
 .wipewrap .top{clip-path:inset(0 0 0 var(--w,50%))}.wipewrap .line{position:absolute;top:0;bottom:0;left:var(--w,50%);width:2px;background:var(--pick);pointer-events:none}
 .kbd{font:12px ui-monospace,monospace;background:var(--bg3);border:1px solid var(--grid);border-radius:4px;padding:0 4px}
+#pane:fullscreen{background:#000;align-items:center;padding:1vh 1vw;box-sizing:border-box}
+#pane:fullscreen video{max-height:86vh;object-fit:contain}
+button.hear{padding:1px 8px}button.hear.on{border-color:var(--pick);color:var(--pick)}
+video.audioon{box-shadow:0 0 0 3px var(--pick)}
+#h2h .lbl{display:flex;align-items:center;gap:6px}
+.h2hbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.h2hbar .gap{flex:0 0 8px;border-left:1px solid var(--grid);height:22px}
+.abname{border:1px solid var(--grid);border-radius:8px;padding:3px 10px;background:var(--bg3)}
+.abname.a{box-shadow:inset 3px 0 var(--pick)}.abname.b{box-shadow:inset 3px 0 var(--sat)}
+button.big{font-size:15px;padding:5px 16px}
+.seg{display:inline-flex;border:1px solid var(--grid);border-radius:8px;overflow:hidden}
+.seg button{border:none;border-radius:0;background:var(--bg3);padding:5px 10px}
+.seg button.on{background:var(--pick);color:#14161a;font-weight:600}
 #picks{width:100%;min-height:80px;background:var(--bg3);color:var(--ink);border:1px solid var(--grid);border-radius:6px;font:12px ui-monospace,monospace;padding:8px}
 .small{font-size:12px;color:var(--dim)}
 </style></head><body>
 <header>
 <h1>A6 review: NVFP4 / FP8 activation arms beside their metrics</h1>
-<p class="lede"><b>Scene: painters (PUBLIC scene: two painters, one covering a wall; live-action two-shot, 141 f T2VA, 25 steps, 1376x768, two lines, no cuts)</b> (<a href="index.html">all scenes</a>). Same-seed. Every arm <b>fake-quantises the activations</b> of a region of the shipped W4A8 model; weights stay int4 g16, so a real NVFP4 checkpoint would move further than any arm here. The reference is the exact W4A8 arm (<b>ref_w4a8_exact</b>). Latent mean |dx| counts dose, not damage (kvi8r "perfect" = 0.24; one NVFP4 block = 0.35; FP8 everywhere = 0.75 vs NVFP4 everywhere 0.78 at 3x lower per-op error), so the pixel / flow / audio rulers below are there to be <b>calibrated against your eyes</b>, not to judge. Click a clip to play it with sound; hover plays muted; <span class="kbd">d</span> on a card swaps in the amplified |arm - ref| view. Star the candidates, send two to A/B, flip with <span class="kbd">f</span>, wipe with the slider.<br><b>Rulers that separated the arms on first build:</b> PSNR vs ref falls monotonically with latent |dx| (19.6 to 11.7 dB); <b>motion-curve corr</b> is bimodal, ~0.97 = the two big events (frame 32 and the shot cut at 71/72) land on the same frames, ~0.5 = one event slid a frame (worst-frame PSNR 7-8 dB), below 0.3 = events moved several frames; audio corr stays above 0.9 for most single-decade arms and drops to 0.77 for NVFP4 everywhere.<br><b>Cost columns:</b> <i>wall s</i> is the measured time of THIS run, a fake-quant arm on the shipped W4A8 model, so it carries the quantiser's overhead (arms run 2-10% slower than the reference, FP8's quantiser slowest) - it is not the regime's speed. <i>Δ weights</i> and <i>GEMM time</i> are [PROJ]ections of what the regime would buy if built with real weights: bytes from the file headers: W4A8 218.8 MB/block vs real NVFP4 218.5 (both 4.54 bits/param, so the NVFP4 weight delta is ~0) vs FP8 ~1 B/param, GEMM ms from the 16k-row bench (qkv 5.4/3.7/6.5, out 2.9/1.9/2.4, fc1 10.5/6.2/9.9, fc2 5.6/3.9/5.0 ms W4A8/NVFP4/FP8), block GEMMs being ~15-20% of a step at 217k tokens and more at 29k. Segment arms route activations by token row, so their weight delta is 0 and their GEMM saving scales with the token share (~0.92 video). Measured VRAM per arm was not recorded (no poller rode along; a fake-quant arm's peak would not be the regime's anyway). All-NVFP4 weights save NOTHING over the shipped W4A8 file (12.53 vs 12.54 GB, measured 2026-08-19 on the real build): the NVFP4 prize is GEMM speed and the dropped int4-to-int8 decode, not bytes.</p>
+<p class="lede"><b>Scene: painters (PUBLIC scene: two painters, one covering a wall; live-action two-shot, 141 f T2VA, 25 steps, 1376x768, two lines, no cuts)</b> (<a href="../index.html">all scenes</a>). Same-seed. Every arm <b>fake-quantises the activations</b> of a region of the shipped W4A8 model; weights stay int4 g16, so a real NVFP4 checkpoint would move further than any arm here. The reference is the exact W4A8 arm (<b>ref_w4a8_exact</b>). Latent mean |dx| counts dose, not damage (kvi8r "perfect" = 0.24; one NVFP4 block = 0.35; FP8 everywhere = 0.75 vs NVFP4 everywhere 0.78 at 3x lower per-op error), so the pixel / flow / audio rulers below are there to be <b>calibrated against your eyes</b>, not to judge. Click a clip to play it with sound; hover plays muted; <span class="kbd">d</span> on a card swaps in the amplified |arm - ref| view. Star the candidates, send two to A/B, flip with <span class="kbd">f</span>, wipe with the slider.<br><b>Rulers that separated the arms on first build:</b> PSNR vs ref falls monotonically with latent |dx| (19.6 to 11.7 dB); <b>motion-curve corr</b> is bimodal, ~0.97 = the two big events (frame 32 and the shot cut at 71/72) land on the same frames, ~0.5 = one event slid a frame (worst-frame PSNR 7-8 dB), below 0.3 = events moved several frames; audio corr stays above 0.9 for most single-decade arms and drops to 0.77 for NVFP4 everywhere.<br><b>Cost columns:</b> <i>wall s</i> is the measured time of THIS run, a fake-quant arm on the shipped W4A8 model, so it carries the quantiser's overhead (arms run 2-10% slower than the reference, FP8's quantiser slowest) - it is not the regime's speed. <i>Δ weights</i> and <i>GEMM time</i> are [PROJ]ections of what the regime would buy if built with real weights: bytes from the file headers: W4A8 218.8 MB/block vs real NVFP4 218.5 (both 4.54 bits/param, so the NVFP4 weight delta is ~0) vs FP8 ~1 B/param, GEMM ms from the 16k-row bench (qkv 5.4/3.7/6.5, out 2.9/1.9/2.4, fc1 10.5/6.2/9.9, fc2 5.6/3.9/5.0 ms W4A8/NVFP4/FP8), block GEMMs being ~15-20% of a step at 217k tokens and more at 29k. Segment arms route activations by token row, so their weight delta is 0 and their GEMM saving scales with the token share (~0.92 video). Measured VRAM per arm was not recorded (no poller rode along; a fake-quant arm's peak would not be the regime's anyway). All-NVFP4 weights save NOTHING over the shipped W4A8 file (12.53 vs 12.54 GB, measured 2026-08-19 on the real build): the NVFP4 prize is GEMM speed and the dropped int4-to-int8 decode, not bytes.</p>
 </header>
 <main>
 <div class="bar">
@@ -59,16 +72,20 @@ tr:hover td{background:var(--bg2)}tr.sel td:first-child{box-shadow:inset 3px 0 v
 
 <h2>Head to head</h2>
 <div id="h2h">
- <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
-  <span>A: <b id="aname">-</b></span><span>B: <b id="bname">-</b></span>
-  <button id="play">play / pause <span class="kbd">space</span></button>
-  <button id="flip">flip A/B <span class="kbd">f</span></button>
-  <button id="mode">mode: side by side</button>
-  <label>hear <select id="hear"><option value="a">A</option><option value="b">B</option><option value="none">neither</option></select></label>
-  <label>wipe <input type="range" id="wipe" min="0" max="100" value="50"></label>
-  <button id="diffh2h">show |A - ref| / |B - ref|</button>
+ <div class="h2hbar">
+  <span class="abname a">A <b id="aname">-</b></span>
+  <button id="flip" title="swap A and B (f)">&#8644;</button>
+  <span class="abname b">B <b id="bname">-</b></span>
+  <span class="gap"></span>
+  <button id="play" class="big" title="play / pause (space)">&#9654;</button>
+  <button id="restart" title="both from the top">&#8634;</button>
+  <span class="seg" id="hearseg" title="which side you hear (1 / 2)"><button data-h="a">&#128266; A</button><button data-h="b">&#128266; B</button><button data-h="none">muted</button></span>
+  <button id="mode" title="side by side or wipe">&#9707; wipe</button>
+  <label id="wipelab" style="display:none">wipe <input type="range" id="wipe" min="0" max="100" value="50"></label>
+  <button id="fsPane" title="both players fullscreen">&#9974; fullscreen A/B</button>
+  <button id="diffh2h" title="swap both players to their amplified difference clips">diff vs ref</button>
   <button id="bref">B = reference</button>
-  <span class="small">send clips here with the A / B buttons on a card</span>
+  <select id="hear" style="display:none"><option value="a">a</option><option value="b">b</option><option value="none">none</option></select>
  </div>
  <div class="pane" id="pane">
   <div><div class="lbl">A <b id="al"></b></div><video id="va" loop playsinline></video></div>
@@ -165,19 +182,32 @@ function loadAB(){$("#aname").textContent=A||"-";$("#bname").textContent=B||"-";
  const ra=ROWS.find(r=>r.arm==A),rb=ROWS.find(r=>r.arm==B);
  $("#h2hm").innerHTML=[ra,rb].filter(Boolean).map((r,i)=>`<b>${i?"B":"A"}</b> ${r.desc} · `+COLS.map(c=>r[c[0]]==null?"":`${c[1].split(" (")[0]} ${fmtv(c[0],r[c[0]])}`).filter(Boolean).join(" · ")).join("<br>");
  document.getElementById("h2h").scrollIntoView({behavior:"smooth",block:"start"});}
-function applyHear(){const h=$("#hear").value;VA().muted=h!="a";VB().muted=h!="b";}
+function applyHear(){const h=$("#hear").value;const a=VA(),b=VB();if(a){a.muted=h!="a";a.classList.toggle("audioon",h=="a");}if(b){b.muted=h!="b";b.classList.toggle("audioon",h=="b");}
+ document.querySelectorAll(".hearA").forEach(x=>x.classList.toggle("on",h=="a"));
+ document.querySelectorAll(".hearB").forEach(x=>x.classList.toggle("on",h=="b"));
+ document.querySelectorAll("#hearseg button").forEach(x=>x.classList.toggle("on",x.dataset.h==h));}
 $("#hear").onchange=applyHear;
+document.querySelectorAll("#hearseg button").forEach(b=>b.onclick=()=>{$("#hear").value=b.dataset.h;applyHear();});
 $("#play").onclick=()=>{if(VA().paused){VB().currentTime=VA().currentTime;VA().play();VB().play();}else{VA().pause();VB().pause();}};
+$("#restart").onclick=()=>{VA().currentTime=0;VB().currentTime=0;VA().play();VB().play();};
 $("#flip").onclick=()=>{[A,B]=[B,A];loadAB();};
 $("#bref").onclick=()=>setAB(null,REF);
 $("#diffh2h").onclick=()=>{h2hDiff=!h2hDiff;$("#diffh2h").classList.toggle("on",h2hDiff);loadAB();};
-$("#mode").onclick=()=>{wipeMode=!wipeMode;$("#mode").textContent=wipeMode?"mode: wipe":"mode: side by side";const p=$("#pane");
+$("#mode").onclick=()=>{wipeMode=!wipeMode;$("#mode").innerHTML=wipeMode?"&#9706; side by side":"&#9707; wipe";$("#mode").classList.toggle("on",wipeMode);$("#wipelab").style.display=wipeMode?"":"none";$("#fsPane").style.display=wipeMode?"none":"";const p=$("#pane");
  if(wipeMode){p.classList.add("wipe");p.innerHTML=`<div class="wipewrap" id="ww"><video id="va" loop playsinline></video><video id="vb" class="top" loop playsinline></video><div class="line"></div></div><div class="lbl">left of the line = A, right = B; drag the wipe slider <button class="fsW" title="fullscreen">⛶</button></div>`;}
- else{p.classList.remove("wipe");p.innerHTML=`<div><div class="lbl">A <b id="al"></b> <button class="fsA" title="fullscreen">⛶</button></div><video id="va" loop playsinline></video></div><div><div class="lbl">B <b id="bl"></b> <button class="fsB" title="fullscreen">⛶</button></div><video id="vb" loop playsinline></video></div>`;}
+ else{p.classList.remove("wipe");p.innerHTML=`<div><div class="lbl">A <b id="al"></b> <button class="hear hearA" title="hear this side">&#128266;</button> <button class="fsA" title="fullscreen">⛶</button></div><video id="va" loop playsinline></video></div><div><div class="lbl">B <b id="bl"></b> <button class="hear hearB" title="hear this side">&#128266;</button> <button class="fsB" title="fullscreen">⛶</button></div><video id="vb" loop playsinline></video></div>`;}
  rebind();loadAB();};
 function rebind(){bindSync();const fa=document.querySelector(".fsA"),fb=document.querySelector(".fsB"),fw=document.querySelector(".fsW");
- if(fa)fa.onclick=()=>goFS(VA(),[VA()]);if(fb)fb.onclick=()=>goFS(VB(),[VB()]);if(fw)fw.onclick=()=>goFS(document.getElementById("ww"),[]);}
-function bindSync(){const a=$("#va"),b=$("#vb");a.ontimeupdate=()=>{if(Math.abs(a.currentTime-b.currentTime)>0.08)b.currentTime=a.currentTime;};a.onplay=()=>b.play().catch(()=>{});a.onpause=()=>b.pause();}
+ if(fa)fa.onclick=()=>goFS(VA(),[VA()]);if(fb)fb.onclick=()=>goFS(VB(),[VB()]);if(fw)fw.onclick=()=>goFS(document.getElementById("ww"),[]);
+ document.querySelectorAll(".hearA").forEach(x=>x.onclick=()=>{$("#hear").value=$("#hear").value=="a"?"none":"a";applyHear();});
+ document.querySelectorAll(".hearB").forEach(x=>x.onclick=()=>{$("#hear").value=$("#hear").value=="b"?"none":"b";applyHear();});
+ applyHear();}
+function bindSync(){const a=$("#va"),b=$("#vb");const hearing=()=>$("#hear").value;
+ // the side you HEAR is the clock; the muted side gets seeked. Seeking the audible side chops its audio.
+ a.ontimeupdate=()=>{if(hearing()!="b"&&Math.abs(a.currentTime-b.currentTime)>0.08)b.currentTime=a.currentTime;};
+ b.ontimeupdate=()=>{if(hearing()=="b"&&Math.abs(b.currentTime-a.currentTime)>0.08)a.currentTime=b.currentTime;};
+ a.onplay=()=>{b.play().catch(()=>{});$("#play").innerHTML="&#10074;&#10074;";};
+ a.onpause=()=>{b.pause();$("#play").innerHTML="&#9654;";};}
 $("#wipe").oninput=e=>{const w=$("#ww");if(w)w.style.setProperty("--w",e.target.value+"%");};
 document.addEventListener("keydown",e=>{if(e.target.tagName=="TEXTAREA"||e.target.tagName=="SELECT")return;
  if(e.key==" "&&document.activeElement.tagName!="VIDEO"){e.preventDefault();$("#play").click();}
@@ -193,5 +223,6 @@ function goFS(el,vids){(el.requestFullscreen||el.webkitRequestFullscreen).call(e
 document.addEventListener("fullscreenchange",()=>{if(!document.fullscreenElement)document.querySelectorAll("video").forEach(v=>v.controls=false);});
 function fixSticky(){document.documentElement.style.setProperty("--thtop",document.querySelector(".bar").offsetHeight+"px");}
 window.addEventListener("resize",fixSticky);
+$("#fsPane").onclick=()=>goFS($("#pane"),[VA()]);
 render();fixSticky();setAB(REF,REF);
 </script></body></html>
