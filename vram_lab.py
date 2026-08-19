@@ -530,7 +530,7 @@ class _PrecProbe:
     a strided row sample (report 7's router signal). Sampled 1 in `every` chunks per
     phase. Writes jsonl; the map is drawn offline (benchmarks/scripts/prec_map.py)."""
 
-    def __init__(self, path, every=8, row_stride=64):
+    def __init__(self, path=None, every=8, row_stride=64):
         self.path, self.every, self.row_stride = path, int(every), int(row_stride)
         self.fwd = -1
         self.rows = []
@@ -570,9 +570,35 @@ class _PrecProbe:
         yr = self._fq_nvfp4(xr)
         return (yr.float().view(-1, n // 128, 128) @ self.H.T).view(-1, n).to(x2d.dtype)
 
+    def amax(self, block, proj, x):
+        """Every chunk: running per-(block, proj) activation amax for this forward (calibrated
+        input_scale for a chunk-invariant NVFP4/FP8 activation path needs the whole-layer amax)."""
+        k = ("amax", block, proj)
+        v = x.abs().amax()
+        cur = self.counter.get(k)
+        self.counter[k] = v if cur is None else torch.maximum(cur, v)
+
+    def flush_amax(self):
+        for k, v in list(self.counter.items()):
+            if isinstance(k, tuple) and k and k[0] == "amax":
+                self.rows.append({"fwd": self.fwd, "sigma": self.sigma, "block": k[1], "proj": k[2],
+                                  "seg": "all", "amax_layer": float(v)})
+                del self.counter[k]
+
+    @staticmethod
+    def _bf16_weight(layer):
+        w = getattr(layer, "weight", None)
+        try:
+            if hasattr(w, "dequantize"):
+                return w.dequantize().to(torch.bfloat16)
+        except Exception:  # noqa: BLE001
+            return None
+        return w.to(torch.bfloat16) if w is not None else None
+
     @torch.no_grad()
     def projection(self, block, proj, layer, x, a, b, mod_segments):
         """x: the layer's real input for chunk [a:b] (rows x K), layer: the module. Cheap sample."""
+        self.amax(block, proj, x)
         if not self._take((block, proj)):
             return
         if x.shape[-1] % 128:
@@ -580,6 +606,9 @@ class _PrecProbe:
         y = layer(x)
         fq = {"nvfp4": self._fq_nvfp4, "nvfp4_had": self._fq_nvfp4_had, "fp8": self._fq_fp8}
         outs = {k: layer(f(x)) for k, f in fq.items()}
+        wb = self._bf16_weight(layer)                       # bf16 truth for the absolute scale
+        y_ref = torch.nn.functional.linear(x, wb, getattr(layer, "bias", None)) if wb is not None else None
+        del wb
         for sa, sb, row in mod_segments:
             lo, hi = max(sa, a), min(sb, b)
             if hi - lo < 16:
@@ -594,8 +623,14 @@ class _PrecProbe:
             yn = ys.pow(2).sum().sqrt().clamp_min(1e-12)
             for k, o in outs.items():
                 rec["err_" + k] = ((o[lo - a:hi - a].float() - ys).pow(2).sum().sqrt() / yn).item()
+            if y_ref is not None:                            # vs bf16: today's path and the candidates
+                yr = y_ref[lo - a:hi - a].float()
+                rn = yr.pow(2).sum().sqrt().clamp_min(1e-12)
+                rec["err_today_vs_bf16"] = ((ys - yr).pow(2).sum().sqrt() / rn).item()
+                for k, o in outs.items():
+                    rec["err_" + k + "_vs_bf16"] = ((o[lo - a:hi - a].float() - yr).pow(2).sum().sqrt() / rn).item()
             self.rows.append(rec)
-        del y, outs
+        del y, outs, y_ref
 
     @torch.no_grad()
     def block_in(self, x):
@@ -609,7 +644,7 @@ class _PrecProbe:
                           "rel_change": d.item()})
 
     def flush(self):
-        if not self.rows:
+        if not self.rows or self.path is None:
             return
         import json
         with open(self.path, "a") as f:
@@ -618,9 +653,33 @@ class _PrecProbe:
         self.rows = []
 
 
+class _FakeQuant:
+    """A6 phase 0d: simulate a lower activation precision on chosen projections / blocks /
+    segments inside the streamed block (fake-quant: quantise -> dequantise the layer input,
+    the layer then runs as shipped). For the end-to-end sensitivity sweep: same seed, one
+    region at a time, latent divergence + eyes. Not a speed path."""
+
+    def __init__(self, fmt, projs, blocks, segs):
+        self.fmt, self.projs, self.blocks, self.segs = fmt, set(projs), blocks, (set(segs) if segs else None)
+        self.p = _PrecProbe(path=None)
+
+    def apply(self, block, proj, x, a, b, mod_segments):
+        if proj not in self.projs or not (self.blocks[0] <= block <= self.blocks[1]) or x.shape[-1] % 128:
+            return x
+        f = {"nvfp4": self.p._fq_nvfp4, "nvfp4_had": self.p._fq_nvfp4_had, "fp8": self.p._fq_fp8}[self.fmt]
+        if self.segs is None:
+            return f(x)
+        out = x.clone()
+        for sa, sb, row in mod_segments:
+            lo, hi = max(sa, a), min(sb, b)
+            if hi > lo and _PrecProbe._seg_kind(row) in self.segs:
+                out[lo - a:hi - a] = f(x[lo - a:hi - a])
+        return out
+
+
 # --------------------------------------------------------------------------- the block
 
-def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=False, kv_sage=False, prec=None, block_index=0):
+def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=False, kv_sage=False, prec=None, block_index=0, fq=None):
     """K, V for the whole sequence, chunk by chunk (Q computed and dropped).
     kv_int8: store them as _Int8KV (kvi8r, half the bytes; approximation tier).
     kv_sage: store them as one _SageKV (kvi8s, half the bytes, Sage kernels; approximation tier)."""
@@ -640,6 +699,8 @@ def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chun
         h = _mod_scale_shift_range(block.norm1(x[a:b]), shift_msa, scale_msa, mod_segments, a, b)
         if prec is not None:
             prec.projection(block_index, "qkv", attn.qkv_proj, h, a, b, mod_segments)
+        if fq is not None:
+            h = fq.apply(block_index, "qkv", h, a, b, mod_segments)
         qkv = attn.qkv_proj(h)
         q, k, v = qkv.split(inner, dim=-1)
         rope_c = rope_freqs[:, a:b].contiguous() if rope_freqs is not None else None
@@ -657,7 +718,7 @@ def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chun
 
 
 def _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments, rope_freqs,
-                   transformer_options, q_chunk, kv_block, heads, hd, inner, head_chunks, prec=None, block_index=0):
+                   transformer_options, q_chunk, kv_block, heads, hd, inner, head_chunks, prec=None, block_index=0, fq=None):
     """Q per chunk, attention against full K/V, out_proj, gated residual in place."""
     S = x.shape[0]
     attn = block.attn
@@ -666,6 +727,8 @@ def _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments,
     for a, b in q_ranges:
         s = b - a
         h = _mod_scale_shift_range(block.norm1(x[a:b]), shift_msa, scale_msa, mod_segments, a, b)
+        if fq is not None:
+            h = fq.apply(block_index, "qkv", h, a, b, mod_segments)
         qkv = attn.qkv_proj(h)
         q, k, _v = qkv.split(inner, dim=-1)
         rope_c = rope_freqs[:, a:b].contiguous() if rope_freqs is not None else None
@@ -687,12 +750,14 @@ def _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments,
         o = o.squeeze(0)
         if prec is not None:
             prec.projection(block_index, "out", attn.out_proj, o, a, b, mod_segments)
+        if fq is not None:
+            o = fq.apply(block_index, "out", o, a, b, mod_segments)
         o = attn.out_proj(o)
         _mod_gate_range(x, gate_msa, o, mod_segments, a, b)
         del o
 
 
-def _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk, prec=None, block_index=0):
+def _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk, prec=None, block_index=0, fq=None):
     """MLP per chunk, gated residual in place."""
     S = x.shape[0]
     for a, b in _ranges(S, mlp_chunk):
@@ -703,7 +768,15 @@ def _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chun
             act = torch.nn.functional.silu(gate).mul_(up)
             prec.projection(block_index, "fc2", block.mlp.fc2, act, a, b, mod_segments)
             del gate, up, act
-        o = block.mlp(h)
+        if fq is not None and hasattr(block.mlp, "fc1") and hasattr(block.mlp, "fc2"):
+            h = fq.apply(block_index, "fc1", h, a, b, mod_segments)
+            gate, up = block.mlp.fc1(h).chunk(2, dim=-1)
+            act = torch.nn.functional.silu(gate).mul_(up)
+            act = fq.apply(block_index, "fc2", act, a, b, mod_segments)
+            o = block.mlp.fc2(act)
+            del gate, up, act
+        else:
+            o = block.mlp(h)
         _mod_gate_range(x, gate_mlp, o, mod_segments, a, b)
         del h, o
 
@@ -725,19 +798,20 @@ def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transforme
 
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.adaln_proj(t_emb)
     prec = transformer_options.get("h3_precprobe") if isinstance(transformer_options, dict) else None
+    fq = transformer_options.get("h3_fakequant") if isinstance(transformer_options, dict) else None
     x_in_sample = prec.block_in(x) if prec is not None else None
 
     K, V = _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=kv_int8, kv_sage=kv_sage,
-                      prec=prec, block_index=index if index is not None else 0)
+                      prec=prec, block_index=index if index is not None else 0, fq=fq)
     if probe is not None:
         probe.mark(index, "kv")
     _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments, rope_freqs,
                    transformer_options, q_chunk, kv_block, heads, hd, inner, head_chunks,
-                   prec=prec, block_index=index if index is not None else 0)
+                   prec=prec, block_index=index if index is not None else 0, fq=fq)
     del K, V
     if probe is not None:
         probe.mark(index, "attn")
-    _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk, prec=prec, block_index=index if index is not None else 0)
+    _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk, prec=prec, block_index=index if index is not None else 0, fq=fq)
     if probe is not None:
         probe.mark(index, "mlp")
     if prec is not None:
@@ -1277,6 +1351,7 @@ class H3PrecisionProbe:
                 pass
             pr.begin_forward(sig)
             out = executor(*args, **kwargs)
+            pr.flush_amax()
             pr.flush()
             return out
         m.add_wrapper_with_key(pe.WrappersMP.DIFFUSION_MODEL, "h3_precprobe", wrapper)
@@ -1284,10 +1359,42 @@ class H3PrecisionProbe:
         return (m,)
 
 
+class H3FakeQuant:
+    """A6 phase 0d: simulate NVFP4 / FP8 activation precision on a chosen set of
+    projections, block range and token segments (fake-quant of the layer input; the
+    layer runs as shipped). For the same-seed sensitivity sweep that decides which
+    layers can go to 4 bits. Needs H3StreamedBlocks downstream. Not a speed path."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "format": (["nvfp4", "nvfp4_had", "fp8"], {"default": "nvfp4"}),
+            "projections": ("STRING", {"default": "qkv,out,fc1,fc2", "tooltip": "comma list of qkv,out,fc1,fc2"}),
+            "block_lo": ("INT", {"default": 0, "min": 0, "max": 63}),
+            "block_hi": ("INT", {"default": 49, "min": 0, "max": 63}),
+            "segments": ("STRING", {"default": "", "tooltip": "empty = all rows; else comma list of video,text,audio,cond_video,cond_audio"}),
+        }}
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "patch"
+    CATEGORY = "MAINodes/VRAM Lab"
+
+    def patch(self, model, format, projections, block_lo, block_hi, segments):
+        projs = [p.strip() for p in projections.split(",") if p.strip()]
+        segs = [p.strip() for p in segments.split(",") if p.strip()]
+        m = model.clone()
+        to = m.model_options.setdefault("transformer_options", {})
+        to["h3_fakequant"] = _FakeQuant(format, projs, (int(block_lo), int(block_hi)), segs)
+        log.info("H3FakeQuant: %s on %s blocks %d..%d segs %s", format, projs, block_lo, block_hi, segs or "all")
+        return (m,)
+
+
 NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3MemoryProbe": H3MemoryProbe, "H3FreeCache": H3FreeCache, "H3EvictTextEncoder": H3EvictTextEncoder,
-                       "H3PrecisionProbe": H3PrecisionProbe}
+                       "H3PrecisionProbe": H3PrecisionProbe, "H3FakeQuant": H3FakeQuant}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3StreamedBlocks": "H3 Streamed Blocks (exact low-VRAM, alpha)",
                               "H3MemoryProbe": "H3 Memory Probe (ledger + allocator trace, alpha)",
                               "H3FreeCache": "H3 Free Cache (empty allocator between stages)",
                               "H3EvictTextEncoder": "H3 Evict Text Encoder (unload after encode)",
-                              "H3PrecisionProbe": "H3 Precision Probe (A6: 4-bit vs 8-bit activation map, alpha)"}
+                              "H3PrecisionProbe": "H3 Precision Probe (A6: 4-bit vs 8-bit activation map, alpha)",
+                              "H3FakeQuant": "H3 Fake Quant (A6: simulate NVFP4/FP8 activations per region, alpha)"}
