@@ -518,9 +518,109 @@ def _trimmed_forward(self, x, timestep, context, transformer_options={}, minimax
     return [-video_out.to(video_x.dtype), -audio_out.to(audio_x.dtype)]
 
 
+# --------------------------------------------------------------------------- A6 phase 0: precision probe (which activations need 8 bits, which are fine at 4)
+
+class _PrecProbe:
+    """Per (forward, block, projection, segment) record of the real input activation of
+    each block linear and the extra output error three cheaper activation quantisers
+    would add on top of what the layer does today (the shipped layers quantise the
+    activation to int8 rowwise-convrot internally): NVFP4 with one activation scale
+    (kitchen quantize/dequantize), NVFP4 after a 128-wide Hadamard, FP8 e4m3 per tensor.
+    Plus per (forward, block) the block's residual change ||x_out - x_in|| / ||x_in|| on
+    a strided row sample (report 7's router signal). Sampled 1 in `every` chunks per
+    phase. Writes jsonl; the map is drawn offline (benchmarks/scripts/prec_map.py)."""
+
+    def __init__(self, path, every=8, row_stride=64):
+        self.path, self.every, self.row_stride = path, int(every), int(row_stride)
+        self.fwd = -1
+        self.rows = []
+        self.counter = {}
+        self.sigma = None
+        self.H = None
+
+    def begin_forward(self, sigma):
+        self.fwd += 1
+        self.sigma = sigma
+        self.counter = {}
+
+    def _take(self, key):
+        c = self.counter.get(key, 0)
+        self.counter[key] = c + 1
+        return c % self.every == 0
+
+    @staticmethod
+    def _seg_kind(row):
+        return ("cond_" if row >= 3 else "") + ("video", "text", "audio")[row % 3]
+
+    def _fq_nvfp4(self, x2d):
+        from comfy_kitchen.tensor.nvfp4 import TensorCoreNVFP4Layout
+        q, prm = TensorCoreNVFP4Layout.quantize(x2d)
+        return TensorCoreNVFP4Layout.dequantize(q, prm)[: x2d.shape[0], : x2d.shape[1]]
+
+    def _fq_fp8(self, x2d):
+        amax = x2d.abs().amax().float().clamp_min(1e-12)
+        sc = amax / 448.0
+        return (x2d.float() / sc).clamp_(-448, 448).to(torch.float8_e4m3fn).to(x2d.dtype) * sc.to(x2d.dtype)
+
+    def _fq_nvfp4_had(self, x2d):
+        n = x2d.shape[1]
+        if self.H is None or self.H.shape[0] != 128 or self.H.device != x2d.device:
+            self.H = _hadamard(128, x2d.device, torch.float32)
+        xr = (x2d.float().view(-1, n // 128, 128) @ self.H).view(-1, n).to(x2d.dtype)
+        yr = self._fq_nvfp4(xr)
+        return (yr.float().view(-1, n // 128, 128) @ self.H.T).view(-1, n).to(x2d.dtype)
+
+    @torch.no_grad()
+    def projection(self, block, proj, layer, x, a, b, mod_segments):
+        """x: the layer's real input for chunk [a:b] (rows x K), layer: the module. Cheap sample."""
+        if not self._take((block, proj)):
+            return
+        if x.shape[-1] % 128:
+            return
+        y = layer(x)
+        fq = {"nvfp4": self._fq_nvfp4, "nvfp4_had": self._fq_nvfp4_had, "fp8": self._fq_fp8}
+        outs = {k: layer(f(x)) for k, f in fq.items()}
+        for sa, sb, row in mod_segments:
+            lo, hi = max(sa, a), min(sb, b)
+            if hi - lo < 16:
+                continue
+            xs = x[lo - a:hi - a].float()
+            ys = y[lo - a:hi - a].float()
+            rms = xs.pow(2).mean().sqrt()
+            rec = {"fwd": self.fwd, "sigma": self.sigma, "block": block, "proj": proj, "seg": self._seg_kind(row),
+                   "rows": int(hi - lo), "x_rms": rms.item(), "x_amax": xs.abs().amax().item(),
+                   "x_outlier_frac": (xs.abs() > 6 * rms).float().mean().item(),
+                   "x_kurt": ((xs / rms) ** 4).mean().item()}
+            yn = ys.pow(2).sum().sqrt().clamp_min(1e-12)
+            for k, o in outs.items():
+                rec["err_" + k] = ((o[lo - a:hi - a].float() - ys).pow(2).sum().sqrt() / yn).item()
+            self.rows.append(rec)
+        del y, outs
+
+    @torch.no_grad()
+    def block_in(self, x):
+        return x[:: self.row_stride].detach().clone()
+
+    @torch.no_grad()
+    def block_out(self, block, x_in_sample, x):
+        s = x[:: self.row_stride].float()
+        d = (s - x_in_sample.float()).pow(2).sum().sqrt() / x_in_sample.float().pow(2).sum().sqrt().clamp_min(1e-12)
+        self.rows.append({"fwd": self.fwd, "sigma": self.sigma, "block": block, "proj": "block", "seg": "all",
+                          "rel_change": d.item()})
+
+    def flush(self):
+        if not self.rows:
+            return
+        import json
+        with open(self.path, "a") as f:
+            for r in self.rows:
+                f.write(json.dumps(r) + "\n")
+        self.rows = []
+
+
 # --------------------------------------------------------------------------- the block
 
-def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=False, kv_sage=False):
+def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=False, kv_sage=False, prec=None, block_index=0):
     """K, V for the whole sequence, chunk by chunk (Q computed and dropped).
     kv_int8: store them as _Int8KV (kvi8r, half the bytes; approximation tier).
     kv_sage: store them as one _SageKV (kvi8s, half the bytes, Sage kernels; approximation tier)."""
@@ -538,6 +638,8 @@ def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chun
     for a, b in _ranges(S, kv_chunk):
         s = b - a
         h = _mod_scale_shift_range(block.norm1(x[a:b]), shift_msa, scale_msa, mod_segments, a, b)
+        if prec is not None:
+            prec.projection(block_index, "qkv", attn.qkv_proj, h, a, b, mod_segments)
         qkv = attn.qkv_proj(h)
         q, k, v = qkv.split(inner, dim=-1)
         rope_c = rope_freqs[:, a:b].contiguous() if rope_freqs is not None else None
@@ -555,7 +657,7 @@ def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chun
 
 
 def _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments, rope_freqs,
-                   transformer_options, q_chunk, kv_block, heads, hd, inner, head_chunks):
+                   transformer_options, q_chunk, kv_block, heads, hd, inner, head_chunks, prec=None, block_index=0):
     """Q per chunk, attention against full K/V, out_proj, gated residual in place."""
     S = x.shape[0]
     attn = block.attn
@@ -582,16 +684,25 @@ def _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments,
         else:
             o = _attend(qc, K, V, heads, head_chunks, transformer_options)  # [1, s, inner]
         del qc
-        o = attn.out_proj(o.squeeze(0))
+        o = o.squeeze(0)
+        if prec is not None:
+            prec.projection(block_index, "out", attn.out_proj, o, a, b, mod_segments)
+        o = attn.out_proj(o)
         _mod_gate_range(x, gate_msa, o, mod_segments, a, b)
         del o
 
 
-def _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk):
+def _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk, prec=None, block_index=0):
     """MLP per chunk, gated residual in place."""
     S = x.shape[0]
     for a, b in _ranges(S, mlp_chunk):
         h = _mod_scale_shift_range(block.norm2(x[a:b]), shift_mlp, scale_mlp, mod_segments, a, b)
+        if prec is not None and hasattr(block.mlp, "fc1") and hasattr(block.mlp, "fc2"):
+            prec.projection(block_index, "fc1", block.mlp.fc1, h, a, b, mod_segments)
+            gate, up = block.mlp.fc1(h).chunk(2, dim=-1)
+            act = torch.nn.functional.silu(gate).mul_(up)
+            prec.projection(block_index, "fc2", block.mlp.fc2, act, a, b, mod_segments)
+            del gate, up, act
         o = block.mlp(h)
         _mod_gate_range(x, gate_mlp, o, mod_segments, a, b)
         del h, o
@@ -613,18 +724,26 @@ def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transforme
     head_chunks = transformer_options.get("minimax_head_chunks", 1) if isinstance(transformer_options, dict) else 1
 
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.adaln_proj(t_emb)
+    prec = transformer_options.get("h3_precprobe") if isinstance(transformer_options, dict) else None
+    x_in_sample = prec.block_in(x) if prec is not None else None
 
-    K, V = _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=kv_int8, kv_sage=kv_sage)
+    K, V = _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=kv_int8, kv_sage=kv_sage,
+                      prec=prec, block_index=index if index is not None else 0)
     if probe is not None:
         probe.mark(index, "kv")
     _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments, rope_freqs,
-                   transformer_options, q_chunk, kv_block, heads, hd, inner, head_chunks)
+                   transformer_options, q_chunk, kv_block, heads, hd, inner, head_chunks,
+                   prec=prec, block_index=index if index is not None else 0)
     del K, V
     if probe is not None:
         probe.mark(index, "attn")
-    _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk)
+    _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk, prec=prec, block_index=index if index is not None else 0)
     if probe is not None:
         probe.mark(index, "mlp")
+    if prec is not None:
+        prec.block_out(index if index is not None else 0, x_in_sample, x)
+        if index == 49 or index is None:
+            prec.flush()
     return x
 
 
@@ -1119,8 +1238,56 @@ class H3EvictTextEncoder:
         log.info(rep)
         return (conditioning, rep)
 
-NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3MemoryProbe": H3MemoryProbe, "H3FreeCache": H3FreeCache, "H3EvictTextEncoder": H3EvictTextEncoder}
+class H3PrecisionProbe:
+    """A6 phase 0: record, per (forward, block, projection, segment), the real input
+    activation of every block linear and the extra output error NVFP4 / NVFP4+Hadamard /
+    FP8 activation quantisation would add over the shipped int8 path, plus the per-block
+    residual change. Needs H3StreamedBlocks downstream (it isolates the projections).
+    Cost ~1.2x at every=8. Output jsonl under out_dir; draw with benchmarks/scripts/prec_map.py."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "tag": ("STRING", {"default": "precprobe"}),
+            "every": ("INT", {"default": 8, "min": 1, "max": 256, "tooltip": "sample one chunk in N per (block, projection)"}),
+            "out_dir": ("STRING", {"default": "output/h3_precprobe"}),
+        }}
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "patch"
+    CATEGORY = "MAINodes/VRAM Lab"
+
+    def patch(self, model, tag, every, out_dir):
+        import folder_paths
+        import comfy.patcher_extension as pe
+        base = out_dir if os.path.isabs(out_dir) else os.path.join(os.path.dirname(folder_paths.get_output_directory()), out_dir)
+        run_dir = os.path.join(base, f"{tag}_{time.strftime('%Y%m%d_%H%M%S')}")
+        os.makedirs(run_dir, exist_ok=True)
+        pr = _PrecProbe(os.path.join(run_dir, "prec.jsonl"), every=every)
+        m = model.clone()
+        to = m.model_options.setdefault("transformer_options", {})
+        to["h3_precprobe"] = pr
+
+        def wrapper(executor, *args, **kwargs):
+            sig = None
+            try:
+                sig = float(args[1].flatten()[0].item()) / 1000.0
+            except Exception:  # noqa: BLE001
+                pass
+            pr.begin_forward(sig)
+            out = executor(*args, **kwargs)
+            pr.flush()
+            return out
+        m.add_wrapper_with_key(pe.WrappersMP.DIFFUSION_MODEL, "h3_precprobe", wrapper)
+        log.info("H3PrecisionProbe[%s]: -> %s (every %d)", tag, run_dir, every)
+        return (m,)
+
+
+NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3MemoryProbe": H3MemoryProbe, "H3FreeCache": H3FreeCache, "H3EvictTextEncoder": H3EvictTextEncoder,
+                       "H3PrecisionProbe": H3PrecisionProbe}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3StreamedBlocks": "H3 Streamed Blocks (exact low-VRAM, alpha)",
                               "H3MemoryProbe": "H3 Memory Probe (ledger + allocator trace, alpha)",
                               "H3FreeCache": "H3 Free Cache (empty allocator between stages)",
-                              "H3EvictTextEncoder": "H3 Evict Text Encoder (unload after encode)"}
+                              "H3EvictTextEncoder": "H3 Evict Text Encoder (unload after encode)",
+                              "H3PrecisionProbe": "H3 Precision Probe (A6: 4-bit vs 8-bit activation map, alpha)"}
