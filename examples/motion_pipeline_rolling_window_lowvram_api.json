@@ -1,49 +1,30 @@
 {
  "300": {
-  "class_type": "PathchSageAttentionKJ",
+  "class_type": "H3StreamedBlocks",
   "inputs": {
+   "q_chunk": 16384,
+   "kv_chunk": 16384,
+   "mlp_chunk": 16384,
+   "min_tokens": 32768,
+   "kv_block": 0,
+   "final_layer_chunk": 16384,
+   "final_layer_gemm": "exact (whole GEMM, one fp32 buffer)",
+   "self_check": false,
    "model": [
     "127",
     0
    ],
-   "sage_attention": "auto",
-   "allow_compile": false
+   "kv_store": "kvi8r: rotated int8 K/V (approximate)"
   },
   "_meta": {
    "title": "PathchSageAttentionKJ"
-  }
- },
- "301": {
-  "class_type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
-  "inputs": {
-   "model": [
-    "300",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "MiniMaxH3MemoryEfficientSageAttentionPatch"
-  }
- },
- "302": {
-  "class_type": "MiniMaxChunkFeedForward",
-  "inputs": {
-   "model": [
-    "301",
-    0
-   ],
-   "chunks": 2,
-   "seq_threshold": 65536
-  },
-  "_meta": {
-   "title": "MiniMaxChunkFeedForward"
   }
  },
  "303": {
   "class_type": "LoraLoaderModelOnly",
   "inputs": {
    "model": [
-    "302",
+    "300",
     0
    ],
    "lora_name": "minimax_h3-lightx2v/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
@@ -67,7 +48,7 @@
  "119": {
   "class_type": "VAELoader",
   "inputs": {
-   "vae_name": "minimax_h3/minimax_h3_video_vae_fp16.safetensors"
+   "vae_name": "minimax_h3/minimax_h3_video_vae_int8_convrot.safetensors"
   },
   "_meta": {
    "title": "VAELoader"
@@ -85,7 +66,7 @@
  "127": {
   "class_type": "UNETLoader",
   "inputs": {
-   "unet_name": "minimax_h3/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+   "unet_name": "minimax_h3/minimax_h3_fl2va_pruned_w4a8_mixed.safetensors",
    "weight_dtype": "default"
   },
   "_meta": {
@@ -167,7 +148,7 @@
   "class_type": "BasicScheduler",
   "inputs": {
    "model": [
-    "302",
+    "300",
     0
    ],
    "scheduler": "linear_quadratic",
@@ -182,11 +163,11 @@
   "class_type": "BasicGuider",
   "inputs": {
    "model": [
-    "302",
+    "300",
     0
    ],
    "conditioning": [
-    "131",
+    "9202",
     0
    ]
   },
@@ -290,7 +271,7 @@
    ],
    "format": "auto",
    "codec": "auto",
-   "filename_prefix": "video/mainodes_rollwin_baseline"
+   "filename_prefix": "video/mainodes_rollwin_lowvram_baseline"
   },
   "_meta": {
    "title": "SaveVideo"
@@ -424,7 +405,7 @@
     0
    ],
    "conditioning": [
-    "206",
+    "9203",
     0
    ]
   },
@@ -473,7 +454,7 @@
   "class_type": "VAEDecode",
   "inputs": {
    "samples": [
-    "208",
+    "9201",
     0
    ],
    "vae": [
@@ -489,7 +470,7 @@
   "class_type": "VAEDecodeAudio",
   "inputs": {
    "samples": [
-    "208",
+    "9201",
     0
    ],
    "vae": [
@@ -566,7 +547,7 @@
    ],
    "format": "auto",
    "codec": "auto",
-   "filename_prefix": "video/mainodes_rollwin_final"
+   "filename_prefix": "video/mainodes_rollwin_lowvram_final"
   },
   "_meta": {
    "title": "SaveVideo"
@@ -647,7 +628,7 @@
     "240",
     5
    ],
-   "run_name": "rolling_window",
+   "run_name": "rolling_window_lowvram",
    "feather_frames": 6,
    "store_dir": "output/h3_windows",
    "baseline_audio": [
@@ -698,6 +679,45 @@
     "241",
     4
    ]
+  }
+ },
+ "9202": {
+  "class_type": "H3EvictTextEncoder",
+  "inputs": {
+   "conditioning": [
+    "131",
+    0
+   ],
+   "clip": [
+    "128",
+    0
+   ]
+  }
+ },
+ "9203": {
+  "class_type": "H3EvictTextEncoder",
+  "inputs": {
+   "conditioning": [
+    "206",
+    0
+   ],
+   "clip": [
+    "128",
+    0
+   ]
+  }
+ },
+ "9201": {
+  "class_type": "H3FreeCache",
+  "inputs": {
+   "also_gc": true,
+   "samples": [
+    "208",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "H3FreeCache"
   }
  }
 }

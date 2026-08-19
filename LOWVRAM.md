@@ -41,6 +41,14 @@ Everything below is the why and the numbers.
 
 ## The workflow that ships: `examples/motion_pipeline_lowvram.json`
 
+Two things the example already includes that are easy to miss: the AUDIO INIT
+(`H3 V2V Init` takes the source performance's audio latent at strength 0.5, so
+pass 2 follows the original delivery) and the smear-aware audio recover. For
+clips whose dilated pass does not fit your card in one piece, the same stack is
+wired into the windowed graph:
+[`examples/motion_pipeline_rolling_window_lowvram.json`](examples/motion_pipeline_rolling_window_lowvram.json)
+(API twin alongside; plan report first, then queue per window; inject 0.48).
+
 One graph, the whole motion pipeline for a small card, with the rotated int8
 K/V store on. What is in it and why, in the order it runs (2026-08-18):
 
