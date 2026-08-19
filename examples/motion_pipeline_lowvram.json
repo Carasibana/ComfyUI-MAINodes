@@ -504,7 +504,7 @@
         0,
         16384,
         "exact (whole GEMM, one fp32 buffer)",
-        "bf16 (exact)",
+        "kvi8r: rotated int8 K/V (approximate)",
         false
       ]
     },

@@ -131,8 +131,9 @@ the exact +11.9 at 217k tokens; kvi8s attends on int8/fp8 tensor cores
 straight from the store, ~1.6x faster attention standalone), same-seed
 renders are sibling takes, and only kvi8r's first cut has been in front of
 eyes ("almost perfect" on the de-rope side by side, one clip, one viewer).
-Default off; the table with the numbers and what is still owed is in
-LOWVRAM.md. The int8_convrot video VAE now in the example graph is also an
+The node defaults to the exact store; the low-VRAM example graph turns kvi8r
+on (operator's call for that graph); the table with the numbers and what is
+still owed is in LOWVRAM.md. The int8_convrot video VAE now in the example graph is also an
 approximation (60 dB PSNR against the fp16 decoder on the same latent).
 
 ## Where to look next

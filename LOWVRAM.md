@@ -53,8 +53,12 @@ penalty").
      faster, and on the same latent the two decodes agree to 60 dB PSNR
      (encoder identical; only the ViT decoder's linears are int8). Measured
      2026-08-18 evening; the fp16 file works the same, it just costs more,
-   - `H3 Streamed Blocks` in the model chain, defaults (16k-token chunks,
-     `final_layer_gemm` = exact),
+   - `H3 Streamed Blocks` in the model chain with 16k-token chunks,
+     `final_layer_gemm` = exact and **`kv_store` = kvi8r** (the rotated int8
+     K/V store: 2.4 GiB less forward peak than the exact store at 217k tokens,
+     ~18% slower per step, a sibling take of the exact result; the operator's
+     call for the low-VRAM graph, 2026-08-18: "better for low VRAM and almost
+     perfect quality". Set it back to `bf16 (exact)` for the bit-equal path),
    - `H3 Free Cache` between the pass-2 sampler and its decodes,
    - `H3 Evict Text Encoder` after each prompt encode.
    The KJNodes sage-attention patches and FFN chunker from the parent graph
@@ -162,8 +166,9 @@ At 217k tokens the exact block's forward peak is +11.9 GiB above the resident
 weights, and 5.8 GiB of that is the K/V of the whole sequence held in bf16
 while the query chunks attend against it. `H3 Streamed Blocks` has a
 `kv_store` option with two ways of halving those bytes. Neither is bit-equal
-to stock: a same-seed render is a sibling take, and the sibling has to pass
-eyes and the sensor bank before it is more than a labelled option.
+to stock: a same-seed render is a sibling take. The node's default is the
+exact store; the low-VRAM example graph ships with kvi8r on (operator's
+call), kvi8s stays a labelled option until it has been rendered and seen.
 
 | `kv_store` | what it is | forward peak at 217k tokens | s/step (pass 2, 702 f de-rope) | quality so far |
 |---|---|---|---|---|

@@ -131,7 +131,7 @@
         "127",
         0
       ],
-      "kv_store": "bf16 (exact)"
+      "kv_store": "kvi8r: rotated int8 K/V (approximate)"
     },
     "_meta": {
       "title": "PathchSageAttentionKJ"
