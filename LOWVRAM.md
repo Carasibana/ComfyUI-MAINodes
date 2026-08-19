@@ -11,8 +11,8 @@ run on a physically different 16 GB card, which is the next thing.
    NVMe page cache instead of holding a copy of every model in RAM).
 2. Load `examples/motion_pipeline_lowvram.json` (API twin alongside), point
    the LoadImage at your reference, set the prompt and canvas.
-3. Queue. The 124-frame reference clip took 6:14 end to end on the fenced
-   16 GB / 32 GB rig.
+3. Queue. The 124-frame reference clip takes about 7 minutes end to end on
+   the fenced 15 GiB card (RSS 25 GB).
 
 **What the graph does to make a small card happy:**
 
@@ -42,11 +42,13 @@ K/V store on. What is in it and why, in the order it runs (2026-08-18):
 | `H3 Free Cache` | between the pass-2 sampler and its decodes | returns the allocator pool before the VAE runs (17 GiB on the long pass under `--gpu-only`; the small-card win is that decode never competes with a stale pool) |
 | `H3 Exact Recover`, `H3 Audio Recover` | | back to real time, frame-exact |
 
-Measured on the fenced 16 GB / 32 GB rig with the exact store: 124-frame
-reference clip end to end in 6:14, VRAM 16.1 (fills the fence), RSS 24.8 GB.
-The same graph as it ships (kvi8r + int8 VAE) is being re-run at the 15.0 GiB
-fence; the row lands here when it does. On the 702-frame de-rope (a bigger
-graph than this example) kvi8r measured 374 s/step against 318 exact.
+Measured as it ships (kvi8r + int8 VAE) at the 15.0 GiB fence / 48 GB
+cgroup: the 124-frame reference clip end to end in **6:56**, VRAM 15.4 (the
+fence, filled during the TE load), torch reserved max 6.2 GiB, RSS 25.2 GB,
+zero allocator trims; pass 1 14.2 s/step, the de-rope pass 56 s/step. (With
+the exact store and the fp16 VAE at the earlier 15.4 fence: 6:14, RSS 24.8.)
+On the 702-frame de-rope, a bigger graph than this example, the exact store
+no longer fits at 15.0 GiB while kvi8r (374 s/step) and kvi8s (219) render.
 
 The KJNodes sage-attention patches and FFN chunker from the parent graph
 are not in it: sage attention is an approximation and the exactness gates
@@ -120,6 +122,7 @@ from "OOM" to "same speed":
 | 32 GB (fenced), normal mode, `--fast-disk` | 64 GB (cgroup) | renders, 25 GiB VRAM peak | 318 |
 | 24 GB (fenced) | 32 GB (cgroup) | renders, 23.5 GiB VRAM peak, 25.8 GB RSS | 318 |
 | **16 GB (fenced)** | **32 GB (cgroup)** | **renders, 15.5 GiB VRAM peak, 27.4 GB RSS** | **316** |
+| **15.0 GiB fence (a 5070 Ti with its desktop up)** | 48 GB (cgroup) | exact store: **out of memory** at the second forward (+12.1 GiB needed above the resident weights, 1990 allocator trims first); **kvi8r: renders** (+9.5 GiB, 22:33); **kvi8s: renders** (+9.5 GiB, 14:50) | exact - / kvi8r 374 / kvi8s 219 |
 | 16 GB (fenced) | 32 or 64 GB | 906 f (~275k tokens): out of memory | |
 | 24 GB (fenced) | 32 GB | 906 f: renders, RSS 29.8 GB (RAM at the edge) | 515 |
 
@@ -186,7 +189,7 @@ call), kvi8s stays a labelled option until it has been rendered and seen.
 |---|---|---|---|---|
 | `bf16 (exact)` | stock math, chunked | +11.9 GiB | 318 | bit-equal |
 | `kvi8r: rotated int8 K/V` | K and V int8 with one fp16 scale per (token, head) row, in a fixed Hadamard-rotated basis of the head dim; the query chunk is rotated to match and the output un-rotated once, so a K/V block dequant is one int8->fp16 cast times a scale, no GEMM; attention in fp16 blockwise (`kv_block`, default 16384) with an online-softmax combine | **+9.5 GiB** (second cut, measured live 2026-08-18 evening; the first cut was +12.5) | **374** (first cut 400) | first cut: operator's eyes "almost perfect" on the de-rope side by side, "looks fine" on a 90 f T2VA; second cut: side by side rendered, verdict pending; sensor bank over seeds owed |
-| `kvi8s: Sage int8/fp8 K/V, rotated` | the same bytes kept in SageAttention's kernel layout (int8 K with one scale per 64-token block after mean smoothing, fp8 e4m3 V per channel), Q and K Hadamard-rotated first, attended on int8/fp8 tensor cores straight from the store, no dequant; needs the `sageattention` package (2.x, sm120 works) | standalone: same bytes as kvi8r, ~0.6 GiB transient (live run in progress) | standalone: attention 1.6x faster than the exact path (~163 vs 258 s of the ~318 s step) | one rung more approximate than kvi8r on a synthetic proxy (rel-rms 3.1e-2 vs 1.3e-2; the shipped `sageattn()` scores 5.5e-2 on the same inputs, so the rotation is worth 1.8x to Sage); no render yet |
+| `kvi8s: Sage int8/fp8 K/V, rotated` | the same bytes kept in SageAttention's kernel layout (int8 K with one scale per 64-token block after mean smoothing, fp8 e4m3 V per channel), Q and K Hadamard-rotated first, attended on int8/fp8 tensor cores straight from the store, no dequant; needs the `sageattention` package (2.x, sm120 works) | **+9.5 GiB** (measured live 2026-08-18 evening) | **219** (31% faster than the exact store, 42% faster than kvi8r) | one rung more approximate than kvi8r on a synthetic proxy (rel-rms 3.1e-2 vs 1.3e-2; the shipped `sageattn()` scores 5.5e-2 on the same inputs, so the rotation is worth 1.8x to Sage); de-rope side by side rendered, verdict pending the operator's eyes |
 
 Why the rotation: the fixed orthonormal Hadamard spreads the outlier channels
 of K and V over all 128 dims before rounding, so a per-row int8 scale wastes
