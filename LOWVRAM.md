@@ -1,16 +1,16 @@
 # Low VRAM, low RAM: the de-rope on a 16 GB card
 
-Status 2026-08-18: alpha. Everything below was measured on one machine, fenced
-down to look like small ones (real renders on the real GPU with the VRAM held
-by a balloon and the RAM capped by a cgroup). **Fence sizes are slightly
-generous:** the card is 95.6 GiB and the balloons held 79 / 71 / 63 GiB, so the
-"16 / 24 / 32 GB" cards below were really 16.6 / 24.6 / 32.6 GiB. A real 16 GB
-card has ~15.5 GiB usable, so read the 16 GB rows as "at the edge", not
-"comfortable": dynamic VRAM fills whatever the card has with resident weights,
-which is why process peaks read as the card size. A confirming run at a true
-15.0 GiB fence is the next measurement. Nothing has been run on a
-physically different 16 GB card yet; that is the next thing, and it is a
-dogfood ask, not a research question.
+Status 2026-08-18 (evening): alpha. Everything below was measured on one
+machine, fenced down to look like small ones (real renders on the real GPU with
+the VRAM held by a balloon and the RAM capped by a cgroup). **How the fence
+was read:** the first day's "16 GB" rows ran with 15.4 GiB device-free as
+`torch.cuda.mem_get_info` sees it (a headless 5070 Ti reports 15.92 GiB total
+and about 15.5 free); the evening's kvi8r run used a stricter 15.0 GiB fence,
+which is a 5070 Ti with its desktop attached. Dynamic VRAM fills whatever the
+card has, so process peaks always read as the fence; the numbers that carry a
+memory claim are the in-process forward peaks from `H3 Memory Probe`. Nothing
+has been run on a physically different 16 GB card yet; that is the next thing,
+and it is a dogfood ask, not a research question.
 
 ## The short version
 
@@ -48,6 +48,11 @@ penalty").
    the `motion_pipeline_ref2va_audioinit` graph with:
    - the W4A8 checkpoint (`minimax_h3_ref2va_pruned_w4a8_mixed`, 11 GB) in the
      UNET loader,
+   - the int8_convrot video VAE (`minimax_h3_video_vae_int8_convrot`, kijai):
+     2.2 GiB less on the card than the fp16 file (2.64 vs 4.86), decode 1.5x
+     faster, and on the same latent the two decodes agree to 60 dB PSNR
+     (encoder identical; only the ViT decoder's linears are int8). Measured
+     2026-08-18 evening; the fp16 file works the same, it just costs more,
    - `H3 Streamed Blocks` in the model chain, defaults (16k-token chunks,
      `final_layer_gemm` = exact),
    - `H3 Free Cache` between the pass-2 sampler and its decodes,
@@ -151,20 +156,27 @@ PCIe 5 x16 and a fast NVMe; a PCIe 4 desktop halves the bandwidth, which is
 still nothing against a 300 s step. A machine whose RAM cannot hold the
 weight file's page cache and whose SSD is slow could show it on short clips.
 
-## kvi8r (rotated int8 K/V), alpha, first cut
+## The K/V store options (approximation tier, default off)
 
-`H3 Streamed Blocks` has a `kv_store` option `kvi8r: rotated int8 K/V
-(approximate)`: K and V are held as int8 with one fp16 scale per (token, head)
-row after a fixed orthonormal 128-wide Hadamard rotation that is undone
-exactly on dequant, and attention runs blockwise, dequantising one K/V block
-at a time. It halves the K/V bytes. It is not bit-equal to stock: a same-seed
-render is a sibling take. On 2026-08-18 the operator judged the de-rope side by
-side "almost perfect" and the 90-frame T2VA "looks fine" (files in
-`docs/measurements/A5_kvint8/` of the private notes; a sensor-bank pass over
-seeds is still owed). As built it is not yet a memory win (the first cut spends
-the saving on fp32 dequant transients: forward peak +12.5 vs +11.9 GiB at 217k
-tokens) and it is ~26% slower at that length; the second cut (8k blocks, bf16
-rotation, fused dequant) is what should move the 16 GB line. Default off.
+At 217k tokens the exact block's forward peak is +11.9 GiB above the resident
+weights, and 5.8 GiB of that is the K/V of the whole sequence held in bf16
+while the query chunks attend against it. `H3 Streamed Blocks` has a
+`kv_store` option with two ways of halving those bytes. Neither is bit-equal
+to stock: a same-seed render is a sibling take, and the sibling has to pass
+eyes and the sensor bank before it is more than a labelled option.
+
+| `kv_store` | what it is | forward peak at 217k tokens | s/step (pass 2, 702 f de-rope) | quality so far |
+|---|---|---|---|---|
+| `bf16 (exact)` | stock math, chunked | +11.9 GiB | 318 | bit-equal |
+| `kvi8r: rotated int8 K/V` | K and V int8 with one fp16 scale per (token, head) row, in a fixed Hadamard-rotated basis of the head dim; the query chunk is rotated to match and the output un-rotated once, so a K/V block dequant is one int8->fp16 cast times a scale, no GEMM; attention in fp16 blockwise (`kv_block`, default 16384) with an online-softmax combine | **+9.5 GiB** (second cut, measured live 2026-08-18 evening; the first cut was +12.5) | **374** (first cut 400) | first cut: operator's eyes "almost perfect" on the de-rope side by side, "looks fine" on a 90 f T2VA; second cut: side by side rendered, verdict pending; sensor bank over seeds owed |
+| `kvi8s: Sage int8/fp8 K/V, rotated` | the same bytes kept in SageAttention's kernel layout (int8 K with one scale per 64-token block after mean smoothing, fp8 e4m3 V per channel), Q and K Hadamard-rotated first, attended on int8/fp8 tensor cores straight from the store, no dequant; needs the `sageattention` package (2.x, sm120 works) | standalone: same bytes as kvi8r, ~0.6 GiB transient (live run in progress) | standalone: attention 1.6x faster than the exact path (~163 vs 258 s of the ~318 s step) | one rung more approximate than kvi8r on a synthetic proxy (rel-rms 3.1e-2 vs 1.3e-2; the shipped `sageattn()` scores 5.5e-2 on the same inputs, so the rotation is worth 1.8x to Sage); no render yet |
+
+Why the rotation: the fixed orthonormal Hadamard spreads the outlier channels
+of K and V over all 128 dims before rounding, so a per-row int8 scale wastes
+less range; scores are invariant (q.k = (qH).(kH)) and P.V comes back through
+H^T once on the output. Why fp16 and not bf16 inside kvi8r: in the rotated
+basis every value has the same magnitude and bf16's 8-bit mantissa alone costs
+a 4.8e-3 rel-rms floor; fp16's 11 bits cost 1.7e-3 (measured on random data).
 
 ## What is exact, and what is not
 
@@ -181,9 +193,38 @@ rotation, fused dequant) is what should move the 16 GB line. Default off.
   compares stock and streamed on the first block's real input.
 - The output head has an exact mode (default) and a chunked-GEMM mode that
   differs by ~1e-6 per step in fp32 and produced a different clip after 25
-  steps. It is labelled and off. `kv_block` is experimental and as built does
-  not lower memory; leave it at 0.
+  steps. It is labelled and off. `kv_block` on the exact store is experimental
+  and as built does not lower memory; leave it at 0 (it is the block size for
+  the kvi8r store).
 - `H3 Free Cache` and `H3 Evict Text Encoder` change no math.
+- The int8_convrot video VAE is an approximation by construction (60 dB PSNR
+  against the fp16 decoder on the same latent, encoder identical); the fp16
+  VAE is what the exactness gates were run with.
+
+## What is next (the roadmap, in the order it will be tested)
+
+1. **Host RAM is the binding limit on the small machine, not VRAM.** The
+   702-frame pipeline needs ~48 GB of RAM today: every held IMAGE is fp32 on
+   the CPU (8.9 GB per 702 frames at 1376x768; ComfyUI's H3 VAE decode
+   pre-allocates the whole video as fp32), and the 32 GB fence killed the run
+   at the VAE encode. Next: fp16 for the smear output (bit-identical into the
+   fp16 VAE, verified first), uint8 for view-only outputs, then a spill /
+   recompute toggle only for what remains. VAE activations themselves are not
+   the problem (0.6 GiB decode / 2.2 GiB encode transient at the 256 px tiles).
+2. **kvi8s live**, then the sensor bank over seeds for both stores; a per-32-value
+   scale variant of kvi8r (finer than per row); fp8 K/V if a kernel takes it
+   without dequant; int4/nvfp4 K/V behind the same gate.
+3. **The weight side**: where the streamed block forces extra weight decode
+   per token chunk (W4A8's int4->int8 decode is repeated per chunk: measured
+   +25% wall at 29k tokens, +6% at 217k); decode once per block and reuse,
+   larger chunks where the flash split-KV rule allows, kitchen's fused paths
+   (SwiGLU fold, `convrot_w4a4` for the MLP).
+4. **A real 16 GB card**, someone else's, end to end on the example graph.
+5. Later, after the static rungs: dynamic precision routing (per block, per
+   step, FP4 vs FP8 by measured reconstruction error; the first experiment is
+   a heatmap on real activations, no kernels), and the ViT VAE decoder's own
+   low-bit rungs (already on int8 tensor cores in the int8_convrot file; the
+   remaining case is speed, ~40 s per 702 f decode).
 
 ## The environment this was measured in
 

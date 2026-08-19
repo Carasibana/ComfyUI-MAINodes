@@ -28,7 +28,14 @@ memory numbers behind them are in the docstrings of `vram_lab.py`; the
 small-card recipe, what to expect and the environment it was measured in are
 in [LOWVRAM.md](LOWVRAM.md), with the example graph
 `examples/motion_pipeline_lowvram.json`; the alpha status is in
-[ALPHA.md](ALPHA.md#vram-lab).
+[ALPHA.md](ALPHA.md#vram-lab). Evening additions: two opt-in K/V store
+options in the same node (`kvi8r`, rotated int8 K/V, forward peak +9.5 GiB
+instead of +11.9; `kvi8s`, the same bytes in SageAttention's layout attended
+on int8/fp8 tensor cores with no dequant), both approximation tier with the
+measurements and what is still owed in LOWVRAM.md; the example graph moves to
+the int8_convrot video VAE (2.2 GiB less, decode 1.5x faster, 60 dB PSNR
+against fp16 on the same latent); and a fix for the `H3 Audio Smear` /
+`H3 Audio Recover` istft crash on short stretched tails (user report).
 
 **Dialogue survives a de-rope now** (2026-08-17). A de-rope used to break
 speech, and the way it broke was confusing: the body came back at the right

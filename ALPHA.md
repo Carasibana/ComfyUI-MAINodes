@@ -125,6 +125,16 @@ Windows, ROCm, non-flash attention backends (cuDNN and mem-efficient are
 chunk-invariant at every length here but 1.1 to 2x slower; no two backends
 are bit-equal to each other).
 
+The `kv_store` options (`kvi8r`, `kvi8s`) are the approximation tier of the
+same node: half the K/V bytes (kvi8r measured +9.5 GiB forward peak against
+the exact +11.9 at 217k tokens; kvi8s attends on int8/fp8 tensor cores
+straight from the store, ~1.6x faster attention standalone), same-seed
+renders are sibling takes, and only kvi8r's first cut has been in front of
+eyes ("almost perfect" on the de-rope side by side, one clip, one viewer).
+Default off; the table with the numbers and what is still owed is in
+LOWVRAM.md. The int8_convrot video VAE now in the example graph is also an
+approximation (60 dB PSNR against the fp16 decoder on the same latent).
+
 ## Where to look next
 
 | | |

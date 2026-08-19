@@ -13,7 +13,7 @@
   "119": {
     "class_type": "VAELoader",
     "inputs": {
-      "vae_name": "minimax_h3/minimax_h3_video_vae_fp16.safetensors"
+      "vae_name": "minimax_h3/minimax_h3_video_vae_int8_convrot.safetensors"
     },
     "_meta": {
       "title": "VAELoader"
@@ -130,7 +130,8 @@
       "model": [
         "127",
         0
-      ]
+      ],
+      "kv_store": "bf16 (exact)"
     },
     "_meta": {
       "title": "PathchSageAttentionKJ"
