@@ -6,12 +6,16 @@ run on a physically different 16 GB card, which is the next thing.
 
 **Get started** (16 GB card, 32 GB machine; measured, alpha):
 
-1. Start ComfyUI **without** `--gpu-only` and **with** `--fast-disk
-   --fp16-intermediates` (dynamic VRAM streams the DiT; `--fast-disk` reads
-   the weights from the NVMe page cache instead of holding a copy of every
-   model in RAM; `--fp16-intermediates` halves every held IMAGE, which is
-   what lets the full 702-frame de-rope pipeline fit a 32 GB machine: RSS
-   31.8 GB measured against 41.9 without it, same VRAM and speed).
+1. Start ComfyUI **without** `--gpu-only` and **with**
+   `--fast-disk --fp16-intermediates --disable-pinned-memory` (and
+   `--cache-none` if RAM is tight; it re-runs every node on each queue).
+   What each does, measured on the 702-frame de-rope (RSS peak, same VRAM and
+   speed in every case): fp32 IMAGEs and a pinned DiT = 41.9 GB; `--fp16-intermediates`
+   halves every held IMAGE = 31.8; `--disable-pinned-memory` drops the DiT's
+   ~10 GB pinned staging copy = 21.6; `--cache-none` frees node outputs after
+   their consumers = 24.2 alone, **14.6 GB with all four**. `--fast-disk` reads
+   the weights from the NVMe page cache instead of RAM copies. Speed did not
+   move (369-374 s/step throughout).
 2. Load `examples/motion_pipeline_lowvram.json` (API twin alongside), point
    the LoadImage at your reference, set the prompt and canvas.
 3. Queue. The 124-frame reference clip takes about 7 minutes end to end on
@@ -244,17 +248,19 @@ a 4.8e-3 rel-rms floor; fp16's 11 bits cost 1.7e-3 (measured on random data).
 
 ## What is next (the roadmap, in the order it will be tested)
 
-1. **Host RAM is the binding limit on the small machine, not VRAM.** Every
-   held IMAGE is 8.9 GB per 702 frames at 1376x768 in fp32 (ComfyUI's H3 VAE
-   decode pre-allocates the whole video), and without `--fp16-intermediates`
-   the pipeline needs ~48 GB. With the flag it fits 32 GB at the edge (RSS
-   31.8, measured); note the fp16 IMAGE is normalised in fp16 before the
-   encoder, so the pass-2 result is a sibling take of the fp32 run (28 dB
-   between them, judged equal by eye). Next: uint8 for view-only outputs and
-   dropping outputs after their last consumer for margin, an fp32 normalise
-   on the encode input if anyone wants the fp32 sibling back, then a spill /
-   recompute toggle only for what remains. VAE activations themselves are not
-   the problem (0.6 GiB decode / 2.2 GiB encode transient at the 256 px tiles).
+1. **Host RAM was the binding limit on the small machine; four flags moved it.**
+   Every held IMAGE is 8.9 GB per 702 frames at 1376x768 in fp32, ComfyUI pins
+   a ~10 GB staging copy of the DiT, and the execution cache holds every
+   output until the prompt ends: 41.9 GB. With `--fp16-intermediates
+   --disable-pinned-memory --cache-none` (all measured one at a time and
+   together) the same pipeline peaks at 14.6 GB. Note the fp16 IMAGE is
+   normalised in fp16 before the encoder, so the pass-2 result is a sibling
+   take of the fp32 run (28 dB between them, judged equal by eye). What is
+   left for code: streaming the smear straight into the encoder (never
+   holding the dilated IMAGE), uint8 for view-only outputs, and an fp32
+   normalise on the encode input if anyone wants the fp32 sibling back. VAE
+   activations themselves are not the problem (0.6 GiB decode / 2.2 GiB
+   encode transient at the 256 px tiles).
 2. **kvi8s live**, then the sensor bank over seeds for both stores; a per-32-value
    scale variant of kvi8r (finer than per row); fp8 K/V if a kernel takes it
    without dequant; int4/nvfp4 K/V behind the same gate.
