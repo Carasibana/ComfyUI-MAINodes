@@ -178,7 +178,10 @@ const VA=()=>$("#va"),VB=()=>$("#vb");let h2hDiff=false,wipeMode=false;
 function setAB(a,b){if(a!==null)A=a;if(b!==null)B=b;loadAB();}
 function srcOf(x){return !x?"":(h2hDiff&&x!=REF)?`media/${x}.diff.mp4`:`media/${x}.mp4`;}
 function loadAB(){$("#aname").textContent=A||"-";$("#bname").textContent=B||"-";$("#al").textContent=A||"";$("#bl").textContent=B||"";
- const a=VA(),b=VB();const t=a.currentTime||0,was=!a.paused;a.src=srcOf(A);b.src=srcOf(B);a.currentTime=t;b.currentTime=t;applyHear();if(was){a.play();b.play();}
+ const a=VA(),b=VB();const t=a.currentTime||0,was=!a.paused;
+ a.preload="auto";b.preload="auto";a.src=srcOf(A);b.src=srcOf(B);
+ const ready=v=>new Promise(r=>v.readyState>=3?r():v.addEventListener("canplay",r,{once:true}));
+ Promise.all([ready(a),ready(b)]).then(()=>{a.currentTime=t;b.currentTime=t;a.playbackRate=1;b.playbackRate=1;applyHear();if(was){a.play();b.play();}});
  const ra=ROWS.find(r=>r.arm==A),rb=ROWS.find(r=>r.arm==B);
  $("#h2hm").innerHTML=[ra,rb].filter(Boolean).map((r,i)=>`<b>${i?"B":"A"}</b> ${r.desc} · `+COLS.map(c=>r[c[0]]==null?"":`${c[1].split(" (")[0]} ${fmtv(c[0],r[c[0]])}`).filter(Boolean).join(" · ")).join("<br>");
  document.getElementById("h2h").scrollIntoView({behavior:"smooth",block:"start"});}
@@ -202,10 +205,15 @@ function rebind(){bindSync();const fa=document.querySelector(".fsA"),fb=document
  document.querySelectorAll(".hearA").forEach(x=>x.onclick=()=>{$("#hear").value=$("#hear").value=="a"?"none":"a";applyHear();});
  document.querySelectorAll(".hearB").forEach(x=>x.onclick=()=>{$("#hear").value=$("#hear").value=="b"?"none":"b";applyHear();});
  applyHear();}
+function syncPair(m,sl){ // m = the clock (the side you hear), sl = the follower
+ if(sl.readyState<3)return;                       // still buffering: leave it alone, no seek storm
+ const d=m.currentTime-sl.currentTime,ad=Math.abs(d);
+ if(ad>0.5){sl.currentTime=m.currentTime;sl.playbackRate=1;}          // loop wrap / big jump: one seek
+ else if(ad>0.05){sl.playbackRate=Math.max(0.9,Math.min(1.1,1+d*0.5));} // small drift: glide, never seek
+ else if(sl.playbackRate!=1){sl.playbackRate=1;}}
 function bindSync(){const a=$("#va"),b=$("#vb");const hearing=()=>$("#hear").value;
- // the side you HEAR is the clock; the muted side gets seeked. Seeking the audible side chops its audio.
- a.ontimeupdate=()=>{if(hearing()!="b"&&Math.abs(a.currentTime-b.currentTime)>0.08)b.currentTime=a.currentTime;};
- b.ontimeupdate=()=>{if(hearing()=="b"&&Math.abs(b.currentTime-a.currentTime)>0.08)a.currentTime=b.currentTime;};
+ a.ontimeupdate=()=>{if(hearing()!="b")syncPair(a,b);};
+ b.ontimeupdate=()=>{if(hearing()=="b")syncPair(b,a);};
  a.onplay=()=>{b.play().catch(()=>{});$("#play").innerHTML="&#10074;&#10074;";};
  a.onpause=()=>{b.pause();$("#play").innerHTML="&#9654;";};}
 $("#wipe").oninput=e=>{const w=$("#ww");if(w)w.style.setProperty("--w",e.target.value+"%");};
