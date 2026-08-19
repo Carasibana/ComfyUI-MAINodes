@@ -586,14 +586,20 @@ class _PrecProbe:
                 del self.counter[k]
 
     @staticmethod
-    def _bf16_weight(layer):
+    def _bf16_weight(layer, device):
+        """The layer's weight dequantised to bf16 ON the compute device (under dynamic VRAM the
+        stored weight may live on the CPU); None if that is not possible."""
         w = getattr(layer, "weight", None)
+        if w is None:
+            return None
         try:
+            if getattr(w, "device", None) is not None and w.device != device:
+                w = w.to(device)
             if hasattr(w, "dequantize"):
-                return w.dequantize().to(torch.bfloat16)
+                w = w.dequantize()
+            return w.to(device=device, dtype=torch.bfloat16)
         except Exception:  # noqa: BLE001
             return None
-        return w.to(torch.bfloat16) if w is not None else None
 
     @torch.no_grad()
     def projection(self, block, proj, layer, x, a, b, mod_segments):
@@ -606,8 +612,12 @@ class _PrecProbe:
         y = layer(x)
         fq = {"nvfp4": self._fq_nvfp4, "nvfp4_had": self._fq_nvfp4_had, "fp8": self._fq_fp8}
         outs = {k: layer(f(x)) for k, f in fq.items()}
-        wb = self._bf16_weight(layer)                       # bf16 truth for the absolute scale
-        y_ref = torch.nn.functional.linear(x, wb, getattr(layer, "bias", None)) if wb is not None else None
+        wb = self._bf16_weight(layer, x.device)             # bf16 truth for the absolute scale
+        y_ref = None
+        if wb is not None and wb.shape[-1] == x.shape[-1]:
+            bias = getattr(layer, "bias", None)
+            bias = bias.to(device=x.device, dtype=x.dtype) if bias is not None else None
+            y_ref = torch.nn.functional.linear(x, wb, bias)
         del wb
         for sa, sb, row in mod_segments:
             lo, hi = max(sa, a), min(sb, b)
