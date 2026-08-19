@@ -6,9 +6,12 @@ run on a physically different 16 GB card, which is the next thing.
 
 **Get started** (16 GB card, 32 GB machine; measured, alpha):
 
-1. Start ComfyUI **without** `--gpu-only` and **with** `--fast-disk`
-   (dynamic VRAM streams the DiT; `--fast-disk` reads the weights from the
-   NVMe page cache instead of holding a copy of every model in RAM).
+1. Start ComfyUI **without** `--gpu-only` and **with** `--fast-disk
+   --fp16-intermediates` (dynamic VRAM streams the DiT; `--fast-disk` reads
+   the weights from the NVMe page cache instead of holding a copy of every
+   model in RAM; `--fp16-intermediates` halves every held IMAGE, which is
+   what lets the full 702-frame de-rope pipeline fit a 32 GB machine: RSS
+   31.8 GB measured against 41.9 without it, same VRAM and speed).
 2. Load `examples/motion_pipeline_lowvram.json` (API twin alongside), point
    the LoadImage at your reference, set the prompt and canvas.
 3. Queue. The 124-frame reference clip takes about 7 minutes end to end on
@@ -226,12 +229,15 @@ a 4.8e-3 rel-rms floor; fp16's 11 bits cost 1.7e-3 (measured on random data).
 
 ## What is next (the roadmap, in the order it will be tested)
 
-1. **Host RAM is the binding limit on the small machine, not VRAM.** The
-   702-frame pipeline needs ~48 GB of RAM today: every held IMAGE is fp32 on
-   the CPU (8.9 GB per 702 frames at 1376x768; ComfyUI's H3 VAE decode
-   pre-allocates the whole video as fp32), and the 32 GB fence killed the run
-   at the VAE encode. Next: fp16 for the smear output (bit-identical into the
-   fp16 VAE, verified first), uint8 for view-only outputs, then a spill /
+1. **Host RAM is the binding limit on the small machine, not VRAM.** Every
+   held IMAGE is 8.9 GB per 702 frames at 1376x768 in fp32 (ComfyUI's H3 VAE
+   decode pre-allocates the whole video), and without `--fp16-intermediates`
+   the pipeline needs ~48 GB. With the flag it fits 32 GB at the edge (RSS
+   31.8, measured); note the fp16 IMAGE is normalised in fp16 before the
+   encoder, so the pass-2 result is a sibling take of the fp32 run (28 dB
+   between them, judged equal by eye). Next: uint8 for view-only outputs and
+   dropping outputs after their last consumer for margin, an fp32 normalise
+   on the encode input if anyone wants the fp32 sibling back, then a spill /
    recompute toggle only for what remains. VAE activations themselves are not
    the problem (0.6 GiB decode / 2.2 GiB encode transient at the 256 px tiles).
 2. **kvi8s live**, then the sensor bank over seeds for both stores; a per-32-value
