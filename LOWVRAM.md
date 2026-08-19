@@ -21,7 +21,7 @@ run on a physically different 16 GB card, which is the next thing.
 
 - the DiT at 4-bit weights / 8-bit activations (`minimax_h3_ref2va_pruned_w4a8_mixed`, 11 GB), the text encoder in NVFP4, the video VAE as int8_convrot (2.2 GiB less than fp16, decode 1.5x faster, 60 dB PSNR against it);
 - `H3 Streamed Blocks` runs every DiT block in 16k-token chunks so the whole-sequence QKV and SwiGLU tensors (8.6 and 15.4 GiB at 217k tokens) never exist, and streams the output head; same math as stock (bit-equal on int8 / W4A8 with the exact K/V store);
-- **`kv_store` = kvi8r**: the K/V of the whole sequence held as rotated int8, forward peak +9.5 GiB at 217k tokens instead of +11.9; a sibling take of the exact result that passed the operator's eyes on the de-rope ("perfect for both"); flip it to `bf16 (exact)` for the bit-equal path;
+- **`kv_store` = kvi8r**: the K/V of the whole sequence held as rotated int8, forward peak +9.5 GiB at 217k tokens instead of +11.9 (with `trim_forward`, on by default, another 2.3 GiB comes off); a sibling take of the exact result that passed the operator's eyes on the de-rope ("perfect for both"); flip it to `bf16 (exact)` for the bit-equal path;
 - `H3 Evict Text Encoder` after each prompt encode, `H3 Free Cache` before the pass-2 decode: the 15 GB TE and the allocator pool leave the card before the VAE needs it;
 - the turbo LoRA with a 12-step base pass and a 6-step / inject 0.7 de-rope pass, so the long pass is a handful of forwards.
 
@@ -125,7 +125,7 @@ from "OOM" to "same speed":
 | 32 GB (fenced), normal mode, `--fast-disk` | 64 GB (cgroup) | renders, 25 GiB VRAM peak | 318 |
 | 24 GB (fenced) | 32 GB (cgroup) | renders, 23.5 GiB VRAM peak, 25.8 GB RSS | 318 |
 | **16 GB (fenced)** | **32 GB (cgroup)** | **renders, 15.5 GiB VRAM peak, 27.4 GB RSS** | **316** |
-| **15.0 GiB fence (a 5070 Ti with its desktop up)** | 48 GB (cgroup) | exact store: **out of memory** at the second forward (+12.1 GiB needed above the resident weights, 1990 allocator trims first); **kvi8r: renders** (+9.5 GiB, 22:33); **kvi8s: renders** (+9.5 GiB, 14:50) | exact - / kvi8r 374 / kvi8s 219 |
+| **15.0 GiB fence (a 5070 Ti with its desktop up)** | 48 GB (cgroup) | exact store: **out of memory** at the second forward (+12.1 GiB needed above the resident weights, 1990 allocator trims first); **kvi8r: renders** (+9.5 GiB, 22:33); **kvi8s: renders** (+9.5 GiB, 14:50); **kvi8s + `trim_forward`: renders with zero allocator trims (+7.2 GiB, 14:51)** | exact - / kvi8r 374 / kvi8s 219 |
 | 16 GB (fenced) | 32 or 64 GB | 906 f (~275k tokens): out of memory | |
 | 24 GB (fenced) | 32 GB | 906 f: renders, RSS 29.8 GB (RAM at the edge) | 515 |
 
@@ -223,6 +223,13 @@ a 4.8e-3 rel-rms floor; fp16's 11 bits cost 1.7e-3 (measured on random data).
   and as built does not lower memory; leave it at 0 (it is the block size for
   the kvi8r store).
 - `H3 Free Cache` and `H3 Evict Text Encoder` change no math.
+- `trim_forward` (default on) runs a copy of the stock model forward that
+  releases the patch-embed buffers once the packed sequence is assembled
+  (stock holds them for the whole forward: 2.3 GiB at 217k tokens, measured
+  live). Same math, bit-equal on the patcher gate; it checks the installed
+  ComfyUI's forward against the copy by source hash and switches itself off
+  with a log line if ComfyUI has changed. With kvi8s it takes the forward
+  peak to +7.2 GiB (the streamed output head is now the peak, not attention).
 - The int8_convrot video VAE is an approximation by construction (60 dB PSNR
   against the fp16 decoder on the same latent, encoder identical); the fp16
   VAE is what the exactness gates were run with.
