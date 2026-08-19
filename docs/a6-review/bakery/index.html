@@ -2,6 +2,7 @@
 <html lang="en"><head><meta charset="utf-8">
 <title>A6 review: NVFP4 / FP8 activation arms, clips beside their metrics</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#916;</text></svg>">
 <style>
 :root{--bg:#0f1115;--bg2:#171a1f;--bg3:#1f232a;--grid:#2b2f36;--ink:#e8eaed;--dim:#9aa3ad;--mute:#6f7b8a;
  --nvfp4:#d7732a;--fp8:#c2456b;--ref:#3fa66a;--sat:#3f93d6;--pick:#f2c94c;--bar:#3f93d6}
@@ -33,11 +34,17 @@ tr:hover td{background:var(--bg2)}tr.sel td:first-child{box-shadow:inset 3px 0 v
 .spark{padding:0 10px 8px}.spark svg{width:100%;height:36px;display:block}
 .acts{display:flex;gap:6px;padding:0 10px 10px;flex-wrap:wrap}.acts button{padding:3px 8px;font-size:12px}
 #h2h{background:var(--bg2);border:1px solid var(--grid);border-radius:10px;padding:12px;margin:12px 0}
-#h2h .pane{display:grid;grid-template-columns:1fr 1fr;gap:10px}#h2h .pane.wipe{grid-template-columns:1fr;position:relative}
+#h2h .pane{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+#h2h .pane.wipe{display:block;position:relative;aspect-ratio:1376/768;background:#000}
+#h2h .pane.wipe>div{position:absolute;inset:0}
+#h2h .pane.wipe .lbl{display:none}
+#h2h .pane.wipe video{width:100%;height:100%;object-fit:contain}
+#h2h .pane.wipe>div:nth-of-type(2){clip-path:inset(0 0 0 var(--w,50%))}
+#h2h .pane.wipe::after{content:"";position:absolute;top:0;bottom:0;left:var(--w,50%);width:2px;background:var(--pick);pointer-events:none;z-index:2}
 #h2h video{width:100%;aspect-ratio:1376/768;background:#000;display:block}
 #h2h .lbl{font-size:12px;color:var(--dim);margin:4px 0}#h2h .lbl b{color:var(--ink)}
-.wipewrap{position:relative}.wipewrap video{position:absolute;inset:0;width:100%;height:100%}.wipewrap{aspect-ratio:1376/768}
-.wipewrap .top{clip-path:inset(0 0 0 var(--w,50%))}.wipewrap .line{position:absolute;top:0;bottom:0;left:var(--w,50%);width:2px;background:var(--pick);pointer-events:none}
+
+
 .kbd{font:12px ui-monospace,monospace;background:var(--bg3);border:1px solid var(--grid);border-radius:4px;padding:0 4px}
 #pane:fullscreen{background:#000;align-items:center;padding:1vh 1vw;box-sizing:border-box}
 #pane:fullscreen video{max-height:86vh;object-fit:contain}
@@ -57,7 +64,7 @@ button.big{font-size:15px;padding:5px 16px}
 </style></head><body>
 <header>
 <h1>A6 review: NVFP4 / FP8 activation arms beside their metrics</h1>
-<p class="lede"><b>Scene: bakery (PUBLIC scene: &#x27;exactly the same is a different question&#x27;; REAL checkpoints only - W4A8 ref vs NVFP4 all/nofc2/mid/fc1; 141 f T2VA, 25 steps, two lines, no cuts)</b> (<a href="../index.html">all scenes</a>). Same-seed. Every arm <b>fake-quantises the activations</b> of a region of the shipped W4A8 model; weights stay int4 g16, so a real NVFP4 checkpoint would move further than any arm here. The reference is the exact W4A8 arm (<b>ref_w4a8_exact</b>). Latent mean |dx| counts dose, not damage (kvi8r "perfect" = 0.24; one NVFP4 block = 0.35; FP8 everywhere = 0.75 vs NVFP4 everywhere 0.78 at 3x lower per-op error), so the pixel / flow / audio rulers below are there to be <b>calibrated against your eyes</b>, not to judge. Click a clip to play it with sound; hover plays muted; <span class="kbd">d</span> on a card swaps in the amplified |arm - ref| view. Star the candidates, send two to A/B, flip with <span class="kbd">f</span>, wipe with the slider.<br><b>Rulers that separated the arms on first build:</b> PSNR vs ref falls monotonically with latent |dx| (19.6 to 11.7 dB); <b>motion-curve corr</b> is bimodal, ~0.97 = the two big events (frame 32 and the shot cut at 71/72) land on the same frames, ~0.5 = one event slid a frame (worst-frame PSNR 7-8 dB), below 0.3 = events moved several frames; audio corr stays above 0.9 for most single-decade arms and drops to 0.77 for NVFP4 everywhere.<br><b>Cost columns:</b> <i>wall s</i> is the measured time of THIS run, a fake-quant arm on the shipped W4A8 model, so it carries the quantiser's overhead (arms run 2-10% slower than the reference, FP8's quantiser slowest) - it is not the regime's speed. <i>Δ weights</i> and <i>GEMM time</i> are [PROJ]ections of what the regime would buy if built with real weights: bytes from the file headers: W4A8 218.8 MB/block vs real NVFP4 218.5 (both 4.54 bits/param, so the NVFP4 weight delta is ~0) vs FP8 ~1 B/param, GEMM ms from the 16k-row bench (qkv 5.4/3.7/6.5, out 2.9/1.9/2.4, fc1 10.5/6.2/9.9, fc2 5.6/3.9/5.0 ms W4A8/NVFP4/FP8), block GEMMs being ~15-20% of a step at 217k tokens and more at 29k. Segment arms route activations by token row, so their weight delta is 0 and their GEMM saving scales with the token share (~0.92 video). Measured VRAM per arm was not recorded (no poller rode along; a fake-quant arm's peak would not be the regime's anyway). All-NVFP4 weights save NOTHING over the shipped W4A8 file (12.53 vs 12.54 GB, measured 2026-08-19 on the real build): the NVFP4 prize is GEMM speed and the dropped int4-to-int8 decode, not bytes.</p>
+<p class="lede"><b>Scene: bakery (PUBLIC scene: &#x27;exactly the same is a different question&#x27;; REAL checkpoints only - W4A8 ref vs NVFP4 all/nofc2/mid/fc1; 141 f T2VA, 25 steps, two lines, no cuts)</b> (<a href="../index.html">all scenes</a>). Same seed everywhere; the reference is the exact W4A8 arm (<b>ref_w4a8_exact</b>). REAL CHECKPOINTS ONLY - nothing on this page is simulated. Each arm is a full weight file (built from the bf16 source) rendered on the native kernels: the shipped W4A8 reference, the shipped int8 convrot (1% weight error, the quality ceiling of the family), and four NVFP4 builds (all / nofc2 / mid / fc1; the mixes keep their unconverted layers bf16, which drags their wall time - a production mix would keep W4A8 there). Wall times are the regimes' actual speed; the VRAM column is a device-level nvidia-smi peak from a single run and includes the model-swap transient (it tracks checkpoint file size, not steady-state need; deltas under 2.5 GiB are not claims). Key result: the int8 control lands in the same distance band as full NVFP4 and moves the audio MORE - the band is take-noise, and no ruler orders quality inside this family.<br>Click a clip to play it with sound; hover plays muted; <span class="kbd">d</span> on a card swaps in the amplified |arm - ref| view. Star candidates, send two to A/B, flip with <span class="kbd">f</span>, choose which side you hear, wipe with the slider. Cost columns marked [PROJ] are projections from GEMM microbenches; everything else is measured.</p>
 </header>
 <main>
 <div class="bar">
@@ -83,7 +90,7 @@ button.big{font-size:15px;padding:5px 16px}
   <button id="mode" title="side by side or wipe">&#9707; wipe</button>
   <label id="wipelab" style="display:none">wipe <input type="range" id="wipe" min="0" max="100" value="50"></label>
   <button id="fsPane" title="both players fullscreen">&#9974; fullscreen A/B</button>
-  <button id="diffh2h" title="swap both players to their amplified difference clips">diff vs ref</button>
+  <button id="diffh2h" title="swap both players to their amplified |clip - reference| x6 views">&#916; delta view</button>
   <button id="bref">B = reference</button>
   <select id="hear" style="display:none"><option value="a">a</option><option value="b">b</option><option value="none">none</option></select>
  </div>
@@ -180,7 +187,7 @@ function srcOf(x){return !x?"":(h2hDiff&&x!=REF)?`media/${x}.diff.mp4`:`media/${
 function loadAB(){$("#aname").textContent=A||"-";$("#bname").textContent=B||"-";$("#al").textContent=A||"";$("#bl").textContent=B||"";
  const a=VA(),b=VB();const t=a.currentTime||0,was=!a.paused;
  a.preload="auto";b.preload="auto";a.src=srcOf(A);b.src=srcOf(B);
- const ready=v=>new Promise(r=>v.readyState>=3?r():v.addEventListener("canplay",r,{once:true}));
+ const ready=v=>new Promise(r=>{if(v.readyState>=2)return r();v.addEventListener("loadeddata",r,{once:true});setTimeout(r,1500);});
  Promise.all([ready(a),ready(b)]).then(()=>{a.currentTime=t;b.currentTime=t;a.playbackRate=1;b.playbackRate=1;applyHear();if(was){a.play();b.play();}});
  const ra=ROWS.find(r=>r.arm==A),rb=ROWS.find(r=>r.arm==B);
  $("#h2hm").innerHTML=[ra,rb].filter(Boolean).map((r,i)=>`<b>${i?"B":"A"}</b> ${r.desc} · `+COLS.map(c=>r[c[0]]==null?"":`${c[1].split(" (")[0]} ${fmtv(c[0],r[c[0]])}`).filter(Boolean).join(" · ")).join("<br>");
@@ -196,12 +203,9 @@ $("#restart").onclick=()=>{VA().currentTime=0;VB().currentTime=0;VA().play();VB(
 $("#flip").onclick=()=>{[A,B]=[B,A];loadAB();};
 $("#bref").onclick=()=>setAB(null,REF);
 $("#diffh2h").onclick=()=>{h2hDiff=!h2hDiff;$("#diffh2h").classList.toggle("on",h2hDiff);loadAB();};
-$("#mode").onclick=()=>{wipeMode=!wipeMode;$("#mode").innerHTML=wipeMode?"&#9706; side by side":"&#9707; wipe";$("#mode").classList.toggle("on",wipeMode);$("#wipelab").style.display=wipeMode?"":"none";$("#fsPane").style.display=wipeMode?"none":"";const p=$("#pane");
- if(wipeMode){p.classList.add("wipe");p.innerHTML=`<div class="wipewrap" id="ww"><video id="va" loop playsinline></video><video id="vb" class="top" loop playsinline></video><div class="line"></div></div><div class="lbl">left of the line = A, right = B; drag the wipe slider <button class="fsW" title="fullscreen">⛶</button></div>`;}
- else{p.classList.remove("wipe");p.innerHTML=`<div><div class="lbl">A <b id="al"></b> <button class="hear hearA" title="hear this side">&#128266;</button> <button class="fsA" title="fullscreen">⛶</button></div><video id="va" loop playsinline></video></div><div><div class="lbl">B <b id="bl"></b> <button class="hear hearB" title="hear this side">&#128266;</button> <button class="fsB" title="fullscreen">⛶</button></div><video id="vb" loop playsinline></video></div>`;}
- rebind();loadAB();};
-function rebind(){bindSync();const fa=document.querySelector(".fsA"),fb=document.querySelector(".fsB"),fw=document.querySelector(".fsW");
- if(fa)fa.onclick=()=>goFS(VA(),[VA()]);if(fb)fb.onclick=()=>goFS(VB(),[VB()]);if(fw)fw.onclick=()=>goFS(document.getElementById("ww"),[]);
+$("#mode").onclick=()=>{wipeMode=!wipeMode;$("#mode").innerHTML=wipeMode?"&#9706; side by side":"&#9707; wipe";$("#mode").classList.toggle("on",wipeMode);$("#wipelab").style.display=wipeMode?"":"none";$("#pane").classList.toggle("wipe",wipeMode);};
+function rebind(){bindSync();const fa=document.querySelector(".fsA"),fb=document.querySelector(".fsB");
+ if(fa)fa.onclick=()=>goFS(VA(),[VA()]);if(fb)fb.onclick=()=>goFS(VB(),[VB()]);
  document.querySelectorAll(".hearA").forEach(x=>x.onclick=()=>{$("#hear").value=$("#hear").value=="a"?"none":"a";applyHear();});
  document.querySelectorAll(".hearB").forEach(x=>x.onclick=()=>{$("#hear").value=$("#hear").value=="b"?"none":"b";applyHear();});
  applyHear();}
@@ -216,7 +220,7 @@ function bindSync(){const a=$("#va"),b=$("#vb");const hearing=()=>$("#hear").val
  b.ontimeupdate=()=>{if(hearing()=="b")syncPair(b,a);};
  a.onplay=()=>{b.play().catch(()=>{});$("#play").innerHTML="&#10074;&#10074;";};
  a.onpause=()=>{b.pause();$("#play").innerHTML="&#9654;";};}
-$("#wipe").oninput=e=>{const w=$("#ww");if(w)w.style.setProperty("--w",e.target.value+"%");};
+$("#wipe").oninput=e=>{$("#pane").style.setProperty("--w",e.target.value+"%");};
 document.addEventListener("keydown",e=>{if(e.target.tagName=="TEXTAREA"||e.target.tagName=="SELECT")return;
  if(e.key==" "&&document.activeElement.tagName!="VIDEO"){e.preventDefault();$("#play").click();}
  if(e.key=="f"){$("#flip").click();}if(e.key=="1"){$("#hear").value="a";applyHear();}if(e.key=="2"){$("#hear").value="b";applyHear();}});
