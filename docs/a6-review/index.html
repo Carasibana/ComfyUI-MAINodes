@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A6 precision review: NVFP4 activation and checkpoint arms</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#101014; color:#e8e8ea; font:16px/1.55 system-ui, sans-serif; max-width: 980px; margin: 0 auto; padding: 24px 16px 80px; }
+  h1 { font-size: 1.5rem; margin-bottom: .2em; }
+  a { color:#8ab4ff; }
+  p.sub { color:#9a9aa5; margin-top: 0; }
+  li { margin: .5em 0; }
+</style>
+</head>
+<body>
+<h1>A6 precision review</h1>
+<p class="sub">Same-seed MiniMax H3 renders with the activations (and, for the gold cards,
+the weights too) of chosen projections and blocks run at NVFP4 or FP8 instead of the
+shipped int8 path, each clip beside pixel, flow and audio rulers. Every perturbed render
+is a sibling take of the reference, so the rulers rank dose and name what changed; the
+verdict on any single clip belongs to eyes and ears. Wall times are measured; cost
+columns marked [PROJ] are projections from GEMM microbenches.</p>
+<ul>
+  <li><a href="spider/index.html">spider</a>: 2D anime scene, 90 frames, 32 arms + the exact W4A8 reference and a real NVFP4 checkpoint</li>
+  <li><a href="painters/index.html">painters</a>: live-action two-shot, 141 frames, 13 arms + reference + a real NVFP4 checkpoint</li>
+</ul>
+<p class="sub">More scenes land as they are rendered and reviewed. Nodes and method:
+<a href="https://github.com/matlowai/ComfyUI-MAINodes">ComfyUI-MAINodes</a>.</p>
+</body>
+</html>
