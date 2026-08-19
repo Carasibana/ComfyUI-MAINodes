@@ -183,13 +183,16 @@ while the query chunks attend against it. `H3 Streamed Blocks` has a
 `kv_store` option with two ways of halving those bytes. Neither is bit-equal
 to stock: a same-seed render is a sibling take. The node's default is the
 exact store; the low-VRAM example graph ships with kvi8r on (operator's
-call), kvi8s stays a labelled option until it has been rendered and seen.
+call); kvi8s has now been rendered and seen ("looks perfect", 219 s/step
+against kvi8r's 374) and is the faster option for anyone with the
+`sageattention` package installed; the example keeps kvi8r because it needs
+no extra package.
 
 | `kv_store` | what it is | forward peak at 217k tokens | s/step (pass 2, 702 f de-rope) | quality so far |
 |---|---|---|---|---|
 | `bf16 (exact)` | stock math, chunked | +11.9 GiB | 318 | bit-equal |
 | `kvi8r: rotated int8 K/V` | K and V int8 with one fp16 scale per (token, head) row, in a fixed Hadamard-rotated basis of the head dim; the query chunk is rotated to match and the output un-rotated once, so a K/V block dequant is one int8->fp16 cast times a scale, no GEMM; attention in fp16 blockwise (`kv_block`, default 16384) with an online-softmax combine | **+9.5 GiB** (second cut, measured live 2026-08-18 evening; the first cut was +12.5) | **374** (first cut 400) | first cut: operator's eyes "almost perfect" on the de-rope side by side, "looks fine" on a 90 f T2VA; second cut: side by side rendered, verdict pending; sensor bank over seeds owed |
-| `kvi8s: Sage int8/fp8 K/V, rotated` | the same bytes kept in SageAttention's kernel layout (int8 K with one scale per 64-token block after mean smoothing, fp8 e4m3 V per channel), Q and K Hadamard-rotated first, attended on int8/fp8 tensor cores straight from the store, no dequant; needs the `sageattention` package (2.x, sm120 works) | **+9.5 GiB** (measured live 2026-08-18 evening) | **219** (31% faster than the exact store, 42% faster than kvi8r) | one rung more approximate than kvi8r on a synthetic proxy (rel-rms 3.1e-2 vs 1.3e-2; the shipped `sageattn()` scores 5.5e-2 on the same inputs, so the rotation is worth 1.8x to Sage); de-rope side by side rendered, verdict pending the operator's eyes |
+| `kvi8s: Sage int8/fp8 K/V, rotated` | the same bytes kept in SageAttention's kernel layout (int8 K with one scale per 64-token block after mean smoothing, fp8 e4m3 V per channel), Q and K Hadamard-rotated first, attended on int8/fp8 tensor cores straight from the store, no dequant; needs the `sageattention` package (2.x, sm120 works) | **+9.5 GiB** (measured live 2026-08-18 evening) | **219** (31% faster than the exact store, 42% faster than kvi8r) | one rung more approximate than kvi8r on a synthetic proxy (rel-rms 3.1e-2 vs 1.3e-2; the shipped `sageattn()` scores 5.5e-2 on the same inputs, so the rotation is worth 1.8x to Sage); operator's eyes on the de-rope side by side: "looks perfect" (one clip, one viewer; sensor bank over seeds owed) |
 
 Why the rotation: the fixed orthonormal Hadamard spreads the outlier channels
 of K and V over all 128 dims before rounding, so a per-row int8 scale wastes
