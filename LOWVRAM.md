@@ -37,6 +37,30 @@ is not a quality dial. It is also not slower: at these lengths the step is
 attention-bound and the weight traffic hides under it (see "Why no speed
 penalty").
 
+## The workflow that ships: `examples/motion_pipeline_lowvram.json`
+
+One graph, the whole motion pipeline for a small card, with the rotated int8
+K/V store on. What is in it and why, in the order it runs (2026-08-18):
+
+| node | setting | what it buys |
+|---|---|---|
+| `UNETLoader` | `minimax_h3_ref2va_pruned_w4a8_mixed` (11 GB) | the DiT at 4-bit weights / 8-bit activations, exact under chunking (int32 accumulate) |
+| `CLIPLoader` | `qwen3vl_32b_minimax_h3_nvfp4_awq` | the text encoder in NVFP4 (~15 GB file) |
+| `VAELoader` (video) | `minimax_h3_video_vae_int8_convrot` | 2.2 GiB less on the card than fp16, decode 1.5x faster, 60 dB PSNR against the fp16 decoder on the same latent |
+| `VAELoader` (audio) | `minimax_h3_audio_vae_fp32` | unchanged, 0.6 GB |
+| `LoraLoaderModelOnly` | lightx2v turbo 4-step v1.0 768p, strength 1.0 | pass 1 at 12 steps (`linear_quadratic`), pass 2 on a 6-step `beta` schedule with `inject 0.7` (the "faithful detail" preset), so the long de-rope pass costs a handful of forwards |
+| **`H3 Streamed Blocks`** | q/kv/mlp chunks 16384, `min_tokens` 32768, `final_layer_chunk` 16384, `final_layer_gemm` exact, **`kv_store` = kvi8r** | every DiT block in token chunks (never the whole-sequence QKV or SwiGLU), the output head streamed, and the K/V of the whole sequence held as rotated int8: forward peak +9.5 GiB at 217k tokens instead of +11.9 (exact store) or +21 (stock). Bit-equal to stock with `kv_store` = bf16; with kvi8r a sibling take that the operator judged "perfect for both" on the de-rope side by side |
+| `H3 Evict Text Encoder` (x2) | after each prompt encode | the 15 GB TE leaves the card as soon as its conditioning exists (1 to 2.5 GiB of peak on a 16 GB card, ~3 s per new prompt to bring back) |
+| `H3 Jerk Oracle`, `H3 Time Smear`, `H3 Audio Smear`, `H3 V2V Init` | `d_max 4`, dilation 4, audio 0.5 | the de-rope itself (see README) |
+| `H3 Free Cache` | between the pass-2 sampler and its decodes | returns the allocator pool before the VAE runs (17 GiB on the long pass under `--gpu-only`; the small-card win is that decode never competes with a stale pool) |
+| `H3 Exact Recover`, `H3 Audio Recover` | | back to real time, frame-exact |
+
+Measured on the fenced 16 GB / 32 GB rig with the exact store: 124-frame
+reference clip end to end in 6:14, VRAM 16.1 (fills the fence), RSS 24.8 GB.
+The same graph as it ships (kvi8r + int8 VAE) is being re-run at the 15.0 GiB
+fence; the row lands here when it does. On the 702-frame de-rope (a bigger
+graph than this example) kvi8r measured 374 s/step against 318 exact.
+
 ## What to run
 
 1. Start ComfyUI **without** `--gpu-only` and **with** `--fast-disk`.
