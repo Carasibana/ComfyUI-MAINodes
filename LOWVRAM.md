@@ -1,41 +1,28 @@
 # Low VRAM, low RAM: the de-rope on a 16 GB card
 
-Status 2026-08-18 (evening): alpha. Everything below was measured on one
-machine, fenced down to look like small ones (real renders on the real GPU with
-the VRAM held by a balloon and the RAM capped by a cgroup). **How the fence
-was read:** the first day's "16 GB" rows ran with 15.4 GiB device-free as
-`torch.cuda.mem_get_info` sees it (a headless 5070 Ti reports 15.92 GiB total
-and about 15.5 free); the evening's kvi8r run used a stricter 15.0 GiB fence,
-which is a 5070 Ti with its desktop attached. Dynamic VRAM fills whatever the
-card has, so process peaks always read as the fence; the numbers that carry a
-memory claim are the in-process forward peaks from `H3 Memory Probe`. Nothing
-has been run on a physically different 16 GB card yet; that is the next thing,
-and it is a dogfood ask, not a research question.
+Status 2026-08-18: alpha. Measured on one machine fenced down to a 16 GB
+card / 32 GB box (how, and how the fence was read, at the bottom); not yet
+run on a physically different 16 GB card, which is the next thing.
 
-## The short version
+**Get started** (16 GB card, 32 GB machine; measured, alpha):
 
-The de-rope pass at `d_max 4` on an 8 to 12 second clip is ~200k packed tokens.
-The stock H3 block builds its fused QKV and SwiGLU tensors for the whole
-sequence at once, 8.6 and 15.4 GiB at that length, and that is what OOMs a
-24 GB card, and at 1376x768 a 96 GB one. `H3 Streamed Blocks` runs every DiT
-block in token chunks with the same math. Together with two things ComfyUI
-already ships (dynamic VRAM, `--fast-disk`) it changes the small-card story
-from "OOM" to "same speed":
+1. Start ComfyUI **without** `--gpu-only` and **with** `--fast-disk`
+   (dynamic VRAM streams the DiT; `--fast-disk` reads the weights from the
+   NVMe page cache instead of holding a copy of every model in RAM).
+2. Load `examples/motion_pipeline_lowvram.json` (API twin alongside), point
+   the LoadImage at your reference, set the prompt and canvas.
+3. Queue. The 124-frame reference clip took 6:14 end to end on the fenced
+   16 GB / 32 GB rig.
 
-| card | machine | 294 f -> 702 f de-rope at 1376x768 (~217k tokens) | s/step (pass 2) |
-|---|---|---|---|
-| 96 GB, everything resident (`--gpu-only`) | 91 GB | renders | 311 |
-| 32 GB (fenced), normal mode, `--fast-disk` | 64 GB (cgroup) | renders, 25 GiB VRAM peak | 318 |
-| 24 GB (fenced) | 32 GB (cgroup) | renders, 23.5 GiB VRAM peak, 25.8 GB RSS | 318 |
-| **16 GB (fenced)** | **32 GB (cgroup)** | **renders, 15.5 GiB VRAM peak, 27.4 GB RSS** | **316** |
-| 16 GB (fenced) | 32 or 64 GB | 906 f (~275k tokens): out of memory | |
-| 24 GB (fenced) | 32 GB | 906 f: renders, RSS 29.8 GB (RAM at the edge) | 515 |
+**What the graph does to make a small card happy:**
 
-Same seed, the streamed result is bit-equal to the stock result on the int8
-and W4A8 checkpoints (video and audio latents compared tensor by tensor). It
-is not a quality dial. It is also not slower: at these lengths the step is
-attention-bound and the weight traffic hides under it (see "Why no speed
-penalty").
+- the DiT at 4-bit weights / 8-bit activations (`minimax_h3_ref2va_pruned_w4a8_mixed`, 11 GB), the text encoder in NVFP4, the video VAE as int8_convrot (2.2 GiB less than fp16, decode 1.5x faster, 60 dB PSNR against it);
+- `H3 Streamed Blocks` runs every DiT block in 16k-token chunks so the whole-sequence QKV and SwiGLU tensors (8.6 and 15.4 GiB at 217k tokens) never exist, and streams the output head; same math as stock (bit-equal on int8 / W4A8 with the exact K/V store);
+- **`kv_store` = kvi8r**: the K/V of the whole sequence held as rotated int8, forward peak +9.5 GiB at 217k tokens instead of +11.9; a sibling take of the exact result that passed the operator's eyes on the de-rope ("perfect for both"); flip it to `bf16 (exact)` for the bit-equal path;
+- `H3 Evict Text Encoder` after each prompt encode, `H3 Free Cache` before the pass-2 decode: the 15 GB TE and the allocator pool leave the card before the VAE needs it;
+- the turbo LoRA with a 12-step base pass and a 6-step / inject 0.7 de-rope pass, so the long pass is a handful of forwards.
+
+Everything below is the why and the numbers.
 
 ## The workflow that ships: `examples/motion_pipeline_lowvram.json`
 
@@ -61,33 +48,9 @@ The same graph as it ships (kvi8r + int8 VAE) is being re-run at the 15.0 GiB
 fence; the row lands here when it does. On the 702-frame de-rope (a bigger
 graph than this example) kvi8r measured 374 s/step against 318 exact.
 
-## What to run
-
-1. Start ComfyUI **without** `--gpu-only` and **with** `--fast-disk`.
-   Dynamic VRAM (the default) streams the DiT weights and keeps as many
-   resident as the card allows; `--fast-disk` reads them from the NVMe page
-   cache instead of holding a copy of every model in RAM. Without it a
-   normal-mode run of this pipeline held 59 GB of RSS; with it, 36 GB.
-2. Load `examples/motion_pipeline_lowvram.json` (API twin alongside). It is
-   the `motion_pipeline_ref2va_audioinit` graph with:
-   - the W4A8 checkpoint (`minimax_h3_ref2va_pruned_w4a8_mixed`, 11 GB) in the
-     UNET loader,
-   - the int8_convrot video VAE (`minimax_h3_video_vae_int8_convrot`, kijai):
-     2.2 GiB less on the card than the fp16 file (2.64 vs 4.86), decode 1.5x
-     faster, and on the same latent the two decodes agree to 60 dB PSNR
-     (encoder identical; only the ViT decoder's linears are int8). Measured
-     2026-08-18 evening; the fp16 file works the same, it just costs more,
-   - `H3 Streamed Blocks` in the model chain with 16k-token chunks,
-     `final_layer_gemm` = exact and **`kv_store` = kvi8r** (the rotated int8
-     K/V store: 2.4 GiB less forward peak than the exact store at 217k tokens,
-     ~18% slower per step, a sibling take of the exact result; the operator's
-     call for the low-VRAM graph, 2026-08-18: "better for low VRAM and almost
-     perfect quality". Set it back to `bf16 (exact)` for the bit-equal path),
-   - `H3 Free Cache` between the pass-2 sampler and its decodes,
-   - `H3 Evict Text Encoder` after each prompt encode.
-   The KJNodes sage-attention patches and FFN chunker from the parent graph
-   are not in it: sage attention is an approximation and the exactness gates
-   here were run on PyTorch's flash attention.
+The KJNodes sage-attention patches and FFN chunker from the parent graph
+are not in it: sage attention is an approximation and the exactness gates
+here were run on PyTorch's flash attention.
 3. Set your prompt, reference image and canvas as usual.
 
 ## What to expect
@@ -140,6 +103,31 @@ hunts, windows, extension chains) and needs the sampler's latent to come from
 somewhere other than the encode node (`EmptyMiniMaxH3LatentAV` for T2VA, the
 latent bank for a banked pass 1), or the encode node runs anyway for its
 latent output.
+
+## The numbers
+
+The de-rope pass at `d_max 4` on an 8 to 12 second clip is ~200k packed tokens.
+The stock H3 block builds its fused QKV and SwiGLU tensors for the whole
+sequence at once, 8.6 and 15.4 GiB at that length, and that is what OOMs a
+24 GB card, and at 1376x768 a 96 GB one. `H3 Streamed Blocks` runs every DiT
+block in token chunks with the same math. Together with two things ComfyUI
+already ships (dynamic VRAM, `--fast-disk`) it changes the small-card story
+from "OOM" to "same speed":
+
+| card | machine | 294 f -> 702 f de-rope at 1376x768 (~217k tokens) | s/step (pass 2) |
+|---|---|---|---|
+| 96 GB, everything resident (`--gpu-only`) | 91 GB | renders | 311 |
+| 32 GB (fenced), normal mode, `--fast-disk` | 64 GB (cgroup) | renders, 25 GiB VRAM peak | 318 |
+| 24 GB (fenced) | 32 GB (cgroup) | renders, 23.5 GiB VRAM peak, 25.8 GB RSS | 318 |
+| **16 GB (fenced)** | **32 GB (cgroup)** | **renders, 15.5 GiB VRAM peak, 27.4 GB RSS** | **316** |
+| 16 GB (fenced) | 32 or 64 GB | 906 f (~275k tokens): out of memory | |
+| 24 GB (fenced) | 32 GB | 906 f: renders, RSS 29.8 GB (RAM at the edge) | 515 |
+
+Same seed, the streamed result is bit-equal to the stock result on the int8
+and W4A8 checkpoints (video and audio latents compared tensor by tensor). It
+is not a quality dial. It is also not slower: at these lengths the step is
+attention-bound and the weight traffic hides under it (see "Why no speed
+penalty").
 
 ## How far you can go (extrapolated from the lines above)
 
@@ -256,6 +244,18 @@ a 4.8e-3 rel-rms floor; fp16's 11 bits cost 1.7e-3 (measured on random data).
    remaining case is speed, ~40 s per 702 f decode).
 
 ## The environment this was measured in
+
+Everything below was measured on one
+machine, fenced down to look like small ones (real renders on the real GPU with
+the VRAM held by a balloon and the RAM capped by a cgroup). **How the fence
+was read:** the first day's "16 GB" rows ran with 15.4 GiB device-free as
+`torch.cuda.mem_get_info` sees it (a headless 5070 Ti reports 15.92 GiB total
+and about 15.5 free); the evening's kvi8r run used a stricter 15.0 GiB fence,
+which is a 5070 Ti with its desktop attached. Dynamic VRAM fills whatever the
+card has, so process peaks always read as the fence; the numbers that carry a
+memory claim are the in-process forward peaks from `H3 Memory Probe`. Nothing
+has been run on a physically different 16 GB card yet; that is the next thing,
+and it is a dogfood ask, not a research question.
 
 One workstation: two RTX PRO 6000 Blackwell (96 GB, 188 SMs), EPYC 9554,
 91 GB RAM, NVMe, Ubuntu, ComfyUI 0.33.0, PyTorch 2.14 nightly cu132,
