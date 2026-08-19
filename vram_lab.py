@@ -53,6 +53,14 @@ import comfy.model_management
 import comfy.quant_ops
 from comfy.ldm.modules.attention import AttentionTensorContainer, optimized_attention
 
+try:  # A5b: SageAttention's kernels take pre-quantised K/V; optional
+    from sageattention import quant as _sage_quant
+    from sageattention import sm89_compile as _sage_sm89
+    _SAGE_OK = True
+except Exception:  # noqa: BLE001
+    _sage_quant = _sage_sm89 = None
+    _SAGE_OK = False
+
 log = logging.getLogger("MAINodes.vram_lab")
 
 
@@ -175,14 +183,8 @@ def _blockwise_attention(qc, K, V, block, out_dtype):
     lse_acc = None
     for a, b in _ranges(S, block):
         r = op(qc, K[:, :, a:b].contiguous(), V[:, :, a:b].contiguous(), 0.0, False, False)
-        o, lse = r[0], r[1]                       # o [1,H,c,hd], lse [1,H,c] fp32
-        if acc is None:
-            acc, lse_acc = o.float(), lse
-        else:
-            new = torch.logaddexp(lse_acc, lse)
-            acc = acc * torch.exp(lse_acc - new).unsqueeze(-1) + o.float() * torch.exp(lse - new).unsqueeze(-1)
-            lse_acc = new
-        del r, o, lse
+        acc, lse_acc = _online_combine(acc, lse_acc, r[0], r[1])
+        del r
     return acc.to(out_dtype)
 
 
@@ -225,67 +227,147 @@ def _hadamard(n, device, dtype):
     return _HAD[key]
 
 
-class _Int8KV:
-    """kvi8r: K/V buffers stored as int8 rows with a per-row (per token, per head)
-    fp16 scale after a fixed orthonormal Hadamard rotation of the head dim.
-    Half the bytes of bf16 (S x heads x 128 + scales). Rotation spreads outlier
-    channels before rounding and is undone exactly on dequant (orthogonal), so
-    the only error is the int8 rounding: absmax/127 per 128-wide row. This is
-    NOT bit-equal to stock: approximation tier, judged by the sensor bank."""
+def _online_combine(acc, lse_acc, o, lse):
+    """Online-softmax merge of a new flash partial (o bf16, lse fp32) into the
+    fp32 accumulator, in place; returns (acc, lse_acc)."""
+    if acc is None:
+        return o.float(), lse
+    new = torch.logaddexp(lse_acc, lse)
+    # mixed-dtype addcmul_ promotes o inside the kernel: no fp32 copy of the partial
+    acc.mul_(torch.exp(lse_acc - new).unsqueeze(-1)).addcmul_(o, torch.exp(lse - new).unsqueeze(-1))
+    return acc, new
 
-    def __init__(self, heads, S, hd, device):
-        self.heads, self.S, self.hd = heads, S, hd
+
+class _Int8KV:
+    """kvi8r: K/V buffers stored as int8 rows with one bf16 scale per row (per
+    token, per head) in a fixed orthonormal Hadamard-rotated basis of the head
+    dim. Half the bytes of bf16 (S x heads x 128 + scales).
+
+    Second cut (2026-08-18 evening): the store keeps K and V in the ROTATED basis and
+    never un-rotates them. Because the rotation is orthogonal, q.k = (qH).(kH)
+    and P.V = (P.(VH)).H^T, so the query chunk is rotated once (small) and the
+    attention output is un-rotated once (small); dequant of a K/V block is a
+    single fused int8->fp16 cast * row scale, no GEMM, no fp32 copy of the
+    block. Attention runs in fp16 in the rotated basis: bf16's 8-bit mantissa
+    costs a 4.8e-3 rel-rms floor there (measured, random data) because the
+    rotation spreads every value to the same magnitude, fp16's 11 bits cost
+    1.7e-3; the int8 rounding (absmax/127 per 128-wide row) is ~1e-2 either
+    way. NOT bit-equal to stock: approximation tier, judged by the operator's
+    eyes and the sensor bank."""
+
+    def __init__(self, heads, S, hd, device, dtype=torch.float16):
+        self.heads, self.S, self.hd, self.dtype = heads, S, hd, dtype
         self.q = torch.empty((1, heads, S, hd), dtype=torch.int8, device=device)
-        self.s = torch.empty((1, heads, S, 1), dtype=torch.float16, device=device)
-        self.H = _hadamard(hd, device, torch.float32)
+        self.s = torch.empty((1, heads, S, 1), dtype=dtype, device=device)
+        self.H = _hadamard(hd, device, dtype)
 
     def store(self, a, b, x):        # x [1, heads, b-a, hd] bf16
-        xr = x.float() @ self.H                                   # rotate
-        sc = xr.abs().amax(dim=-1, keepdim=True).clamp_min_(1e-8) / 127.0
-        self.q[:, :, a:b] = torch.round(xr / sc).clamp_(-127, 127).to(torch.int8)
-        self.s[:, :, a:b] = sc.to(torch.float16)
+        xr = x.to(self.dtype) @ self.H                              # rotate (fp16 GEMM, fp32 accumulate)
+        # scale rounded UP to the store dtype so |q| <= 127 without saturating the row max
+        sc = (xr.abs().amax(dim=-1, keepdim=True).float().clamp_min_(1e-8) * (1.0 / 127.0 * (1.0 + 2.0 ** -7))).to(self.dtype)
+        self.q[:, :, a:b] = torch.round(xr.float() / sc.float()).clamp_(-127, 127).to(torch.int8)
+        self.s[:, :, a:b] = sc
         del xr, sc
 
-    def load(self, a, b, dtype):     # -> [1, heads, b-a, hd] dtype, contiguous
-        xr = self.q[:, :, a:b].float() * self.s[:, :, a:b].float()
-        return (xr @ self.H.T).to(dtype).contiguous()             # un-rotate
+    def load_rot(self, a, b):        # -> [1, heads, b-a, hd] dtype, ROTATED basis, contiguous
+        return self.q[:, :, a:b].to(self.dtype).mul_(self.s[:, :, a:b])
+
+    def load(self, a, b, dtype):     # -> [1, heads, b-a, hd] dtype, model basis (diagnostics only)
+        return (self.load_rot(a, b).float() @ self.H.float().T).to(dtype).contiguous()
 
     def bytes(self):
-        return self.q.numel() + self.s.numel() * 2
+        return self.q.numel() + self.s.numel() * self.s.element_size()
 
 
 def _blockwise_attention_q(qc, Kq, Vq, block, out_dtype):
-    """Blockwise attention against int8 K/V stores: dequantise one block at a
-    time (transient = one bf16 block), online-softmax combine as in
-    _blockwise_attention."""
+    """Attention of qc [1,H,c,hd] against kvi8r stores: rotate the query chunk
+    once, attend blockwise against rotated-dequantised K/V (transient = one
+    bf16 K block + one V block), online-softmax combine in fp32, un-rotate the
+    output once."""
     op = torch.ops.aten._scaled_dot_product_flash_attention.default
     S = Kq.S
+    qr = (qc.to(Kq.dtype) @ Kq.H).contiguous()                       # rotated query, attention dtype
     acc = None
     lse_acc = None
     for a, b in _ranges(S, block):
-        kb = Kq.load(a, b, qc.dtype)
-        vb = Vq.load(a, b, qc.dtype)
-        r = op(qc, kb, vb, 0.0, False, False)
+        kb = Kq.load_rot(a, b)
+        vb = Vq.load_rot(a, b)
+        r = op(qr, kb, vb, 0.0, False, False)
         del kb, vb
-        o, lse = r[0], r[1]
-        if acc is None:
-            acc, lse_acc = o.float(), lse
-        else:
-            new = torch.logaddexp(lse_acc, lse)
-            acc = acc * torch.exp(lse_acc - new).unsqueeze(-1) + o.float() * torch.exp(lse - new).unsqueeze(-1)
-            lse_acc = new
-        del r, o, lse
-    return acc.to(out_dtype)
+        acc, lse_acc = _online_combine(acc, lse_acc, r[0], r[1])
+        del r
+    del qr
+    return (acc.to(Kq.dtype) @ Kq.H.T).to(out_dtype)                 # un-rotate once, attention dtype
+
+
+# --------------------------------------------------------------------------- kvi8s: Sage-native int8/fp8 K/V store (A5b, approximation tier)
+
+class _SageKV:
+    """kvi8s: K/V kept in SageAttention's kernel layout, block by block: K int8
+    with one fp32 scale per (head, 64-token block) after subtracting the block's
+    per-head mean (softmax-invariant, restored in the LSE), V fp8 e4m3 in Sage's
+    transposed/permuted layout with one fp32 scale per (head, channel, block).
+    Same bytes as kvi8r; attention runs on int8 QK^T + fp8 PV tensor cores
+    straight from the store, no dequant. Q and K are Hadamard-rotated first
+    (scores invariant; spreads outliers before Sage's per-block int8 rounding).
+    NOT bit-equal to stock: approximation tier, one rung below kvi8r on the
+    synthetic proxy, ~1.6x faster attention than the exact path."""
+
+    def __init__(self, heads, S, hd, device):
+        if not _SAGE_OK:
+            raise RuntimeError("kvi8s needs the sageattention package (2.x) importable in this venv")
+        self.heads, self.S, self.hd, self.device = heads, S, hd, device
+        self.H = _hadamard(hd, device, torch.bfloat16)
+        self.blocks = []            # (a, b, k_int8, k_scale, km, v_fp8, v_scale)
+
+    def store(self, a, b, k, v):     # k, v [1, heads, b-a, hd] bf16, one phase-1 chunk = one block
+        k = (k.to(torch.bfloat16) @ self.H).contiguous()
+        km = k.mean(dim=2, keepdim=True)                       # [1,H,1,hd]
+        k_int8 = torch.empty(k.shape, dtype=torch.int8, device=k.device)
+        k_scale = torch.empty((1, self.heads, (b - a + 63) // 64), dtype=torch.float32, device=k.device)
+        _sage_quant._fused.quant_per_block_int8_fuse_sub_mean_cuda(k, km.squeeze(2), k_int8, k_scale, 64, 1)
+        v_fp8, v_scale, _ = _sage_quant.per_channel_fp8(v.to(torch.bfloat16).contiguous(), tensor_layout="HND", scale_max=2.25, smooth_v=False)
+        self.blocks.append((a, b, k_int8, k_scale, km, v_fp8, v_scale))
+        del k
+
+    def bytes(self):
+        return sum(k.numel() + ks.numel() * 4 + v.numel() + vs.numel() * 4 for _, _, k, ks, _, v, vs in self.blocks)
+
+
+def _sage_attention_q(qc, st, out_dtype):
+    """qc [1,H,c,hd] bf16 against a _SageKV store -> [1,H,c,hd] out_dtype."""
+    sm_scale = qc.shape[-1] ** -0.5
+    qr = (qc.to(torch.bfloat16) @ st.H).contiguous()
+    q_int8 = torch.empty(qr.shape, dtype=torch.int8, device=qr.device)
+    c = qr.shape[2]
+    q_scale = torch.empty((1, st.heads, ((c + 127) // 128) * 4), dtype=torch.float32, device=qr.device)
+    _sage_quant._fused.quant_per_warp_int8_cuda(qr, q_int8, q_scale, 128, 32, 1)
+    acc = None
+    lse_acc = None
+    for a, b, k_int8, k_scale, km, v_fp8, v_scale in st.blocks:
+        o = torch.empty(qr.shape, dtype=torch.bfloat16, device=qr.device)
+        lse = _sage_sm89.qk_int8_sv_f8_accum_f16_fuse_v_scale_attn_inst_buf(
+            q_int8, k_int8, v_fp8, o, q_scale, k_scale, v_scale, 1, 0, 2, sm_scale, 1)
+        # the kernel's lse is log2-based and lacks the mean-subtraction term: restore both before combining
+        lse = lse / 1.44269504 + torch.matmul(qr, km.transpose(2, 3)).squeeze(-1).float() * sm_scale
+        acc, lse_acc = _online_combine(acc, lse_acc, o, lse)
+        del o, lse
+    del qr, q_int8
+    return acc.to(out_dtype)                                    # V is not rotated: no un-rotation
 
 
 # --------------------------------------------------------------------------- the block
 
-def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=False):
+def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=False, kv_sage=False):
     """K, V for the whole sequence, chunk by chunk (Q computed and dropped).
-    kv_int8: store them as _Int8KV (half the bytes; approximation tier)."""
+    kv_int8: store them as _Int8KV (kvi8r, half the bytes; approximation tier).
+    kv_sage: store them as one _SageKV (kvi8s, half the bytes, Sage kernels; approximation tier)."""
     S = x.shape[0]
     attn = block.attn
-    if kv_int8:
+    if kv_sage:
+        K = _SageKV(heads, S, hd, x.device)
+        V = K                                                    # one store holds both
+    elif kv_int8:
         K = _Int8KV(heads, S, hd, x.device)
         V = _Int8KV(heads, S, hd, x.device)
     else:
@@ -298,7 +380,9 @@ def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chun
         q, k, v = qkv.split(inner, dim=-1)
         rope_c = rope_freqs[:, a:b].contiguous() if rope_freqs is not None else None
         _, k = _norm_rope(attn, q, k, rope_c, s)
-        if kv_int8:
+        if kv_sage:
+            K.store(a, b, k.transpose(0, 1).unsqueeze(0), v.view(s, heads, hd).transpose(0, 1).unsqueeze(0))
+        elif kv_int8:
             K.store(a, b, k.transpose(0, 1).unsqueeze(0))
             V.store(a, b, v.view(s, heads, hd).transpose(0, 1).unsqueeze(0))
         else:
@@ -324,8 +408,11 @@ def _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments,
         q, _ = _norm_rope(attn, q, k, rope_c, s)
         qc = q.transpose(0, 1).unsqueeze(0).contiguous()      # [1, heads, s, hd]
         del h, qkv, q, k, _v, rope_c
-        if isinstance(K, _Int8KV):
-            o = _blockwise_attention_q(qc, K, V, kv_block if kv_block and kv_block > 0 else 32768, x.dtype)
+        if isinstance(K, _SageKV):
+            o = _sage_attention_q(qc, K, x.dtype)
+            o = o.transpose(1, 2).reshape(1, s, inner)
+        elif isinstance(K, _Int8KV):
+            o = _blockwise_attention_q(qc, K, V, kv_block if kv_block and kv_block > 0 else 16384, x.dtype)
             o = o.transpose(1, 2).reshape(1, s, inner)
         elif kv_block and kv_block > 0:
             o = _blockwise_attention(qc, K, V, kv_block, x.dtype)          # [1, heads, s, hd]
@@ -349,7 +436,7 @@ def _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chun
 
 
 def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transformer_options,
-                           q_chunk=16384, kv_chunk=16384, mlp_chunk=16384, kv_block=0, probe=None, index=None, kv_int8=False):
+                           q_chunk=16384, kv_chunk=16384, mlp_chunk=16384, kv_block=0, probe=None, index=None, kv_int8=False, kv_sage=False):
     """Exact replacement for DiTBlock.forward with chunk-bounded transients.
 
     The three phases are separate named functions so an allocator trace
@@ -365,7 +452,7 @@ def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transforme
 
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.adaln_proj(t_emb)
 
-    K, V = _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=kv_int8)
+    K, V = _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=kv_int8, kv_sage=kv_sage)
     if probe is not None:
         probe.mark(index, "kv")
     _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments, rope_freqs,
@@ -395,7 +482,7 @@ def _self_check(block, args, extra, cfg, tag):
     for name, c in variants.items():
         out = streamed_block_forward(block, x.clone(), args["t_emb"], args["mod_segments"], args["rope_freqs"],
                                      args["transformer_options"], q_chunk=c["q_chunk"], kv_chunk=c["kv_chunk"],
-                                     mlp_chunk=c["mlp_chunk"], kv_block=c["kv_block"], kv_int8=cfg.get("kv_int8", False))
+                                     mlp_chunk=c["mlp_chunk"], kv_block=c["kv_block"], kv_int8=cfg.get("kv_int8", False), kv_sage=cfg.get("kv_sage", False))
         d = (out.float() - ref.float()).abs()
         parts.append(f"{name}: max {d.max().item():.3e} ({d.max().item() / ulp:.2f} ulp) mean {d.mean().item():.2e}")
         del out, d
@@ -422,7 +509,7 @@ def _make_replacement(block, cfg, index=0):
         x = streamed_block_forward(block, x, args["t_emb"], args["mod_segments"], args["rope_freqs"],
                                    to, q_chunk=cfg["q_chunk"], kv_chunk=cfg["kv_chunk"],
                                    mlp_chunk=cfg["mlp_chunk"], kv_block=cfg["kv_block"], probe=probe, index=index,
-                                   kv_int8=cfg.get("kv_int8", False))
+                                   kv_int8=cfg.get("kv_int8", False), kv_sage=cfg.get("kv_sage", False))
         return {"img": x}
     return _named(fn, f"block{index:02d}")
 
@@ -509,9 +596,9 @@ class H3StreamedBlocks:
                 "final_layer_gemm": (["exact (whole GEMM, one fp32 buffer)", "streamed (chunked GEMM, ~1e-6 fp32 diffs)"],
                                      {"default": "exact (whole GEMM, one fp32 buffer)",
                                       "tooltip": "exact: same head GEMM as stock, transient = one fp32 [rows, hidden] (bit-equal). streamed: GEMM per chunk, transient ~chunk-sized, but fp32 cuBLAS is not chunk-invariant (numerically-equivalent tier)."}),
-                "kv_store": (["bf16 (exact)", "kvi8r: rotated int8 K/V (approximate)"],
+                "kv_store": (["bf16 (exact)", "kvi8r: rotated int8 K/V (approximate)", "kvi8s: Sage int8/fp8 K/V, rotated (approximate, faster attention)"],
                              {"default": "bf16 (exact)",
-                              "tooltip": "kvi8r = rotated int8 K/V. K and V held as int8 with one fp16 scale per row (per token, per head), after a fixed orthonormal 128-wide Hadamard rotation of the head dim that is undone exactly on dequant (the rotation only spreads outlier channels before rounding). Attention runs blockwise, dequantising one K/V block at a time (kv_block, default 32768). Halves the K/V bytes. NOT bit-equal to stock: a same-seed render is a sibling take. First cut (2026-08-18): the de-rope side by side passed the operator's eyes; peak VRAM not yet lower than bf16 (dequant transients) and ~26% slower at 217k tokens; a second cut with smaller blocks and a bf16 rotation is next."}),
+                              "tooltip": "kvi8r = rotated int8 K/V. K and V held as int8 with one fp16 scale per row (per token, per head) in a fixed orthonormal 128-wide Hadamard-rotated basis of the head dim; the query chunk is rotated to match and the output un-rotated once, so a K/V block dequant is a single int8->fp16 cast * scale and attention runs in fp16 blockwise (kv_block, default 16384) with an online-softmax combine. Halves the K/V bytes. NOT bit-equal to stock: a same-seed render is a sibling take (first cut 2026-08-18: operator judged the de-rope side by side 'almost perfect'). Second cut (2026-08-18 evening): standalone at 217k tokens the attention costs +16% over the exact path (first cut +24%) with a ~1 GiB transient (first cut ~3), so the K/V saving now shows in the forward peak; the live numbers are in LOWVRAM.md. kvi8s = the same K/V bytes kept in SageAttention's kernel layout (int8 K per 64-token block, fp8 V per channel, Q/K Hadamard-rotated first) and attended on int8/fp8 tensor cores straight from the store, no dequant: standalone ~1.6x faster attention than the exact path at 217k tokens, one rung more approximate than kvi8r; needs the sageattention package (2.x)."}),
                 "self_check": ("BOOLEAN", {"default": False,
                                            "tooltip": "Diagnostic: on block 0's first call, run stock and streamed on the same input and log per-phase divergence. Costs one extra block forward."}),
             }
@@ -533,7 +620,10 @@ class H3StreamedBlocks:
             return (model,)
         cfg = {"q_chunk": q_chunk, "kv_chunk": kv_chunk, "mlp_chunk": mlp_chunk,
                "min_tokens": min_tokens, "kv_block": kv_block, "self_check": bool(self_check),
-               "kv_int8": str(kv_store).startswith("kvi8r")}
+               "kv_int8": str(kv_store).startswith("kvi8r"), "kv_sage": str(kv_store).startswith("kvi8s")}
+        if cfg["kv_sage"] and not _SAGE_OK:
+            log.warning("H3StreamedBlocks: kv_store kvi8s needs the sageattention package; falling back to bf16 (exact)")
+            cfg["kv_sage"] = False
         m = model.clone()
         for i, block in enumerate(blocks):
             m.set_model_patch_replace(_make_replacement(block, cfg, i), "dit", "double_block", i)
