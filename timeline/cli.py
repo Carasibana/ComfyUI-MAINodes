@@ -22,18 +22,18 @@ if __package__ in (None, ""):                    # `python timeline/cli.py`
 from timeline import schema                                    # noqa: E402
 from timeline.h3.compile import H3Backend                      # noqa: E402
 
-# Site config: override via env for your install; defaults are the authoring box.
-QUEUE = os.environ.get("H3_TIMELINE_QUEUE_CMD",
-        "python "
-        "/mnt/work/ai/apps/ComfyUI-ModelCatalog/benchmarks/scripts/"
-         "queue_scene.py")
+# Site config: set these for your install. H3_TIMELINE_QUEUE_CMD is the command
+# that submits an API graph to ComfyUI (a launcher script of your own; the
+# authoring box uses a private queue_scene.py); H3_TIMELINE_GRAPH_DIR is where
+# compiled graphs live. Without them the CLI compiles but does not queue.
+QUEUE = os.environ.get("H3_TIMELINE_QUEUE_CMD", "")
 
 
 def _default_graph(plan_path):
     base = os.path.basename(plan_path).replace(".plan.json", "").replace(
         ".json", "")
     return os.path.join(os.environ.get("H3_TIMELINE_GRAPH_DIR",
-                        "/mnt/work/ai/apps/ComfyUI-ModelCatalog/workflows"),
+                        os.path.join(os.getcwd(), "workflows")),
                         f"{base}.api.json")
 
 

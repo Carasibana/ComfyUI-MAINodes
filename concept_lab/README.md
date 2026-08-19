@@ -89,9 +89,9 @@ Two roots, because the two kinds of thing want different homes.
     <space id>/...
 ```
 
-Defaults are `output/h3_concept` next to the renders, and
-`/mnt/weights/ai/concept-space/tensors` on a box that has it (falling back
-to `<index root>/tensors` so a fresh checkout elsewhere still works).
+Defaults are `output/h3_concept` next to the renders and `<index
+root>/tensors` for the heavy evidence (point the tensor root at a big disk
+on a box that has one).
 Override with `H3_CONCEPT_INDEX_DIR` and `H3_CONCEPT_TENSOR_DIR`.
 
 Neither default is inside the repository. That is not tidiness: a concept

@@ -264,11 +264,9 @@ class H3TimelineRender:
                                          "port": int(port),
                                          "recorder_path": recorder_path})
         schema.save(plan, plan_path)
-        launcher = os.environ.get("H3_TIMELINE_QUEUE_CMD",
-               "python "
-               "/mnt/work/ai/apps/ComfyUI-ModelCatalog/benchmarks/scripts/"
-               "queue_scene.py")
-        cmd = f"{launcher} {graph_path} --tag timeline --port {int(port)}"
+        launcher = os.environ.get("H3_TIMELINE_QUEUE_CMD", "")
+        cmd = (f"{launcher} {graph_path} --tag timeline --port {int(port)}" if launcher
+               else f"(set H3_TIMELINE_QUEUE_CMD to a launcher; graph at {graph_path})")
         report = "\n".join([
             f"plan {plan.get('id', '?')[:8]} rev {plan.get('revision', 0)} "
             f"({'recompiled after an edit' if stale else 'cache was current'})",

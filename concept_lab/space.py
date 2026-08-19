@@ -7,9 +7,8 @@ A space has two roots on purpose.
                   pack manifests, and SPACE.json. Defaults next to the
                   renders, under the ComfyUI output directory.
     tensor root   the heavy evidence. Block states, sketches, factors.
-                  Defaults to /mnt/weights/ai/concept-space/tensors on a box
-                  that has it, and falls back to <index root>/tensors so a
-                  fresh checkout on somebody else's machine still works.
+                  Defaults to <index root>/tensors; point H3_CONCEPT_TENSOR_DIR
+                  at a big disk on a box that has one.
 
 Both are overridable per call and by environment:
 
@@ -49,7 +48,7 @@ INDEX_ENV = "H3_CONCEPT_INDEX_DIR"
 TENSOR_ENV = "H3_CONCEPT_TENSOR_DIR"
 
 DEFAULT_INDEX_REL = os.path.join("output", "h3_concept")
-DEFAULT_TENSOR_ABS = "/mnt/weights/ai/concept-space/tensors"
+DEFAULT_TENSOR_ABS = ""          # no site default; env or <index root>/tensors
 
 SPACE_FILE = "SPACE.json"
 BUNDLE_SUFFIX = ".h3space.zip"

@@ -854,10 +854,9 @@ def _compile_hold_map(frame_holds, length, ramp, bridge):
 # High J = tokens whose predicted clean latent is still moving between denoise
 # steps, i.e. where the model has not made up its mind.
 #
-# The math below is PORTED VERBATIM from the desk study that validated it,
-# /mnt/work/ai/apps/ComfyUI-ModelCatalog/benchmarks/scripts/indecision/
-# x0_jitter.py; tests/test_indecision_oracle.py asserts parity against that
-# file so the two cannot drift. What the study found (RESULTS.md, 7 scenes):
+# The math below is PORTED VERBATIM from the desk study that validated it
+# (a private benchmarks tree, x0_jitter.py); tests/test_indecision_oracle.py
+# asserts parity against that file so the two cannot drift. What the study found (RESULTS.md, 7 scenes):
 #
 #   - the map is NOT a re-derivation of the jerk oracle. Controlling for pixel
 #     motion it still correlates +0.41 with static detail energy; on the
