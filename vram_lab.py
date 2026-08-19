@@ -51,6 +51,9 @@ import torch
 
 import comfy.model_management
 import comfy.quant_ops
+import comfy.ldm.common_dit
+import comfy.model_prefetch
+import comfy.ldm.minimax.model as _h3m
 from comfy.ldm.modules.attention import AttentionTensorContainer, optimized_attention
 
 try:  # A5b: SageAttention's kernels take pre-quantised K/V; optional
@@ -356,6 +359,165 @@ def _sage_attention_q(qc, st, out_dtype):
     return acc.to(out_dtype)                                    # V is not rotated: no un-rotation
 
 
+# --------------------------------------------------------------------------- F5: trimmed forward (release the embed buffers)
+
+_STOCK_FORWARD_SHA = "f40e52b23fb2f9c7"       # sha256[:16] of inspect.getsource(MiniMaxH3Model._forward) this copy was made from
+
+
+def _stock_forward_sha():
+    import hashlib
+    import inspect
+    try:
+        return hashlib.sha256(inspect.getsource(_h3m.MiniMaxH3Model._forward).encode()).hexdigest()[:16]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _trimmed_forward(self, x, timestep, context, transformer_options={}, minimax_payload=None, **kwargs):
+    """Stock MiniMaxH3Model._forward (ComfyUI 0.33.0, source sha256 f40e52b2...) with the
+    embed/row buffers released after the sequence is assembled (F5). Same math."""
+    video_x, audio_x = x[0], x[1]
+    orig_t, orig_h, orig_w = video_x.shape[2], video_x.shape[3], video_x.shape[4]
+    video_x = comfy.ldm.common_dit.pad_to_patch_size(video_x, self.patch_size)
+    if video_x.shape[0] != 1:
+        raise ValueError("MiniMax H3 supports batch size 1")
+    payload = minimax_payload or {}
+    device = video_x.device
+    dtype = context.dtype  # compute dtype
+
+    latent_t, lat_h, lat_w = video_x.shape[2], video_x.shape[3], video_x.shape[4]
+    audio_t = audio_x.shape[-1]
+    text_len = context.shape[1]
+    # extra_conds prebuilds the layout once per sampling run
+    layout = payload.get("layout")
+    if layout is None or layout.signature != (text_len, latent_t, lat_h, lat_w, audio_t):
+        layout = _h3m.PackedLayout(text_len, latent_t, lat_h, lat_w, audio_t,
+                              keyframes=payload.get("keyframes"),
+                              refs=payload.get("refs"))
+
+    # model_base passes model_sampling.timestep(sigma) = sigma * 1000
+    shift_v = float(transformer_options.get("minimax_h3_sigma_shift_video", self.sigma_shift_video))
+    shift_a = float(transformer_options.get("minimax_h3_sigma_shift_audio", self.sigma_shift_audio))
+    sigma_v = (timestep.flatten()[0] / 1000.0).float().clamp(min=1e-6)
+    t_v = float(1.0 - sigma_v)
+    t_a = float(1.0 - _h3m.time_shift_sigma(sigma_v, shift_v, shift_a))
+
+    # distinct timesteps are known analytically: text/pad follow video, cond rows pin near 1
+    vis_aug = float(payload.get("visual_cond_noise_aug", _h3m.VISUAL_COND_TIMESTEP))
+    aud_aug = float(payload.get("audio_cond_noise_aug", _h3m.AUDIO_COND_TIMESTEP))
+    has_vis_cond = any(k in ("cond", "ref_img") for _, _, k in layout.segments)
+    has_aud_cond = any(k in ("cond_audio", "ref_audio") for _, _, k in layout.segments)
+    seg_t = {"text": t_v, "video": t_v, "audio": t_a,
+             "cond": max(t_v, vis_aug), "ref_img": max(t_v, vis_aug),
+             "cond_audio": max(t_a, aud_aug), "ref_audio": max(t_a, aud_aug)}
+    unique_t = sorted({t_v, t_a} | ({seg_t["cond"]} if has_vis_cond else set())
+                      | ({seg_t["ref_audio"]} if has_aud_cond else set()))
+    t_row = {t: i for i, t in enumerate(unique_t)}
+    seg_tag = {"text": 1, "video": 0, "audio": 2, "cond": 0, "ref_img": 0, "cond_audio": 2, "ref_audio": 2}
+
+    text_tags = payload.get("text_token_tags")
+    mod_segments = []
+    for a, b, kind in layout.segments:
+        row_base = t_row[seg_t[kind]] * 3
+        if kind == "text" and text_tags is not None:
+            # the presentation text span mixes tags (vision pads carry the video modality) split into tag runs
+            tags = text_tags.view(-1).tolist()
+            run_start = 0
+            for i in range(1, b - a + 1):
+                if i == b - a or tags[i] != tags[run_start]:
+                    mod_segments.append((a + run_start, a + i, row_base + int(tags[run_start])))
+                    run_start = i
+        else:
+            mod_segments.append((a, b, row_base + seg_tag[kind]))
+
+    # embed
+    img_update = layout.img_update.to(device)
+    audio_update = layout.audio_update.to(device)
+    video_rows = _h3m.patchify_video(video_x.to(torch.float32), self.patch_size)
+    audio_rows = _h3m.pack_audio(audio_x.to(torch.float32))
+    cond_video_rows = self._cond_video_rows(payload, device)
+    cond_audio_rows = self._cond_audio_rows(payload, device)
+
+    all_video_rows = video_rows
+    if cond_video_rows is not None:
+        all_video_rows = torch.empty(img_update.shape[0], video_rows.shape[1], dtype=torch.float32, device=device)
+        all_video_rows[~img_update] = cond_video_rows
+        all_video_rows[img_update] = video_rows
+    all_audio_rows = audio_rows
+    if cond_audio_rows is not None:
+        all_audio_rows = torch.empty(audio_update.shape[0], audio_rows.shape[1], dtype=torch.float32, device=device)
+        all_audio_rows[~audio_update] = cond_audio_rows
+        all_audio_rows[audio_update] = audio_rows
+
+    video_embed = self.video_patch_proj(all_video_rows).to(dtype)
+    audio_embed = self.audio_patch_proj(all_audio_rows).to(dtype)
+    text_states = context[0]
+    if text_states.shape[-1] != self.hidden_size:
+        text_states = self.token_refiner(self.condition_proj(text_states),
+                                         transformer_options=transformer_options)
+
+    # segments are contiguous: assemble by slices, embed rows follow segment order
+    h = torch.empty(layout.seq_len, self.hidden_size, dtype=dtype, device=device)
+    voff = aoff = 0
+    for a, b, kind in layout.segments:
+        n = b - a
+        if kind == "text":
+            h[a:b] = text_states
+        elif kind in ("cond", "ref_img", "video"):
+            h[a:b] = video_embed[voff:voff + n]
+            voff += n
+        else:  # ref_audio / audio
+            h[a:b] = audio_embed[aoff:aoff + n]
+            aoff += n
+
+    # F5: the embeds and row buffers are copied into h; stock keeps them alive for the whole
+    # forward (2.14 GiB at 216k tokens, measured M0e). Release them here.
+    del video_embed, audio_embed, video_rows, audio_rows, all_video_rows, all_audio_rows, cond_video_rows, cond_audio_rows
+
+    t_vals = torch.tensor(unique_t, dtype=torch.float32, device=device)
+    if self.use_adaln_curves:
+        # adaln projections consume interpolated coordinates of the time-embedding curve
+        table = comfy.model_management.cast_to(self.adaln_t_table, device=device)
+        pos = t_vals.clamp(0.0, 1.0) * (table.shape[0] - 1)     # t in [0,1] -> fractional grid index, out-of-range t clamps to the curve ends
+        i0 = pos.floor().long().clamp(max=table.shape[0] - 2)   # lower grid row, max-clamp keeps t=1.0 on the last interval instead of reading past the table
+        t_emb = torch.lerp(table[i0], table[i0 + 1], (pos - i0).unsqueeze(1))  # blend the two rows by the fractional part
+    else:
+        t_emb = self.time_embedder(t_vals).to(dtype)
+
+    # rotation table computed once per forward, consumed by the kitchen split-half rope
+    rope_freqs = _h3m.rope_rotation_table(self.rope_freqs(layout.position_ids, device), dtype)
+
+    # blocks
+    patches_replace = transformer_options.get("patches_replace", {})
+    blocks_replace = patches_replace.get("dit", {})
+    prefetch_queue = comfy.model_prefetch.make_prefetch_queue(list(self.blocks), device, transformer_options)
+    for i, block in enumerate(self.blocks):
+        comfy.model_prefetch.prefetch_queue_pop(prefetch_queue, device, block)
+        if ("double_block", i) in blocks_replace:
+            def block_wrap(args):
+                return {"img": block(args["img"], args["t_emb"], args["mod_segments"], args["rope_freqs"],
+                                     transformer_options=args["transformer_options"])}
+            h = blocks_replace[("double_block", i)](
+                {"img": h, "t_emb": t_emb, "mod_segments": mod_segments, "rope_freqs": rope_freqs,
+                 "transformer_options": transformer_options},
+                {"original_block": block_wrap})["img"]
+        else:
+            h = block(h, t_emb, mod_segments, rope_freqs, transformer_options=transformer_options)
+    if prefetch_queue is not None:
+        comfy.model_prefetch.prefetch_queue_pop(prefetch_queue, device, None)
+
+    # target streams are single contiguous segments (audio then video, last two)
+    video_seg = next((a, b, t_row[seg_t["video"]]) for a, b, k in layout.segments if k == "video")
+    audio_seg = next((a, b, t_row[seg_t["audio"]]) for a, b, k in layout.segments if k == "audio")
+    v, a = self.final_layer(h, t_emb, video_seg, audio_seg)
+
+    video_out = _h3m.unpatchify_video(v, latent_t, lat_h // 2, lat_w // 2, self.latents_dim, self.patch_size)
+    video_out = video_out[:, :, :orig_t, :orig_h, :orig_w]
+    audio_out = _h3m.unpack_audio(a)
+
+    return [-video_out.to(video_x.dtype), -audio_out.to(audio_x.dtype)]
+
+
 # --------------------------------------------------------------------------- the block
 
 def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=False, kv_sage=False):
@@ -599,6 +761,8 @@ class H3StreamedBlocks:
                 "kv_store": (["bf16 (exact)", "kvi8r: rotated int8 K/V (approximate)", "kvi8s: Sage int8/fp8 K/V, rotated (approximate, faster attention)"],
                              {"default": "bf16 (exact)",
                               "tooltip": "kvi8r = rotated int8 K/V. K and V held as int8 with one fp16 scale per row (per token, per head) in a fixed orthonormal 128-wide Hadamard-rotated basis of the head dim; the query chunk is rotated to match and the output un-rotated once, so a K/V block dequant is a single int8->fp16 cast * scale and attention runs in fp16 blockwise (kv_block, default 16384) with an online-softmax combine. Halves the K/V bytes. NOT bit-equal to stock: a same-seed render is a sibling take (first cut 2026-08-18: operator judged the de-rope side by side 'almost perfect'). Second cut (2026-08-18 evening): standalone at 217k tokens the attention costs +16% over the exact path (first cut +24%) with a ~1 GiB transient (first cut ~3), so the K/V saving now shows in the forward peak; the live numbers are in LOWVRAM.md. kvi8s = the same K/V bytes kept in SageAttention's kernel layout (int8 K per 64-token block, fp8 V per channel, Q/K Hadamard-rotated first) and attended on int8/fp8 tensor cores straight from the store, no dequant: standalone ~1.6x faster attention than the exact path at 217k tokens, one rung more approximate than kvi8r; needs the sageattention package (2.x)."}),
+                "trim_forward": ("BOOLEAN", {"default": True,
+                                             "tooltip": "F5: run a copy of the stock model forward that releases the patch-embed and row buffers once the packed sequence is assembled (stock keeps them for the whole forward: 2.14 GiB at 216k tokens). Same math, exact. Applied only if the installed ComfyUI's forward matches the copy (source hash); otherwise skipped with a log line."}),
                 "self_check": ("BOOLEAN", {"default": False,
                                            "tooltip": "Diagnostic: on block 0's first call, run stock and streamed on the same input and log per-phase divergence. Costs one extra block forward."}),
             }
@@ -612,7 +776,7 @@ class H3StreamedBlocks:
                    "projection work at long lengths. See vram_lab.py for the ledger.")
 
     def patch(self, model, q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block, self_check=False, final_layer_chunk=16384,
-              final_layer_gemm="exact (whole GEMM, one fp32 buffer)", kv_store="bf16 (exact)"):
+              final_layer_gemm="exact (whole GEMM, one fp32 buffer)", kv_store="bf16 (exact)", trim_forward=True):
         dm = getattr(getattr(model, "model", None), "diffusion_model", None)
         blocks = getattr(dm, "blocks", None)
         if not blocks or not hasattr(blocks[0], "attn") or not hasattr(blocks[0].attn, "qkv_proj"):
@@ -637,6 +801,14 @@ class H3StreamedBlocks:
                 return streamed_final_layer_forward(_fl, x, t_emb, video_seg, audio_seg, chunk=_c,
                                                     probe=getattr(dm, "_h3_memprobe", None), exact_gemm=_e)
             m.add_object_patch("diffusion_model.final_layer.forward", _fl_forward)
+        if trim_forward:
+            sha = _stock_forward_sha()
+            if sha == _STOCK_FORWARD_SHA and hasattr(dm, "_forward"):
+                import types
+                m.add_object_patch("diffusion_model._forward", types.MethodType(_trimmed_forward, dm))
+                log.info("H3StreamedBlocks: trim_forward on (stock _forward %s matches the copy)", sha)
+            else:
+                log.warning("H3StreamedBlocks: trim_forward skipped: installed _forward source hash %s != %s (ComfyUI changed; the copy needs refreshing)", sha, _STOCK_FORWARD_SHA)
         log.info("H3StreamedBlocks: %d blocks patched (q %d, kv %d, mlp %d, min %d, kv_block %d, final_layer_chunk %d, %s, kv_store %s)",
                  len(blocks), q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block, final_layer_chunk, final_layer_gemm, kv_store)
         return (m,)
