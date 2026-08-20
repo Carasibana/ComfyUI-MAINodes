@@ -47,7 +47,11 @@ pass 2 follows the original delivery) and the smear-aware audio recover. For
 clips whose dilated pass does not fit your card in one piece, the same stack is
 wired into the windowed graph:
 [`examples/motion_pipeline_rolling_window_lowvram.json`](examples/motion_pipeline_rolling_window_lowvram.json)
-(API twin alongside; plan report first, then queue per window; inject 0.48).
+(API twin alongside; plan report first, then queue per window; inject 0.48). Each
+window pins its first and last frame to the baseline via `MiniMax H3 Add Guide`,
+which holds the regenerated windows on the baseline's motion and look so the
+splice seams carry no state jumps; the pin frames come straight from
+`H3 Window Plan`'s first/last frame outputs.
 
 One graph, the whole motion pipeline for a small card, with the rotated int8
 K/V store on. What is in it and why, in the order it runs (2026-08-18):

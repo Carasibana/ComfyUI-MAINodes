@@ -430,7 +430,7 @@
     0
    ],
    "conditioning": [
-    "206",
+    "9304",
     0
    ]
   },
@@ -730,6 +730,88 @@
    ],
    "vae": [
     "120",
+    0
+   ]
+  }
+ },
+ "9301": {
+  "class_type": "ImageScale",
+  "inputs": {
+   "image": [
+    "240",
+    3
+   ],
+   "upscale_method": "lanczos",
+   "width": [
+    "330",
+    0
+   ],
+   "height": [
+    "330",
+    1
+   ],
+   "crop": "disabled"
+  }
+ },
+ "9302": {
+  "class_type": "ImageScale",
+  "inputs": {
+   "image": [
+    "240",
+    4
+   ],
+   "upscale_method": "lanczos",
+   "width": [
+    "330",
+    0
+   ],
+   "height": [
+    "330",
+    1
+   ],
+   "crop": "disabled"
+  }
+ },
+ "9303": {
+  "class_type": "MiniMaxH3AddGuide",
+  "inputs": {
+   "positive": [
+    "206",
+    0
+   ],
+   "latent": [
+    "203",
+    0
+   ],
+   "frame_idx": 0,
+   "vae": [
+    "119",
+    0
+   ],
+   "image": [
+    "9301",
+    0
+   ]
+  }
+ },
+ "9304": {
+  "class_type": "MiniMaxH3AddGuide",
+  "inputs": {
+   "positive": [
+    "9303",
+    0
+   ],
+   "latent": [
+    "203",
+    0
+   ],
+   "frame_idx": -1,
+   "vae": [
+    "119",
+    0
+   ],
+   "image": [
+    "9302",
     0
    ]
   }
