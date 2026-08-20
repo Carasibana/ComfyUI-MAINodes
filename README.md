@@ -153,7 +153,9 @@ flow (12-step turbo pass 1, 6-step turbo pass 2, inject 0.48 or 0.7), and the
 low-VRAM stack in [LOWVRAM.md](LOWVRAM.md). Inject 0.48 replaced 0.50 as the
 shipped default: at 0.50 and above some scenes measurably loosen their hold on
 the reference. Historical dial studies and superseded variants live in
-[`examples/archive/`](examples/archive/), still runnable as committed.
+[`examples/archive/`](examples/archive/), still runnable as committed. When the
+defaults are too slow for your card or your patience, [FASTER.md](FASTER.md)
+prices every speed dial from measured runs.
 
 [`motion_pipeline_turbo.json`](examples/archive/motion_pipeline_turbo.json) is the
 same pipeline with the regeneration pass running on the LightX2V 4-step
