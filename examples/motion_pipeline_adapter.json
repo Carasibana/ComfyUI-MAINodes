@@ -2,7 +2,7 @@
  "id": "00000000-0000-0000-0000-000000000000",
  "revision": 0,
  "last_node_id": 9102,
- "last_link_id": 78,
+ "last_link_id": 66,
  "nodes": [
   {
    "id": 115,
@@ -25,7 +25,7 @@
      "type": "INT",
      "links": [
       6,
-      40
+      34
      ],
      "slot_index": 0
     },
@@ -34,7 +34,7 @@
      "type": "INT",
      "links": [
       7,
-      41
+      35
      ],
      "slot_index": 1
     }
@@ -70,10 +70,10 @@
      "type": "VAE",
      "links": [
       5,
-      19,
-      37,
-      39,
-      57
+      20,
+      31,
+      33,
+      53
      ],
      "slot_index": 0
     }
@@ -106,9 +106,9 @@
      "name": "VAE",
      "type": "VAE",
      "links": [
-      17,
-      48,
-      59
+      18,
+      44,
+      55
      ],
      "slot_index": 0
     }
@@ -143,8 +143,7 @@
      "links": [
       1,
       3,
-      9,
-      45
+      10
      ],
      "slot_index": 0
     }
@@ -179,7 +178,7 @@
      "type": "CLIP",
      "links": [
       4,
-      38
+      32
      ],
      "slot_index": 0
     }
@@ -214,7 +213,7 @@
      "name": "NOISE",
      "type": "NOISE",
      "links": [
-      11
+      12
      ],
      "slot_index": 0
     }
@@ -281,8 +280,8 @@
      "name": "SAMPLER",
      "type": "SAMPLER",
      "links": [
-      13,
-      53
+      14,
+      49
      ],
      "slot_index": 0
     }
@@ -315,7 +314,7 @@
      "name": "NOISE",
      "type": "NOISE",
      "links": [
-      51
+      47
      ],
      "slot_index": 0
     }
@@ -355,7 +354,7 @@
      "name": "SIGMAS",
      "type": "SIGMAS",
      "links": [
-      14
+      15
      ],
      "slot_index": 0
     }
@@ -408,7 +407,7 @@
      "type": "INT",
      "links": [
       8,
-      21
+      22
      ],
      "slot_index": 1
     },
@@ -428,15 +427,15 @@
    ]
   },
   {
-   "id": 204,
-   "type": "H3InjectSchedule",
+   "id": 600,
+   "type": "LoraLoaderModelOnly",
    "pos": [
     520,
     464
    ],
    "size": [
     400,
-    206
+    150
    ],
    "flags": {},
    "order": 11,
@@ -450,23 +449,22 @@
    ],
    "outputs": [
     {
-     "name": "SIGMAS",
-     "type": "SIGMAS",
+     "name": "MODEL",
+     "type": "MODEL",
      "links": [
-      54
+      9,
+      40
      ],
      "slot_index": 0
     }
    ],
-   "title": "H3InjectSchedule",
+   "title": "Motion adapter (de-rope pass only)",
    "properties": {
-    "Node name for S&R": "H3InjectSchedule"
+    "Node name for S&R": "LoraLoaderModelOnly"
    },
    "widgets_values": [
-    "simple",
-    25,
-    0.7,
-    "balanced 0.70 (default)"
+    "minimax_h3/minimax_h3_motion_adapter_pilot_r16.safetensors",
+    1.0
    ]
   },
   {
@@ -534,7 +532,7 @@
      "name": "positive",
      "type": "CONDITIONING",
      "links": [
-      10
+      11
      ],
      "slot_index": 0
     },
@@ -542,7 +540,7 @@
      "name": "LATENT",
      "type": "LATENT",
      "links": [
-      15
+      16
      ],
      "slot_index": 1
     }
@@ -559,6 +557,48 @@
    ]
   },
   {
+   "id": 204,
+   "type": "H3InjectSchedule",
+   "pos": [
+    980,
+    570
+   ],
+   "size": [
+    400,
+    206
+   ],
+   "flags": {},
+   "order": 13,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "model",
+     "type": "MODEL",
+     "link": 9
+    }
+   ],
+   "outputs": [
+    {
+     "name": "SIGMAS",
+     "type": "SIGMAS",
+     "links": [
+      50
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "H3InjectSchedule",
+   "properties": {
+    "Node name for S&R": "H3InjectSchedule"
+   },
+   "widgets_values": [
+    "simple",
+    25,
+    0.45,
+    "balanced 0.70 (default)"
+   ]
+  },
+  {
    "id": 126,
    "type": "BasicGuider",
    "pos": [
@@ -570,18 +610,18 @@
     118
    ],
    "flags": {},
-   "order": 13,
+   "order": 14,
    "mode": 0,
    "inputs": [
     {
      "name": "model",
      "type": "MODEL",
-     "link": 9
+     "link": 10
     },
     {
      "name": "conditioning",
      "type": "CONDITIONING",
-     "link": 10
+     "link": 11
     }
    ],
    "outputs": [
@@ -589,7 +629,7 @@
      "name": "GUIDER",
      "type": "GUIDER",
      "links": [
-      12
+      13
      ],
      "slot_index": 0
     }
@@ -612,33 +652,33 @@
     190
    ],
    "flags": {},
-   "order": 14,
+   "order": 15,
    "mode": 0,
    "inputs": [
     {
      "name": "noise",
      "type": "NOISE",
-     "link": 11
+     "link": 12
     },
     {
      "name": "guider",
      "type": "GUIDER",
-     "link": 12
+     "link": 13
     },
     {
      "name": "sampler",
      "type": "SAMPLER",
-     "link": 13
+     "link": 14
     },
     {
      "name": "sigmas",
      "type": "SIGMAS",
-     "link": 14
+     "link": 15
     },
     {
      "name": "latent_image",
      "type": "LATENT",
-     "link": 15
+     "link": 16
     }
    ],
    "outputs": [
@@ -646,11 +686,10 @@
      "name": "output",
      "type": "LATENT",
      "links": [
-      16,
-      18,
-      20,
-      25,
-      27
+      17,
+      19,
+      21,
+      28
      ],
      "slot_index": 0
     },
@@ -679,18 +718,18 @@
     118
    ],
    "flags": {},
-   "order": 15,
+   "order": 16,
    "mode": 0,
    "inputs": [
     {
      "name": "samples",
      "type": "LATENT",
-     "link": 16
+     "link": 17
     },
     {
      "name": "vae",
      "type": "VAE",
-     "link": 17
+     "link": 18
     }
    ],
    "outputs": [
@@ -698,10 +737,9 @@
      "name": "AUDIO",
      "type": "AUDIO",
      "links": [
-      23,
-      43,
-      66,
-      71
+      24,
+      38,
+      62
      ],
      "slot_index": 0
     }
@@ -724,18 +762,18 @@
     118
    ],
    "flags": {},
-   "order": 16,
+   "order": 17,
    "mode": 0,
    "inputs": [
     {
      "name": "samples",
      "type": "LATENT",
-     "link": 18
+     "link": 19
     },
     {
      "name": "vae",
      "type": "VAE",
-     "link": 19
+     "link": 20
     }
    ],
    "outputs": [
@@ -743,12 +781,9 @@
      "name": "IMAGE",
      "type": "IMAGE",
      "links": [
-      22,
-      24,
-      26,
-      31,
-      68,
-      74
+      23,
+      25,
+      27
      ],
      "slot_index": 0
     }
@@ -771,18 +806,18 @@
     454
    ],
    "flags": {},
-   "order": 17,
+   "order": 18,
    "mode": 0,
    "inputs": [
     {
      "name": "samples",
      "type": "LATENT",
-     "link": 20
+     "link": 21
     },
     {
      "name": "length",
      "type": "INT",
-     "link": 21,
+     "link": 22,
      "widget": {
       "name": "length"
      }
@@ -793,7 +828,7 @@
      "name": "hold_map",
      "type": "STRING",
      "links": [
-      28
+      26
      ],
      "slot_index": 0
     },
@@ -859,18 +894,18 @@
     174
    ],
    "flags": {},
-   "order": 18,
+   "order": 19,
    "mode": 0,
    "inputs": [
     {
      "name": "images",
      "type": "IMAGE",
-     "link": 22
+     "link": 23
     },
     {
      "name": "audio",
      "type": "AUDIO",
-     "link": 23
+     "link": 24
     }
    ],
    "outputs": [
@@ -893,61 +928,15 @@
    ]
   },
   {
-   "id": 216,
-   "type": "H3JerkHeatmap",
+   "id": 201,
+   "type": "H3TimeSmear",
    "pos": [
     2820,
     274
    ],
    "size": [
     400,
-    202
-   ],
-   "flags": {},
-   "order": 19,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "images",
-     "type": "IMAGE",
-     "link": 24
-    },
-    {
-     "name": "samples",
-     "type": "LATENT",
-     "link": 25
-    }
-   ],
-   "outputs": [
-    {
-     "name": "IMAGE",
-     "type": "IMAGE",
-     "links": [
-      30
-     ],
-     "slot_index": 0
-    }
-   ],
-   "title": "H3JerkHeatmap",
-   "properties": {
-    "Node name for S&R": "H3JerkHeatmap"
-   },
-   "widgets_values": [
-    0.55,
-    96,
-    true
-   ]
-  },
-  {
-   "id": 230,
-   "type": "H3MotionEditor",
-   "pos": [
-    2820,
-    516
-   ],
-   "size": [
-    400,
-    366
+    314
    ],
    "flags": {},
    "order": 20,
@@ -956,175 +945,12 @@
     {
      "name": "images",
      "type": "IMAGE",
-     "link": 26
-    },
-    {
-     "name": "samples",
-     "type": "LATENT",
-     "link": 27
-    },
-    {
-     "name": "oracle_hold_map",
-     "type": "STRING",
-     "link": 28,
-     "widget": {
-      "name": "oracle_hold_map"
-     }
-    }
-   ],
-   "outputs": [
-    {
-     "name": "hold_map",
-     "type": "STRING",
-     "links": [
-      32
-     ],
-     "slot_index": 0
-    },
-    {
-     "name": "mask",
-     "type": "MASK",
-     "links": [
-      75
-     ],
-     "slot_index": 1
-    },
-    {
-     "name": "envelopes",
-     "type": "STRING",
-     "links": null,
-     "slot_index": 2
-    },
-    {
-     "name": "report",
-     "type": "STRING",
-     "links": null,
-     "slot_index": 3
-    }
-   ],
-   "title": "H3 Motion Editor: queue once to load the filmstrip, then drag blocks / paint / automate here and queue again",
-   "properties": {
-    "Node name for S&R": "H3MotionEditor"
-   },
-   "widgets_values": [
-    "",
-    "",
-    24,
-    true,
-    8,
-    false,
-    "baseline",
-    512
-   ]
-  },
-  {
-   "id": 92,
-   "type": "SaveVideo",
-   "pos": [
-    3280,
-    60
-   ],
-   "size": [
-    400,
-    178
-   ],
-   "flags": {},
-   "order": 21,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "video",
-     "type": "VIDEO",
-     "link": 29
-    }
-   ],
-   "outputs": [
-    {
-     "name": "video",
-     "type": "VIDEO",
-     "links": null,
-     "slot_index": 0
-    }
-   ],
-   "title": "SaveVideo",
-   "properties": {
-    "Node name for S&R": "SaveVideo"
-   },
-   "widgets_values": [
-    "video/mainodes_segment_baseline",
-    "auto",
-    "auto"
-   ]
-  },
-  {
-   "id": 217,
-   "type": "CreateVideo",
-   "pos": [
-    3280,
-    278
-   ],
-   "size": [
-    400,
-    174
-   ],
-   "flags": {},
-   "order": 22,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "images",
-     "type": "IMAGE",
-     "link": 30
-    },
-    {
-     "name": "audio",
-     "type": "AUDIO",
-     "link": null
-    }
-   ],
-   "outputs": [
-    {
-     "name": "VIDEO",
-     "type": "VIDEO",
-     "links": [
-      35
-     ],
-     "slot_index": 0
-    }
-   ],
-   "title": "CreateVideo",
-   "properties": {
-    "Node name for S&R": "CreateVideo"
-   },
-   "widgets_values": [
-    24,
-    8
-   ]
-  },
-  {
-   "id": 240,
-   "type": "H3SegmentCrop",
-   "pos": [
-    3280,
-    492
-   ],
-   "size": [
-    400,
-    202
-   ],
-   "flags": {},
-   "order": 23,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "images",
-     "type": "IMAGE",
-     "link": 31
+     "link": 25
     },
     {
      "name": "hold_map",
      "type": "STRING",
-     "link": 32,
+     "link": 26,
      "widget": {
       "name": "hold_map"
      }
@@ -1135,90 +961,7 @@
      "name": "images",
      "type": "IMAGE",
      "links": [
-      33
-     ],
-     "slot_index": 0
-    },
-    {
-     "name": "hold_map",
-     "type": "STRING",
-     "links": [
-      34
-     ],
-     "slot_index": 1
-    },
-    {
-     "name": "splice_map",
-     "type": "STRING",
-     "links": [
-      70
-     ],
-     "slot_index": 2
-    },
-    {
-     "name": "first_frame",
-     "type": "IMAGE",
-     "links": null,
-     "slot_index": 3
-    },
-    {
-     "name": "last_frame",
-     "type": "IMAGE",
-     "links": null,
-     "slot_index": 4
-    },
-    {
-     "name": "report",
-     "type": "STRING",
-     "links": null,
-     "slot_index": 5
-    }
-   ],
-   "title": "segment crop: regen pays only for the editor's window + handles",
-   "properties": {
-    "Node name for S&R": "H3SegmentCrop"
-   },
-   "widgets_values": [
-    "",
-    12,
-    false
-   ]
-  },
-  {
-   "id": 201,
-   "type": "H3TimeSmear",
-   "pos": [
-    3740,
-    60
-   ],
-   "size": [
-    400,
-    314
-   ],
-   "flags": {},
-   "order": 24,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "images",
-     "type": "IMAGE",
-     "link": 33
-    },
-    {
-     "name": "hold_map",
-     "type": "STRING",
-     "link": 34,
-     "widget": {
-      "name": "hold_map"
-     }
-    }
-   ],
-   "outputs": [
-    {
-     "name": "images",
-     "type": "IMAGE",
-     "links": [
-      36
+      30
      ],
      "slot_index": 0
     },
@@ -1226,9 +969,9 @@
      "name": "hold_map_used",
      "type": "STRING",
      "links": [
-      44,
-      63,
-      65
+      39,
+      59,
+      61
      ],
      "slot_index": 1
     },
@@ -1236,7 +979,7 @@
      "name": "length",
      "type": "INT",
      "links": [
-      42
+      36
      ],
      "slot_index": 2
     },
@@ -1262,24 +1005,70 @@
    ]
   },
   {
-   "id": 218,
+   "id": 216,
+   "type": "H3JerkHeatmap",
+   "pos": [
+    2820,
+    628
+   ],
+   "size": [
+    400,
+    202
+   ],
+   "flags": {},
+   "order": 21,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 27
+    },
+    {
+     "name": "samples",
+     "type": "LATENT",
+     "link": 28
+    }
+   ],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      37
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "H3JerkHeatmap",
+   "properties": {
+    "Node name for S&R": "H3JerkHeatmap"
+   },
+   "widgets_values": [
+    0.55,
+    96,
+    true
+   ]
+  },
+  {
+   "id": 92,
    "type": "SaveVideo",
    "pos": [
-    3740,
-    414
+    3280,
+    60
    ],
    "size": [
     400,
     178
    ],
    "flags": {},
-   "order": 25,
+   "order": 22,
    "mode": 0,
    "inputs": [
     {
      "name": "video",
      "type": "VIDEO",
-     "link": 35
+     "link": 29
     }
    ],
    "outputs": [
@@ -1295,7 +1084,7 @@
     "Node name for S&R": "SaveVideo"
    },
    "widgets_values": [
-    "video/mainodes_segment_oraclemap",
+    "video/mainodes_adapter_baseline",
     "auto",
     "auto"
    ]
@@ -1304,26 +1093,26 @@
    "id": 202,
    "type": "VAEEncode",
    "pos": [
-    4200,
-    60
+    3280,
+    278
    ],
    "size": [
     400,
     118
    ],
    "flags": {},
-   "order": 26,
+   "order": 23,
    "mode": 0,
    "inputs": [
     {
      "name": "pixels",
      "type": "IMAGE",
-     "link": 36
+     "link": 30
     },
     {
      "name": "vae",
      "type": "VAE",
-     "link": 37
+     "link": 31
     }
    ],
    "outputs": [
@@ -1331,7 +1120,7 @@
      "name": "LATENT",
      "type": "LATENT",
      "links": [
-      49
+      45
      ],
      "slot_index": 0
     }
@@ -1346,31 +1135,31 @@
    "id": 206,
    "type": "MiniMaxH3ImageToVideo",
    "pos": [
-    4200,
-    218
+    3280,
+    436
    ],
    "size": [
     400,
     470
    ],
    "flags": {},
-   "order": 27,
+   "order": 24,
    "mode": 0,
    "inputs": [
     {
      "name": "clip",
      "type": "CLIP",
-     "link": 38
+     "link": 32
     },
     {
      "name": "vae",
      "type": "VAE",
-     "link": 39
+     "link": 33
     },
     {
      "name": "width",
      "type": "INT",
-     "link": 40,
+     "link": 34,
      "widget": {
       "name": "width"
      }
@@ -1378,7 +1167,7 @@
     {
      "name": "height",
      "type": "INT",
-     "link": 41,
+     "link": 35,
      "widget": {
       "name": "height"
      }
@@ -1386,7 +1175,7 @@
     {
      "name": "length",
      "type": "INT",
-     "link": 42,
+     "link": 36,
      "widget": {
       "name": "length"
      }
@@ -1407,7 +1196,7 @@
      "name": "positive",
      "type": "CONDITIONING",
      "links": [
-      46
+      41
      ],
      "slot_index": 0
     },
@@ -1430,29 +1219,74 @@
    ]
   },
   {
-   "id": 9101,
-   "type": "H3AudioSmear",
+   "id": 217,
+   "type": "CreateVideo",
    "pos": [
-    4200,
-    728
+    3280,
+    946
    ],
    "size": [
     400,
     174
    ],
    "flags": {},
-   "order": 28,
+   "order": 25,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 37
+    },
+    {
+     "name": "audio",
+     "type": "AUDIO",
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "name": "VIDEO",
+     "type": "VIDEO",
+     "links": [
+      42
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "CreateVideo",
+   "properties": {
+    "Node name for S&R": "CreateVideo"
+   },
+   "widgets_values": [
+    24,
+    8
+   ]
+  },
+  {
+   "id": 9101,
+   "type": "H3AudioSmear",
+   "pos": [
+    3280,
+    1160
+   ],
+   "size": [
+    400,
+    174
+   ],
+   "flags": {},
+   "order": 26,
    "mode": 0,
    "inputs": [
     {
      "name": "audio",
      "type": "AUDIO",
-     "link": 43
+     "link": 38
     },
     {
      "name": "hold_map",
      "type": "STRING",
-     "link": 44,
+     "link": 39,
      "widget": {
       "name": "hold_map"
      }
@@ -1463,7 +1297,7 @@
      "name": "AUDIO",
      "type": "AUDIO",
      "links": [
-      47
+      43
      ],
      "slot_index": 0
     }
@@ -1481,7 +1315,7 @@
    "id": 207,
    "type": "BasicGuider",
    "pos": [
-    4660,
+    3740,
     60
    ],
    "size": [
@@ -1489,18 +1323,18 @@
     118
    ],
    "flags": {},
-   "order": 29,
+   "order": 27,
    "mode": 0,
    "inputs": [
     {
      "name": "model",
      "type": "MODEL",
-     "link": 45
+     "link": 40
     },
     {
      "name": "conditioning",
      "type": "CONDITIONING",
-     "link": 46
+     "link": 41
     }
    ],
    "outputs": [
@@ -1508,7 +1342,7 @@
      "name": "GUIDER",
      "type": "GUIDER",
      "links": [
-      52
+      48
      ],
      "slot_index": 0
     }
@@ -1520,29 +1354,68 @@
    "widgets_values": []
   },
   {
+   "id": 218,
+   "type": "SaveVideo",
+   "pos": [
+    3740,
+    218
+   ],
+   "size": [
+    400,
+    178
+   ],
+   "flags": {},
+   "order": 28,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "video",
+     "type": "VIDEO",
+     "link": 42
+    }
+   ],
+   "outputs": [
+    {
+     "name": "video",
+     "type": "VIDEO",
+     "links": null,
+     "slot_index": 0
+    }
+   ],
+   "title": "SaveVideo",
+   "properties": {
+    "Node name for S&R": "SaveVideo"
+   },
+   "widgets_values": [
+    "video/mainodes_adapter_oraclemap",
+    "auto",
+    "auto"
+   ]
+  },
+  {
    "id": 9102,
    "type": "VAEEncodeAudio",
    "pos": [
-    4660,
-    218
+    3740,
+    436
    ],
    "size": [
     400,
     118
    ],
    "flags": {},
-   "order": 30,
+   "order": 29,
    "mode": 0,
    "inputs": [
     {
      "name": "audio",
      "type": "AUDIO",
-     "link": 47
+     "link": 43
     },
     {
      "name": "vae",
      "type": "VAE",
-     "link": 48
+     "link": 44
     }
    ],
    "outputs": [
@@ -1550,7 +1423,7 @@
      "name": "LATENT",
      "type": "LATENT",
      "links": [
-      50
+      46
      ],
      "slot_index": 0
     }
@@ -1565,7 +1438,7 @@
    "id": 203,
    "type": "H3V2VInit",
    "pos": [
-    5120,
+    4200,
     60
    ],
    "size": [
@@ -1573,13 +1446,13 @@
     390
    ],
    "flags": {},
-   "order": 31,
+   "order": 30,
    "mode": 0,
    "inputs": [
     {
      "name": "samples",
      "type": "LATENT",
-     "link": 49
+     "link": 45
     },
     {
      "name": "oracle_samples",
@@ -1594,7 +1467,7 @@
     {
      "name": "audio_latent",
      "type": "LATENT",
-     "link": 50
+     "link": 46
     }
    ],
    "outputs": [
@@ -1602,7 +1475,7 @@
      "name": "LATENT",
      "type": "LATENT",
      "links": [
-      55
+      51
      ],
      "slot_index": 0
     }
@@ -1626,7 +1499,7 @@
    "id": 208,
    "type": "SamplerCustomAdvanced",
    "pos": [
-    5580,
+    4660,
     60
    ],
    "size": [
@@ -1634,33 +1507,33 @@
     190
    ],
    "flags": {},
-   "order": 32,
+   "order": 31,
    "mode": 0,
    "inputs": [
     {
      "name": "noise",
      "type": "NOISE",
-     "link": 51
+     "link": 47
     },
     {
      "name": "guider",
      "type": "GUIDER",
-     "link": 52
+     "link": 48
     },
     {
      "name": "sampler",
      "type": "SAMPLER",
-     "link": 53
+     "link": 49
     },
     {
      "name": "sigmas",
      "type": "SIGMAS",
-     "link": 54
+     "link": 50
     },
     {
      "name": "latent_image",
      "type": "LATENT",
-     "link": 55
+     "link": 51
     }
    ],
    "outputs": [
@@ -1668,8 +1541,8 @@
      "name": "output",
      "type": "LATENT",
      "links": [
-      56,
-      58
+      52,
+      54
      ],
      "slot_index": 0
     },
@@ -1690,7 +1563,7 @@
    "id": 209,
    "type": "VAEDecode",
    "pos": [
-    6040,
+    5120,
     60
    ],
    "size": [
@@ -1698,18 +1571,18 @@
     118
    ],
    "flags": {},
-   "order": 33,
+   "order": 32,
    "mode": 0,
    "inputs": [
     {
      "name": "samples",
      "type": "LATENT",
-     "link": 56
+     "link": 52
     },
     {
      "name": "vae",
      "type": "VAE",
-     "link": 57
+     "link": 53
     }
    ],
    "outputs": [
@@ -1717,8 +1590,8 @@
      "name": "IMAGE",
      "type": "IMAGE",
      "links": [
-      60,
-      62
+      56,
+      58
      ],
      "slot_index": 0
     }
@@ -1733,7 +1606,7 @@
    "id": 210,
    "type": "VAEDecodeAudio",
    "pos": [
-    6040,
+    5120,
     218
    ],
    "size": [
@@ -1741,18 +1614,18 @@
     118
    ],
    "flags": {},
-   "order": 34,
+   "order": 33,
    "mode": 0,
    "inputs": [
     {
      "name": "samples",
      "type": "LATENT",
-     "link": 58
+     "link": 54
     },
     {
      "name": "vae",
      "type": "VAE",
-     "link": 59
+     "link": 55
     }
    ],
    "outputs": [
@@ -1760,8 +1633,8 @@
      "name": "AUDIO",
      "type": "AUDIO",
      "links": [
-      61,
-      64
+      57,
+      60
      ],
      "slot_index": 0
     }
@@ -1776,7 +1649,7 @@
    "id": 211,
    "type": "CreateVideo",
    "pos": [
-    6500,
+    5580,
     60
    ],
    "size": [
@@ -1784,18 +1657,18 @@
     174
    ],
    "flags": {},
-   "order": 35,
+   "order": 34,
    "mode": 0,
    "inputs": [
     {
      "name": "images",
      "type": "IMAGE",
-     "link": 60
+     "link": 56
     },
     {
      "name": "audio",
      "type": "AUDIO",
-     "link": 61
+     "link": 57
     }
    ],
    "outputs": [
@@ -1803,7 +1676,7 @@
      "name": "VIDEO",
      "type": "VIDEO",
      "links": [
-      67
+      63
      ],
      "slot_index": 0
     }
@@ -1821,7 +1694,7 @@
    "id": 213,
    "type": "H3ExactRecover",
    "pos": [
-    6500,
+    5580,
     274
    ],
    "size": [
@@ -1829,18 +1702,18 @@
     146
    ],
    "flags": {},
-   "order": 36,
+   "order": 35,
    "mode": 0,
    "inputs": [
     {
      "name": "images",
      "type": "IMAGE",
-     "link": 62
+     "link": 58
     },
     {
      "name": "hold_map",
      "type": "STRING",
-     "link": 63,
+     "link": 59,
      "widget": {
       "name": "hold_map"
      }
@@ -1851,7 +1724,7 @@
      "name": "IMAGE",
      "type": "IMAGE",
      "links": [
-      69
+      64
      ],
      "slot_index": 0
     }
@@ -1868,7 +1741,7 @@
    "id": 219,
    "type": "H3AudioRecover",
    "pos": [
-    6500,
+    5580,
     460
    ],
    "size": [
@@ -1876,18 +1749,18 @@
     254
    ],
    "flags": {},
-   "order": 37,
+   "order": 36,
    "mode": 0,
    "inputs": [
     {
      "name": "audio",
      "type": "AUDIO",
-     "link": 64
+     "link": 60
     },
     {
      "name": "hold_map",
      "type": "STRING",
-     "link": 65,
+     "link": 61,
      "widget": {
       "name": "hold_map"
      }
@@ -1895,7 +1768,7 @@
     {
      "name": "reference",
      "type": "AUDIO",
-     "link": 66
+     "link": 62
     }
    ],
    "outputs": [
@@ -1903,7 +1776,7 @@
      "name": "AUDIO",
      "type": "AUDIO",
      "links": [
-      72
+      65
      ],
      "slot_index": 0
     }
@@ -1923,7 +1796,7 @@
    "id": 212,
    "type": "SaveVideo",
    "pos": [
-    6960,
+    6040,
     60
    ],
    "size": [
@@ -1931,13 +1804,13 @@
     178
    ],
    "flags": {},
-   "order": 38,
+   "order": 37,
    "mode": 0,
    "inputs": [
     {
      "name": "video",
      "type": "VIDEO",
-     "link": 67
+     "link": 63
     }
    ],
    "outputs": [
@@ -1953,167 +1826,35 @@
     "Node name for S&R": "SaveVideo"
    },
    "widgets_values": [
-    "video/mainodes_segment_dilated",
+    "video/mainodes_adapter_dilated",
     "auto",
     "auto"
-   ]
-  },
-  {
-   "id": 241,
-   "type": "H3SegmentSplice",
-   "pos": [
-    6960,
-    278
-   ],
-   "size": [
-    400,
-    274
-   ],
-   "flags": {},
-   "order": 39,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "baseline",
-     "type": "IMAGE",
-     "link": 68
-    },
-    {
-     "name": "segment",
-     "type": "IMAGE",
-     "link": 69
-    },
-    {
-     "name": "splice_map",
-     "type": "STRING",
-     "link": 70,
-     "widget": {
-      "name": "splice_map"
-     }
-    },
-    {
-     "name": "baseline_audio",
-     "type": "AUDIO",
-     "link": 71
-    },
-    {
-     "name": "segment_audio",
-     "type": "AUDIO",
-     "link": 72
-    }
-   ],
-   "outputs": [
-    {
-     "name": "IMAGE",
-     "type": "IMAGE",
-     "links": [
-      73
-     ],
-     "slot_index": 0
-    },
-    {
-     "name": "AUDIO",
-     "type": "AUDIO",
-     "links": [
-      77
-     ],
-     "slot_index": 1
-    }
-   ],
-   "title": "splice the regenerated window back into the baseline (video + audio crossfade)",
-   "properties": {
-    "Node name for S&R": "H3SegmentSplice"
-   },
-   "widgets_values": [
-    "",
-    6,
-    24
-   ]
-  },
-  {
-   "id": 221,
-   "type": "H3MotionComposite",
-   "pos": [
-    7420,
-    60
-   ],
-   "size": [
-    400,
-    362
-   ],
-   "flags": {},
-   "order": 40,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "regenerated",
-     "type": "IMAGE",
-     "link": 73
-    },
-    {
-     "name": "baseline",
-     "type": "IMAGE",
-     "link": 74
-    },
-    {
-     "name": "samples",
-     "type": "LATENT",
-     "link": null
-    },
-    {
-     "name": "mask",
-     "type": "MASK",
-     "link": 75
-    }
-   ],
-   "outputs": [
-    {
-     "name": "IMAGE",
-     "type": "IMAGE",
-     "links": [
-      76
-     ],
-     "slot_index": 0
-    }
-   ],
-   "title": "editor mask composite (soft passthrough: feathering already baked by the editor)",
-   "properties": {
-    "Node name for S&R": "H3MotionComposite"
-   },
-   "widgets_values": [
-    0.35,
-    0,
-    0,
-    false,
-    "linear",
-    "centered",
-    true
    ]
   },
   {
    "id": 214,
    "type": "CreateVideo",
    "pos": [
-    7880,
-    60
+    6040,
+    278
    ],
    "size": [
     400,
     174
    ],
    "flags": {},
-   "order": 41,
+   "order": 38,
    "mode": 0,
    "inputs": [
     {
      "name": "images",
      "type": "IMAGE",
-     "link": 76
+     "link": 64
     },
     {
      "name": "audio",
      "type": "AUDIO",
-     "link": 77
+     "link": 65
     }
    ],
    "outputs": [
@@ -2121,7 +1862,7 @@
      "name": "VIDEO",
      "type": "VIDEO",
      "links": [
-      78
+      66
      ],
      "slot_index": 0
     }
@@ -2139,7 +1880,7 @@
    "id": 215,
    "type": "SaveVideo",
    "pos": [
-    8340,
+    6500,
     60
    ],
    "size": [
@@ -2147,13 +1888,13 @@
     178
    ],
    "flags": {},
-   "order": 42,
+   "order": 39,
    "mode": 0,
    "inputs": [
     {
      "name": "video",
      "type": "VIDEO",
-     "link": 78
+     "link": 66
     }
    ],
    "outputs": [
@@ -2169,7 +1910,7 @@
     "Node name for S&R": "SaveVideo"
    },
    "widgets_values": [
-    "video/mainodes_segment_final",
+    "video/mainodes_adapter_recovered",
     "auto",
     "auto"
    ]
@@ -2196,7 +1937,7 @@
    3,
    127,
    0,
-   204,
+   600,
    0,
    "MODEL"
   ],
@@ -2242,6 +1983,14 @@
   ],
   [
    9,
+   600,
+   0,
+   204,
+   0,
+   "MODEL"
+  ],
+  [
+   10,
    127,
    0,
    126,
@@ -2249,7 +1998,7 @@
    "MODEL"
   ],
   [
-   10,
+   11,
    131,
    0,
    126,
@@ -2257,7 +2006,7 @@
    "CONDITIONING"
   ],
   [
-   11,
+   12,
    129,
    0,
    125,
@@ -2265,7 +2014,7 @@
    "NOISE"
   ],
   [
-   12,
+   13,
    126,
    0,
    125,
@@ -2273,7 +2022,7 @@
    "GUIDER"
   ],
   [
-   13,
+   14,
    135,
    0,
    125,
@@ -2281,7 +2030,7 @@
    "SAMPLER"
   ],
   [
-   14,
+   15,
    124,
    0,
    125,
@@ -2289,7 +2038,7 @@
    "SIGMAS"
   ],
   [
-   15,
+   16,
    131,
    1,
    125,
@@ -2297,7 +2046,7 @@
    "LATENT"
   ],
   [
-   16,
+   17,
    125,
    0,
    121,
@@ -2305,7 +2054,7 @@
    "LATENT"
   ],
   [
-   17,
+   18,
    120,
    0,
    121,
@@ -2313,7 +2062,7 @@
    "VAE"
   ],
   [
-   18,
+   19,
    125,
    0,
    122,
@@ -2321,7 +2070,7 @@
    "LATENT"
   ],
   [
-   19,
+   20,
    119,
    0,
    122,
@@ -2329,7 +2078,7 @@
    "VAE"
   ],
   [
-   20,
+   21,
    125,
    0,
    200,
@@ -2337,7 +2086,7 @@
    "LATENT"
   ],
   [
-   21,
+   22,
    132,
    1,
    200,
@@ -2345,7 +2094,7 @@
    "INT"
   ],
   [
-   22,
+   23,
    122,
    0,
    130,
@@ -2353,7 +2102,7 @@
    "IMAGE"
   ],
   [
-   23,
+   24,
    121,
    0,
    130,
@@ -2361,44 +2110,36 @@
    "AUDIO"
   ],
   [
-   24,
+   25,
    122,
    0,
-   216,
+   201,
    0,
    "IMAGE"
-  ],
-  [
-   25,
-   125,
-   0,
-   216,
-   1,
-   "LATENT"
   ],
   [
    26,
+   200,
+   0,
+   201,
+   1,
+   "STRING"
+  ],
+  [
+   27,
    122,
    0,
-   230,
+   216,
    0,
    "IMAGE"
   ],
   [
-   27,
+   28,
    125,
    0,
-   230,
+   216,
    1,
    "LATENT"
-  ],
-  [
-   28,
-   200,
-   0,
-   230,
-   2,
-   "STRING"
   ],
   [
    29,
@@ -2410,54 +2151,6 @@
   ],
   [
    30,
-   216,
-   0,
-   217,
-   0,
-   "IMAGE"
-  ],
-  [
-   31,
-   122,
-   0,
-   240,
-   0,
-   "IMAGE"
-  ],
-  [
-   32,
-   230,
-   0,
-   240,
-   1,
-   "STRING"
-  ],
-  [
-   33,
-   240,
-   0,
-   201,
-   0,
-   "IMAGE"
-  ],
-  [
-   34,
-   240,
-   1,
-   201,
-   1,
-   "STRING"
-  ],
-  [
-   35,
-   217,
-   0,
-   218,
-   0,
-   "VIDEO"
-  ],
-  [
-   36,
    201,
    0,
    202,
@@ -2465,7 +2158,7 @@
    "IMAGE"
   ],
   [
-   37,
+   31,
    119,
    0,
    202,
@@ -2473,7 +2166,7 @@
    "VAE"
   ],
   [
-   38,
+   32,
    128,
    0,
    206,
@@ -2481,7 +2174,7 @@
    "CLIP"
   ],
   [
-   39,
+   33,
    119,
    0,
    206,
@@ -2489,7 +2182,7 @@
    "VAE"
   ],
   [
-   40,
+   34,
    115,
    0,
    206,
@@ -2497,7 +2190,7 @@
    "INT"
   ],
   [
-   41,
+   35,
    115,
    1,
    206,
@@ -2505,7 +2198,7 @@
    "INT"
   ],
   [
-   42,
+   36,
    201,
    2,
    206,
@@ -2513,7 +2206,15 @@
    "INT"
   ],
   [
-   43,
+   37,
+   216,
+   0,
+   217,
+   0,
+   "IMAGE"
+  ],
+  [
+   38,
    121,
    0,
    9101,
@@ -2521,7 +2222,7 @@
    "AUDIO"
   ],
   [
-   44,
+   39,
    201,
    1,
    9101,
@@ -2529,15 +2230,15 @@
    "STRING"
   ],
   [
-   45,
-   127,
+   40,
+   600,
    0,
    207,
    0,
    "MODEL"
   ],
   [
-   46,
+   41,
    206,
    0,
    207,
@@ -2545,7 +2246,15 @@
    "CONDITIONING"
   ],
   [
-   47,
+   42,
+   217,
+   0,
+   218,
+   0,
+   "VIDEO"
+  ],
+  [
+   43,
    9101,
    0,
    9102,
@@ -2553,7 +2262,7 @@
    "AUDIO"
   ],
   [
-   48,
+   44,
    120,
    0,
    9102,
@@ -2561,7 +2270,7 @@
    "VAE"
   ],
   [
-   49,
+   45,
    202,
    0,
    203,
@@ -2569,7 +2278,7 @@
    "LATENT"
   ],
   [
-   50,
+   46,
    9102,
    0,
    203,
@@ -2577,7 +2286,7 @@
    "LATENT"
   ],
   [
-   51,
+   47,
    205,
    0,
    208,
@@ -2585,7 +2294,7 @@
    "NOISE"
   ],
   [
-   52,
+   48,
    207,
    0,
    208,
@@ -2593,7 +2302,7 @@
    "GUIDER"
   ],
   [
-   53,
+   49,
    135,
    0,
    208,
@@ -2601,7 +2310,7 @@
    "SAMPLER"
   ],
   [
-   54,
+   50,
    204,
    0,
    208,
@@ -2609,7 +2318,7 @@
    "SIGMAS"
   ],
   [
-   55,
+   51,
    203,
    0,
    208,
@@ -2617,7 +2326,7 @@
    "LATENT"
   ],
   [
-   56,
+   52,
    208,
    0,
    209,
@@ -2625,7 +2334,7 @@
    "LATENT"
   ],
   [
-   57,
+   53,
    119,
    0,
    209,
@@ -2633,7 +2342,7 @@
    "VAE"
   ],
   [
-   58,
+   54,
    208,
    0,
    210,
@@ -2641,7 +2350,7 @@
    "LATENT"
   ],
   [
-   59,
+   55,
    120,
    0,
    210,
@@ -2649,55 +2358,55 @@
    "VAE"
   ],
   [
-   60,
+   56,
    209,
    0,
    211,
    0,
    "IMAGE"
+  ],
+  [
+   57,
+   210,
+   0,
+   211,
+   1,
+   "AUDIO"
+  ],
+  [
+   58,
+   209,
+   0,
+   213,
+   0,
+   "IMAGE"
+  ],
+  [
+   59,
+   201,
+   1,
+   213,
+   1,
+   "STRING"
+  ],
+  [
+   60,
+   210,
+   0,
+   219,
+   0,
+   "AUDIO"
   ],
   [
    61,
-   210,
-   0,
-   211,
+   201,
    1,
-   "AUDIO"
+   219,
+   1,
+   "STRING"
   ],
   [
    62,
-   209,
-   0,
-   213,
-   0,
-   "IMAGE"
-  ],
-  [
-   63,
-   201,
-   1,
-   213,
-   1,
-   "STRING"
-  ],
-  [
-   64,
-   210,
-   0,
-   219,
-   0,
-   "AUDIO"
-  ],
-  [
-   65,
-   201,
-   1,
-   219,
-   1,
-   "STRING"
-  ],
-  [
-   66,
    121,
    0,
    219,
@@ -2705,7 +2414,7 @@
    "AUDIO"
   ],
   [
-   67,
+   63,
    211,
    0,
    212,
@@ -2713,87 +2422,23 @@
    "VIDEO"
   ],
   [
-   68,
-   122,
-   0,
-   241,
-   0,
-   "IMAGE"
-  ],
-  [
-   69,
+   64,
    213,
    0,
-   241,
-   1,
+   214,
+   0,
    "IMAGE"
   ],
   [
-   70,
-   240,
-   2,
-   241,
-   2,
-   "STRING"
-  ],
-  [
-   71,
-   121,
-   0,
-   241,
-   3,
-   "AUDIO"
-  ],
-  [
-   72,
+   65,
    219,
    0,
-   241,
-   4,
-   "AUDIO"
-  ],
-  [
-   73,
-   241,
-   0,
-   221,
-   0,
-   "IMAGE"
-  ],
-  [
-   74,
-   122,
-   0,
-   221,
-   1,
-   "IMAGE"
-  ],
-  [
-   75,
-   230,
-   1,
-   221,
-   3,
-   "MASK"
-  ],
-  [
-   76,
-   221,
-   0,
-   214,
-   0,
-   "IMAGE"
-  ],
-  [
-   77,
-   241,
-   1,
    214,
    1,
    "AUDIO"
   ],
   [
-   78,
+   66,
    214,
    0,
    215,

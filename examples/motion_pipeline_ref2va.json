@@ -1,8 +1,8 @@
 {
  "id": "00000000-0000-0000-0000-000000000000",
  "revision": 0,
- "last_node_id": 303,
- "last_link_id": 61,
+ "last_node_id": 9102,
+ "last_link_id": 66,
  "nodes": [
   {
    "id": 115,
@@ -73,7 +73,7 @@
       11,
       34,
       43,
-      51
+      56
      ],
      "slot_index": 0
     }
@@ -109,7 +109,8 @@
       5,
       12,
       32,
-      53
+      47,
+      58
      ],
      "slot_index": 0
     }
@@ -312,7 +313,7 @@
      "name": "SAMPLER",
      "type": "SAMPLER",
      "links": [
-      47
+      52
      ],
      "slot_index": 0
     }
@@ -345,7 +346,7 @@
      "name": "NOISE",
      "type": "NOISE",
      "links": [
-      45
+      50
      ],
      "slot_index": 0
     }
@@ -1009,7 +1010,7 @@
      "name": "SIGMAS",
      "type": "SIGMAS",
      "links": [
-      48
+      53
      ],
      "slot_index": 0
     }
@@ -1056,7 +1057,7 @@
      "name": "GUIDER",
      "type": "GUIDER",
      "links": [
-      46
+      51
      ],
      "slot_index": 0
     }
@@ -1099,7 +1100,8 @@
      "type": "AUDIO",
      "links": [
       38,
-      58
+      44,
+      63
      ],
      "slot_index": 0
     }
@@ -1162,7 +1164,7 @@
    ],
    "size": [
     400,
-    342
+    454
    ],
    "flags": {},
    "order": 25,
@@ -1214,6 +1216,12 @@
      "type": "STRING",
      "links": null,
      "slot_index": 4
+    },
+    {
+     "name": "report",
+     "type": "STRING",
+     "links": null,
+     "slot_index": 5
     }
    ],
    "title": "H3JerkOracle",
@@ -1228,7 +1236,11 @@
     "balanced (default)",
     8,
     "value |d3| (default)",
-    0.0
+    0.0,
+    24,
+    0.0,
+    18,
+    6.7
    ]
   },
   {
@@ -1285,7 +1297,7 @@
    ],
    "size": [
     400,
-    174
+    314
    ],
    "flags": {},
    "order": 27,
@@ -1318,8 +1330,9 @@
      "name": "hold_map_used",
      "type": "STRING",
      "links": [
-      55,
-      57
+      45,
+      60,
+      62
      ],
      "slot_index": 1
     },
@@ -1328,6 +1341,12 @@
      "type": "INT",
      "links": null,
      "slot_index": 2
+    },
+    {
+     "name": "report",
+     "type": "STRING",
+     "links": null,
+     "slot_index": 3
     }
    ],
    "title": "H3TimeSmear",
@@ -1336,7 +1355,12 @@
    },
    "widgets_values": [
     4,
-    ""
+    "",
+    true,
+    24,
+    0.0,
+    18,
+    6.7
    ]
   },
   {
@@ -1409,7 +1433,7 @@
      "name": "LATENT",
      "type": "LATENT",
      "links": [
-      44
+      48
      ],
      "slot_index": 0
     }
@@ -1421,24 +1445,114 @@
    "widgets_values": []
   },
   {
-   "id": 203,
-   "type": "H3V2VInit",
+   "id": 9101,
+   "type": "H3AudioSmear",
    "pos": [
-    4200,
-    60
+    3740,
+    436
    ],
    "size": [
     400,
-    282
+    174
    ],
    "flags": {},
    "order": 30,
    "mode": 0,
    "inputs": [
     {
+     "name": "audio",
+     "type": "AUDIO",
+     "link": 44
+    },
+    {
+     "name": "hold_map",
+     "type": "STRING",
+     "link": 45,
+     "widget": {
+      "name": "hold_map"
+     }
+    }
+   ],
+   "outputs": [
+    {
+     "name": "AUDIO",
+     "type": "AUDIO",
+     "links": [
+      46
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "H3AudioSmear",
+   "properties": {
+    "Node name for S&R": "H3AudioSmear"
+   },
+   "widgets_values": [
+    "",
+    24
+   ]
+  },
+  {
+   "id": 9102,
+   "type": "VAEEncodeAudio",
+   "pos": [
+    4200,
+    60
+   ],
+   "size": [
+    400,
+    118
+   ],
+   "flags": {},
+   "order": 31,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "audio",
+     "type": "AUDIO",
+     "link": 46
+    },
+    {
+     "name": "vae",
+     "type": "VAE",
+     "link": 47
+    }
+   ],
+   "outputs": [
+    {
+     "name": "LATENT",
+     "type": "LATENT",
+     "links": [
+      49
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "VAEEncodeAudio",
+   "properties": {
+    "Node name for S&R": "VAEEncodeAudio"
+   },
+   "widgets_values": []
+  },
+  {
+   "id": 203,
+   "type": "H3V2VInit",
+   "pos": [
+    4660,
+    60
+   ],
+   "size": [
+    400,
+    390
+   ],
+   "flags": {},
+   "order": 32,
+   "mode": 0,
+   "inputs": [
+    {
      "name": "samples",
      "type": "LATENT",
-     "link": 44
+     "link": 48
     },
     {
      "name": "oracle_samples",
@@ -1449,6 +1563,11 @@
      "name": "mask",
      "type": "MASK",
      "link": null
+    },
+    {
+     "name": "audio_latent",
+     "type": "LATENT",
+     "link": 49
     }
    ],
    "outputs": [
@@ -1456,7 +1575,7 @@
      "name": "LATENT",
      "type": "LATENT",
      "links": [
-      49
+      54
      ],
      "slot_index": 0
     }
@@ -1470,14 +1589,17 @@
     0.0,
     2,
     0,
-    false
+    false,
+    false,
+    "follow the original performance (0.5)",
+    0.5
    ]
   },
   {
    "id": 208,
    "type": "SamplerCustomAdvanced",
    "pos": [
-    4660,
+    5120,
     60
    ],
    "size": [
@@ -1485,33 +1607,33 @@
     190
    ],
    "flags": {},
-   "order": 31,
+   "order": 33,
    "mode": 0,
    "inputs": [
     {
      "name": "noise",
      "type": "NOISE",
-     "link": 45
+     "link": 50
     },
     {
      "name": "guider",
      "type": "GUIDER",
-     "link": 46
+     "link": 51
     },
     {
      "name": "sampler",
      "type": "SAMPLER",
-     "link": 47
+     "link": 52
     },
     {
      "name": "sigmas",
      "type": "SIGMAS",
-     "link": 48
+     "link": 53
     },
     {
      "name": "latent_image",
      "type": "LATENT",
-     "link": 49
+     "link": 54
     }
    ],
    "outputs": [
@@ -1519,8 +1641,8 @@
      "name": "output",
      "type": "LATENT",
      "links": [
-      50,
-      52
+      55,
+      57
      ],
      "slot_index": 0
     },
@@ -1541,7 +1663,7 @@
    "id": 209,
    "type": "VAEDecode",
    "pos": [
-    5120,
+    5580,
     60
    ],
    "size": [
@@ -1549,18 +1671,18 @@
     118
    ],
    "flags": {},
-   "order": 32,
+   "order": 34,
    "mode": 0,
    "inputs": [
     {
      "name": "samples",
      "type": "LATENT",
-     "link": 50
+     "link": 55
     },
     {
      "name": "vae",
      "type": "VAE",
-     "link": 51
+     "link": 56
     }
    ],
    "outputs": [
@@ -1568,7 +1690,7 @@
      "name": "IMAGE",
      "type": "IMAGE",
      "links": [
-      54
+      59
      ],
      "slot_index": 0
     }
@@ -1583,7 +1705,7 @@
    "id": 210,
    "type": "VAEDecodeAudio",
    "pos": [
-    5120,
+    5580,
     218
    ],
    "size": [
@@ -1591,18 +1713,18 @@
     118
    ],
    "flags": {},
-   "order": 33,
+   "order": 35,
    "mode": 0,
    "inputs": [
     {
      "name": "samples",
      "type": "LATENT",
-     "link": 52
+     "link": 57
     },
     {
      "name": "vae",
      "type": "VAE",
-     "link": 53
+     "link": 58
     }
    ],
    "outputs": [
@@ -1610,7 +1732,7 @@
      "name": "AUDIO",
      "type": "AUDIO",
      "links": [
-      56
+      61
      ],
      "slot_index": 0
     }
@@ -1625,7 +1747,7 @@
    "id": 213,
    "type": "H3ExactRecover",
    "pos": [
-    5580,
+    6040,
     60
    ],
    "size": [
@@ -1633,18 +1755,18 @@
     146
    ],
    "flags": {},
-   "order": 34,
+   "order": 36,
    "mode": 0,
    "inputs": [
     {
      "name": "images",
      "type": "IMAGE",
-     "link": 54
+     "link": 59
     },
     {
      "name": "hold_map",
      "type": "STRING",
-     "link": 55,
+     "link": 60,
      "widget": {
       "name": "hold_map"
      }
@@ -1655,7 +1777,7 @@
      "name": "IMAGE",
      "type": "IMAGE",
      "links": [
-      59
+      64
      ],
      "slot_index": 0
     }
@@ -1672,26 +1794,26 @@
    "id": 219,
    "type": "H3AudioRecover",
    "pos": [
-    5580,
+    6040,
     246
    ],
    "size": [
     400,
-    226
+    254
    ],
    "flags": {},
-   "order": 35,
+   "order": 37,
    "mode": 0,
    "inputs": [
     {
      "name": "audio",
      "type": "AUDIO",
-     "link": 56
+     "link": 61
     },
     {
      "name": "hold_map",
      "type": "STRING",
-     "link": 57,
+     "link": 62,
      "widget": {
       "name": "hold_map"
      }
@@ -1699,7 +1821,7 @@
     {
      "name": "reference",
      "type": "AUDIO",
-     "link": 58
+     "link": 63
     }
    ],
    "outputs": [
@@ -1707,7 +1829,7 @@
      "name": "AUDIO",
      "type": "AUDIO",
      "links": [
-      60
+      65
      ],
      "slot_index": 0
     }
@@ -1719,14 +1841,15 @@
    "widgets_values": [
     "",
     24,
-    1.0
+    1.0,
+    "use pass 2's foley - ONLY IF the audio rows were seeded"
    ]
   },
   {
    "id": 214,
    "type": "CreateVideo",
    "pos": [
-    6040,
+    6500,
     60
    ],
    "size": [
@@ -1734,18 +1857,18 @@
     174
    ],
    "flags": {},
-   "order": 36,
+   "order": 38,
    "mode": 0,
    "inputs": [
     {
      "name": "images",
      "type": "IMAGE",
-     "link": 59
+     "link": 64
     },
     {
      "name": "audio",
      "type": "AUDIO",
-     "link": 60
+     "link": 65
     }
    ],
    "outputs": [
@@ -1753,7 +1876,7 @@
      "name": "VIDEO",
      "type": "VIDEO",
      "links": [
-      61
+      66
      ],
      "slot_index": 0
     }
@@ -1771,7 +1894,7 @@
    "id": 215,
    "type": "SaveVideo",
    "pos": [
-    6500,
+    6960,
     60
    ],
    "size": [
@@ -1779,13 +1902,13 @@
     178
    ],
    "flags": {},
-   "order": 37,
+   "order": 39,
    "mode": 0,
    "inputs": [
     {
      "name": "video",
      "type": "VIDEO",
-     "link": 61
+     "link": 66
     }
    ],
    "outputs": [
@@ -2154,6 +2277,38 @@
   ],
   [
    44,
+   121,
+   0,
+   9101,
+   0,
+   "AUDIO"
+  ],
+  [
+   45,
+   201,
+   1,
+   9101,
+   1,
+   "STRING"
+  ],
+  [
+   46,
+   9101,
+   0,
+   9102,
+   0,
+   "AUDIO"
+  ],
+  [
+   47,
+   120,
+   0,
+   9102,
+   1,
+   "VAE"
+  ],
+  [
+   48,
    202,
    0,
    203,
@@ -2161,7 +2316,15 @@
    "LATENT"
   ],
   [
-   45,
+   49,
+   9102,
+   0,
+   203,
+   3,
+   "LATENT"
+  ],
+  [
+   50,
    205,
    0,
    208,
@@ -2169,7 +2332,7 @@
    "NOISE"
   ],
   [
-   46,
+   51,
    207,
    0,
    208,
@@ -2177,7 +2340,7 @@
    "GUIDER"
   ],
   [
-   47,
+   52,
    136,
    0,
    208,
@@ -2185,7 +2348,7 @@
    "SAMPLER"
   ],
   [
-   48,
+   53,
    204,
    0,
    208,
@@ -2193,7 +2356,7 @@
    "SIGMAS"
   ],
   [
-   49,
+   54,
    203,
    0,
    208,
@@ -2201,7 +2364,7 @@
    "LATENT"
   ],
   [
-   50,
+   55,
    208,
    0,
    209,
@@ -2209,7 +2372,7 @@
    "LATENT"
   ],
   [
-   51,
+   56,
    119,
    0,
    209,
@@ -2217,7 +2380,7 @@
    "VAE"
   ],
   [
-   52,
+   57,
    208,
    0,
    210,
@@ -2225,7 +2388,7 @@
    "LATENT"
   ],
   [
-   53,
+   58,
    120,
    0,
    210,
@@ -2233,7 +2396,7 @@
    "VAE"
   ],
   [
-   54,
+   59,
    209,
    0,
    213,
@@ -2241,7 +2404,7 @@
    "IMAGE"
   ],
   [
-   55,
+   60,
    201,
    1,
    213,
@@ -2249,7 +2412,7 @@
    "STRING"
   ],
   [
-   56,
+   61,
    210,
    0,
    219,
@@ -2257,7 +2420,7 @@
    "AUDIO"
   ],
   [
-   57,
+   62,
    201,
    1,
    219,
@@ -2265,7 +2428,7 @@
    "STRING"
   ],
   [
-   58,
+   63,
    121,
    0,
    219,
@@ -2273,7 +2436,7 @@
    "AUDIO"
   ],
   [
-   59,
+   64,
    213,
    0,
    214,
@@ -2281,7 +2444,7 @@
    "IMAGE"
   ],
   [
-   60,
+   65,
    219,
    0,
    214,
@@ -2289,7 +2452,7 @@
    "AUDIO"
   ],
   [
-   61,
+   66,
    214,
    0,
    215,

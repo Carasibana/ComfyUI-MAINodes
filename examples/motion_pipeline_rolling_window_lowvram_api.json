@@ -337,7 +337,13 @@
    "samples": [
     "202",
     0
-   ]
+   ],
+   "audio_latent": [
+    "9102",
+    0
+   ],
+   "audio_mode": "follow the original performance (0.5)",
+   "audio_strength": 0.5
   },
   "_meta": {
    "title": "H3V2VInit"
@@ -514,7 +520,8 @@
     "121",
     0
    ],
-   "reference_mix": 1.0
+   "reference_mix": 1.0,
+   "audio_source": "use pass 2's foley - ONLY IF the audio rows were seeded"
   },
   "_meta": {
    "title": "H3AudioRecover"
@@ -718,6 +725,33 @@
   },
   "_meta": {
    "title": "H3FreeCache"
+  }
+ },
+ "9101": {
+  "class_type": "H3AudioSmear",
+  "inputs": {
+   "audio": [
+    "121",
+    0
+   ],
+   "hold_map": [
+    "201",
+    1
+   ],
+   "fps": 24
+  }
+ },
+ "9102": {
+  "class_type": "VAEEncodeAudio",
+  "inputs": {
+   "audio": [
+    "9101",
+    0
+   ],
+   "vae": [
+    "120",
+    0
+   ]
   }
  }
 }
