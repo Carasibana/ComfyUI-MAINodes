@@ -8,12 +8,8 @@ Like it? A star helps. Want to feed the GPU? [Sponsor the experiments](#support-
 
 ## What's new
 
-**Repo slimmed** (2026-08-19). About 400 MB of review-page media moved to
-[MAINodes-media](https://github.com/matlowai/MAINodes-media) and the old
-copies were removed from this repository's history, so a clone is now
-~100 MB instead of ~500. If you cloned before this date and `git pull`
-errors, run `git fetch origin && git reset --hard origin/main` (or
-re-clone). The review pages themselves are unchanged.
+Cloned before 2026-08-19 and `git pull` errors? Run
+`git fetch origin && git reset --hard origin/main`, or re-clone.
 
 **Long de-ropes on small cards** (2026-08-18, alpha). A de-rope pass at
 d_max 4 on an 8 to 12 second clip is ~200k packed tokens, and the stock H3
