@@ -72,6 +72,30 @@ def test_unknown_profile_is_loud():
         raise AssertionError("expected ValueError")
 
 
+
+def test_sidecar_round_trip(tmp_path):
+    # folder_paths is ComfyUI's; stub just the output directory for the two nodes
+    import types
+    fp = types.ModuleType("folder_paths"); fp.get_output_directory = lambda: str(tmp_path)
+    sys.modules["folder_paths"] = fp
+    try:
+        src = json.dumps({"holds": [1, 1, 4, 4, 2, 1], "world_len": 6})
+        remapped, _, _, _ = derope_any.H3ClockRemap().remap(src, "ltx-2.5")
+        res = derope_any.H3SaveHoldMap().save(remapped, "video/arm")
+        path = res["result"][0]
+        assert os.path.exists(path) and path.endswith("arm.holdmap.json")
+        res2 = derope_any.H3SaveHoldMap().save(remapped, "video/arm")       # never overwrites
+        assert res2["result"][0] != path
+        hm, n, used = derope_any.H3LoadHoldMap().load("video/arm")
+        assert used == res2["result"][0]                                     # newest wins
+        got = json.loads(hm)
+        assert got["holds"] == [1, 1, 4, 4, 2, 1] and n == 6 and "legal" not in got   # the ORIGINAL clock travels
+        hm2, _, _ = derope_any.H3LoadHoldMap().load(path)
+        assert json.loads(hm2)["holds"] == [1, 1, 4, 4, 2, 1]
+    finally:
+        del sys.modules["folder_paths"]
+
+
 if __name__ == "__main__":          # house style: python tests/<file>.py
     import inspect
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and inspect.isfunction(v)]

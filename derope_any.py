@@ -130,6 +130,53 @@ class H3SaveHoldMap:
         return {"ui": {"text": [os.path.relpath(path, root)]}, "result": (path,)}
 
 
-NODE_CLASS_MAPPINGS = {"H3ClockRemap": H3ClockRemap, "H3SaveHoldMap": H3SaveHoldMap}
+class H3LoadHoldMap:
+    DESCRIPTION = (
+        "Reads a hold-map sidecar written by H3 Save Hold Map, so a clock "
+        "decided in one graph (the H3 pass with its oracle) can drive another "
+        "(an LTX-2.5 or Wan pass) without both models in one graph. Give the "
+        "SaveVideo prefix of the arm (e.g. 'video/panrun_base'): the newest "
+        "<prefix>.holdmap*.json under the output directory is used. Absolute "
+        "paths and paths ending in .json are taken as they are. Outputs the map "
+        "(wire into H3 Clock Remap or straight into H3 Time Smear) and its "
+        "world length.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "path": ("STRING", {"default": "video/derope",
+                     "tooltip": "SaveVideo prefix of the arm whose clock you want, or a .json path"}),
+        }}
+
+    RETURN_TYPES = ("STRING", "INT", "STRING")
+    RETURN_NAMES = ("hold_map", "world_len", "path")
+    FUNCTION = "load"
+    CATEGORY = "image/minimax/motion"
+
+    def load(self, path):
+        import glob
+        import folder_paths
+        root = folder_paths.get_output_directory()
+        if not path.endswith(".json"):
+            cands = sorted(glob.glob(os.path.join(root, path + ".holdmap*.json")), key=os.path.getmtime)
+            if not cands:
+                raise FileNotFoundError(f"no hold-map sidecar for prefix {path!r} under {root}")
+            path = cands[-1]
+        elif not os.path.isabs(path):
+            path = os.path.join(root, path)
+        data = json.load(open(path))
+        # only the clock travels: the target grid of the graph that wrote it must
+        # not leak into a different model's smear
+        clock = {"holds": [int(h) for h in data["holds"]],
+                 "world_len": int(data.get("world_len", len(data["holds"])))}
+        if "source_holds" in data:          # a remapped map: hand back the ORIGINAL clock
+            clock["holds"] = [int(h) for h in data["source_holds"]]
+        print(f"[MAINodes] H3LoadHoldMap <- {path} ({clock['world_len']} world frames)")
+        return (json.dumps(clock), clock["world_len"], path)
+
+
+NODE_CLASS_MAPPINGS = {"H3ClockRemap": H3ClockRemap, "H3SaveHoldMap": H3SaveHoldMap,
+                       "H3LoadHoldMap": H3LoadHoldMap}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3ClockRemap": "H3 Clock Remap (any model, presets)",
-                              "H3SaveHoldMap": "H3 Save Hold Map (sidecar)"}
+                              "H3SaveHoldMap": "H3 Save Hold Map (sidecar)",
+                              "H3LoadHoldMap": "H3 Load Hold Map (sidecar)"}

@@ -42,8 +42,11 @@ law is now data, `model_profiles.py`, and one node applies it:
   change by construction (tests assert it). The report is the price tag: frames,
   seconds at the model's fps, windows needed under its cap, and a loud
   UNMEASURED line for any profile whose numbers did not come from a ladder.
-- **H3 Save Hold Map (sidecar)** - writes `<prefix>.holdmap.json` beside the
-  render. Without it a render's clock is lost when the graph closes; with it the
+- **H3 Save Hold Map / H3 Load Hold Map (sidecar)** - write `<prefix>.holdmap.json`
+  beside the render; read it back by prefix (newest wins) in another graph, so
+  the H3 pass decides the clock and an LTX-2.5 or Wan 2.2 graph regenerates on
+  it without both models loaded at once. Load hands back the ORIGINAL clock
+  (`source_holds`), never a previous target's grid. Without it a render's clock is lost when the graph closes; with it the
   staircase ruler can read H3 arms and a later remap can retime the same plan.
 - **H3 Jerk Oracle `profile_mode`: "value |d3| camera-compensated"** - aligns
   each latent frame to its predecessor by the best small integer shift before
@@ -92,6 +95,16 @@ merges. The x8 rule (hold 4 -> 32x) needs two windows per scene.
   H3 Time Smear -> the LTX-2.5 pass -> H3 Exact Recover, with H3 Save Hold Map
   beside the render. API JSON (drag onto the canvas); the UI twin lands once
   an instance with these nodes can convert it.
+- `examples/ltx25/derope_any_model_h3_oracles_api.json` - the H3 base pass with
+  both oracle modes (default, camera-compensated), each saved as a sidecar, plus
+  the identity remap saved beside them for a bit-exact check.
+- `examples/ltx25/derope_any_model_ltx25_fromsidecar_api.json` - the whole clip
+  on LTX-2.5 in ONE pass from the camera-compensated sidecar (panrun: 124 frames
+  -> ~785 dilated under the 960-frame cap, quiet frames at native rate).
+- `examples/wan22/derope_any_model_wan22_api.json` - the same clock on Wan 2.2
+  (low-noise 14B expert, v2v from the smeared frames at denoise 0.4, 640^2,
+  16 fps, 4k+1 grid from the `wan-2.2 (unmeasured)` preset): the first ladder
+  cell that turns that preset's numbers into measured ones.
 - `examples/ltx25/` - four graphs as run for the deck, API JSON (`*_api.json`,
   what actually executed) and UI JSON (paste on the canvas):
   `panrun_or_d16_d040` (uniform d=16 de-rope of the oracle window),

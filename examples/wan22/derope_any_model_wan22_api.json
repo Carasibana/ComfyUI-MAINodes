@@ -1,0 +1,251 @@
+{
+ "1": {
+  "class_type": "VHS_LoadVideoPath",
+  "inputs": {
+   "video": "panrun_baseline_00001_.mp4",
+   "force_rate": 0,
+   "custom_width": 0,
+   "custom_height": 0,
+   "frame_load_cap": 0,
+   "skip_first_frames": 0,
+   "select_every_nth": 1,
+   "format": "None"
+  }
+ },
+ "2": {
+  "class_type": "ImageFromBatch",
+  "inputs": {
+   "image": [
+    "1",
+    0
+   ],
+   "batch_index": 0,
+   "length": 124
+  }
+ },
+ "3": {
+  "class_type": "H3LoadHoldMap",
+  "inputs": {
+   "path": "video/panrun_any_h3cam"
+  }
+ },
+ "4": {
+  "class_type": "H3ClockRemap",
+  "inputs": {
+   "hold_map": [
+    "3",
+    0
+   ],
+   "model_profile": "wan-2.2 (unmeasured)"
+  }
+ },
+ "5": {
+  "class_type": "H3TimeSmear",
+  "inputs": {
+   "images": [
+    "2",
+    0
+   ],
+   "dilation": 4,
+   "hold_map": [
+    "4",
+    0
+   ],
+   "expand_to_end": false,
+   "fps": 16
+  }
+ },
+ "6": {
+  "class_type": "ImageScale",
+  "inputs": {
+   "image": [
+    "5",
+    0
+   ],
+   "upscale_method": "lanczos",
+   "width": 640,
+   "height": 640,
+   "crop": "disabled"
+  }
+ },
+ "7": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "wan_2.1_vae.safetensors"
+  }
+ },
+ "8": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "6",
+    0
+   ],
+   "vae": [
+    "7",
+    0
+   ]
+  }
+ },
+ "9": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors",
+   "weight_dtype": "default"
+  }
+ },
+ "10": {
+  "class_type": "ModelSamplingSD3",
+  "inputs": {
+   "shift": 5.0,
+   "model": [
+    "9",
+    0
+   ]
+  }
+ },
+ "11": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+   "type": "wan",
+   "device": "default"
+  }
+ },
+ "12": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "integrated_multimodal_description: [Shot 1] 2D anime, cel-shaded, cinematic, a lateral tracking shot pans steadily left-to-right following a young courier girl sprinting along the ridge of clay-tiled rooftops at dusk, warm orange sky behind chimneys, laundry lines and small banners streaming in the wind between rooftop poles, distant town lights below. She runs at full sprint with a satchel bouncing at her hip, the camera matching her speed in a smooth continuous pan. Mid-run she vaults a brick chimney and EXPLODES into a sudden spinning double-jump, her paper parasol snapping open in a flare of motion as she corkscrews over a gap between buildings, tiles scattering from her push-off, the camera still panning steadily through the burst. Then a fast whip-pan reframes ahead to the next rooftop just as she lands hard and slides down the sloped tiles on both feet, arm out for balance, banners and laundry whipping past her, coming to a crouched stop at the roof edge as the camera settles and the dusk wind carries loose leaves past.\n\noverall_soundscape: Steady wind and fluttering cloth from the banners and laundry lines; rapid rhythmic footfalls on clay tiles under a full sprint; a sharp scrape and clatter of loose tiles at the vault; a cloth-snap and airy whoosh as the parasol opens mid-spin; a whistling rush during the whip-pan; a long gritty tile-slide with small ceramic clinks ending in a firm stop; the wind settling with distant town ambience.\n\nnon_diegetic_music: N/A",
+   "clip": [
+    "11",
+    0
+   ]
+  }
+ },
+ "13": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "static, blurry, low quality, subtitles, watermark, jittery, duplicated limbs",
+   "clip": [
+    "11",
+    0
+   ]
+  }
+ },
+ "14": {
+  "class_type": "KSamplerAdvanced",
+  "inputs": {
+   "add_noise": "enable",
+   "noise_seed": 20260880,
+   "steps": 20,
+   "cfg": 3.5,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "start_at_step": 12,
+   "end_at_step": 20,
+   "return_with_leftover_noise": "disable",
+   "model": [
+    "10",
+    0
+   ],
+   "positive": [
+    "12",
+    0
+   ],
+   "negative": [
+    "13",
+    0
+   ],
+   "latent_image": [
+    "8",
+    0
+   ]
+  }
+ },
+ "15": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "14",
+    0
+   ],
+   "vae": [
+    "7",
+    0
+   ]
+  }
+ },
+ "16": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "fps": 16,
+   "bit_depth": 8,
+   "images": [
+    "15",
+    0
+   ]
+  }
+ },
+ "17": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "video": [
+    "16",
+    0
+   ],
+   "filename_prefix": "video/panrun_any_wan22_dilated",
+   "format": "auto",
+   "codec": "auto"
+  }
+ },
+ "18": {
+  "class_type": "H3ExactRecover",
+  "inputs": {
+   "images": [
+    "15",
+    0
+   ],
+   "hold_map": [
+    "5",
+    1
+   ]
+  }
+ },
+ "19": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "fps": 24,
+   "bit_depth": 8,
+   "images": [
+    "18",
+    0
+   ],
+   "audio": [
+    "1",
+    2
+   ]
+  }
+ },
+ "20": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "video": [
+    "19",
+    0
+   ],
+   "filename_prefix": "video/panrun_any_wan22",
+   "format": "auto",
+   "codec": "auto"
+  }
+ },
+ "21": {
+  "class_type": "H3SaveHoldMap",
+  "inputs": {
+   "hold_map": [
+    "5",
+    1
+   ],
+   "filename_prefix": "video/panrun_any_wan22"
+  }
+ }
+}
