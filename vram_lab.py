@@ -546,6 +546,135 @@ def _exact_av_rows(o, qc, st, segments, c0, c1, out_dtype):
     return o
 
 
+# --------------------------------------------------------------------------- Sol-Attn (comfy-kitchen PR #117 CUDA kernel, out-of-tree build)
+
+# PR #117 is unmerged, so its comfy_kitchen tree cannot be imported alongside the
+# production one (same package name). What CAN be loaded is its compiled CUDA
+# extension on its own -- both trees are built against the same torch nightly, so
+# the ABI matches. This is the same shape as the SA3 fp4 loader above.
+_SOL_DIR = "/mnt/work/ai/venvs/sol-lab/comfy-kitchen-sol-lab/comfy_kitchen/backends/cuda"
+_SOL = None
+
+
+def _sol_ext():
+    """The PR #117 CUDA extension, or None. Loaded once per process."""
+    global _SOL
+    if _SOL is not None:
+        return _SOL or None
+    so = os.path.join(_SOL_DIR, "_C.abi3.so")
+    if not os.path.exists(so):
+        _SOL = False
+        return None
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_C", so)
+        m = importlib.util.module_from_spec(spec)
+        sys.modules.setdefault("_C", m)
+        spec.loader.exec_module(m)
+        if not hasattr(m, "sol_attn"):
+            _SOL = False
+            return None
+        _SOL = m
+    except Exception as e:  # noqa: BLE001
+        log.warning("H3SolAttention: could not load the PR #117 extension (%s)", e)
+        _SOL = False
+        return None
+    return _SOL
+
+
+_SOL_WS = {}
+_SOL_LOGGED = False
+
+
+def _sol_attention(q, k, v, heads, mask=None, skip_reshape=False,
+                   transformer_options=None, **kw):
+    """optimized_attention-compatible shim backed by Sol's CUDA kernel.
+
+    H3 hands us [1, heads, S, D] (skip_reshape). Sol wants [B, T, H, D] bf16 and
+    is self-attention only (q_len == kv_len), which is why this replaces the whole
+    op rather than riding inside the streamed executor's Q chunking.
+    """
+    global _SOL_LOGGED
+    ext = _sol_ext()
+    qq = q.tensor if hasattr(q, "tensor") else q
+    kk = k.tensor if hasattr(k, "tensor") else k
+    vv = v.tensor if hasattr(v, "tensor") else v
+    B, H, S, D = qq.shape
+    if ext is None or D != 128 or qq.shape != kk.shape:
+        return _SOL_FALLBACK(q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
+                             transformer_options=transformer_options, **kw)
+    qb = qq.transpose(1, 2).contiguous().to(torch.bfloat16)     # [B, S, H, D]
+    kb = kk.transpose(1, 2).contiguous().to(torch.bfloat16)
+    vb = vv.transpose(1, 2).contiguous().to(torch.bfloat16)
+    key = (B, S, H, qq.device.index)
+    need = ext.sol_attn_workspace(B, S, H, 0)
+    ws = _SOL_WS.get(key)
+    if ws is None or ws.numel() < need:
+        ws = torch.empty(need, dtype=torch.uint8, device=qq.device)
+        _SOL_WS[key] = ws
+    # the raw extension takes explicit shapes/strides and dlpack capsules; the
+    # PR's python wrapper does this marshalling and is not importable here
+    out = torch.empty_like(qb)
+    dl = lambda t: t.detach().__dlpack__(stream=-1)
+    ext.sol_attn(dl(qb), dl(kb), dl(vb), dl(out), dl(ws),
+                 B, S, H, D, 0, float(_SOL_TAU), float(D ** -0.5),
+                 0, 0, 0, 0,
+                 list(qb.stride()[:3]), list(kb.stride()[:3]), list(vb.stride()[:3]),
+                 torch.cuda.current_stream(qq.device).cuda_stream,
+                 centroid_tail=True, key_bias=None)
+    o = out
+    if not _SOL_LOGGED:
+        _SOL_LOGGED = True
+        log.info("H3SolAttention: PR #117 CUDA kernel live (S=%d, heads=%d, tau=%.2f, "
+                 "workspace %.2f GiB)", S, H, _SOL_TAU, need / 2 ** 30)
+    out = o.transpose(1, 2)                                     # back to [B, H, S, D]
+    ret = out.transpose(1, 2).reshape(B, S, H * D)
+    return ret.to(qq.dtype)
+
+
+_SOL_FALLBACK = None
+_SOL_TAU = 1.0
+
+
+class H3SolAttention:
+    """Replace H3's attention with Sol-Attn (comfy-kitchen PR #117, CUDA).
+
+    NOT a quantiser: Sol is SPARSE -- it routes each query block to a subset of
+    key blocks. Measured on real captured H3 tensors it runs ~7x dense flash at
+    20.8-22.2% routing density, with attention-output rel-rms 0.099-0.254, which
+    is 2-3x LARGER than the fp4 store at four of five depths
+    (reports/sol_sa3/23_sol_on_the_judged_ladder.md). Ships OFF; judged by eye."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "tau": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 4.0, "step": 0.05,
+                    "tooltip": "Sol's routing threshold. Lower routes MORE blocks "
+                               "(denser, slower, more accurate); 1.0 is the paper default."}),
+        }}
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "patch"
+    CATEGORY = "MAINodes/VRAM Lab"
+    DESCRIPTION = ("Sol-Attn sparse attention for MiniMax-H3, from the unmerged "
+                   "comfy-kitchen PR #117 CUDA kernel built out-of-tree for sm120.")
+
+    def patch(self, model, tau):
+        global _SOL_FALLBACK, _SOL_TAU
+        if _sol_ext() is None:
+            log.warning("H3SolAttention: PR #117 extension not available; model unchanged")
+            return (model,)
+        import comfy.ldm.minimax.model as mm
+        if _SOL_FALLBACK is None:
+            _SOL_FALLBACK = mm.optimized_attention
+        _SOL_TAU = float(tau)
+        mm.optimized_attention = _sol_attention
+        log.info("H3SolAttention: bound Sol to comfy.ldm.minimax.model.optimized_attention "
+                 "(tau %.2f)", _SOL_TAU)
+        return (model,)
+
+
 # --------------------------------------------------------------------------- kvmix: per-head 4/8-bit (the ~6-bit tier)
 
 # Heads are independent in attention, so a mixed-precision tier needs no new
@@ -1755,7 +1884,7 @@ class H3FakeQuant:
         return (m,)
 
 
-NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3MemoryProbe": H3MemoryProbe, "H3FreeCache": H3FreeCache, "H3EvictTextEncoder": H3EvictTextEncoder,
+NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3SolAttention": H3SolAttention, "H3MemoryProbe": H3MemoryProbe, "H3FreeCache": H3FreeCache, "H3EvictTextEncoder": H3EvictTextEncoder,
                        "H3PrecisionProbe": H3PrecisionProbe, "H3FakeQuant": H3FakeQuant}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3StreamedBlocks": "H3 Streamed Blocks (exact low-VRAM, alpha)",
                               "H3MemoryProbe": "H3 Memory Probe (ledger + allocator trace, alpha)",
