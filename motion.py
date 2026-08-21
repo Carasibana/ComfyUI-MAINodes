@@ -1521,6 +1521,83 @@ class H3ManualHoldMap:
         return (hold_map, segments, report)
 
 
+class H3HoldMapRemap:
+    """Affine remap of a hold map: scale the dilation curve, clamp it
+    between a floor and a ceiling. The oracle draws the shape; this node
+    sets how hard the pass leans on it, without redrawing anything."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-21; the classic pipeline nodes "
+        "are unchanged.\n\n"
+        "Nudge the oracle instead of overruling it: wire any hold_map in "
+        "(H3 Jerk Oracle, H3 Manual Hold Map, H3 Motion Editor) and remap "
+        "the curve with three dials. scale multiplies the dilation ABOVE "
+        "rest, per frame: hold' = 1 + (hold - 1) * scale, so unheld frames "
+        "stay unheld and 0.0 flattens the map entirely. floor is the "
+        "minimum hold EVERYWHERE - floor 2 dilates the whole clip, the "
+        "uniform-baseline move, and the report prices it before you "
+        "commit. ceiling caps the peaks.\n\n"
+        "The result recompiles through the same bridge/ramp rules as the "
+        "oracle, so downstream nodes see a legal map. At the defaults "
+        "(scale 1, floor 1, ceiling 8, bridge 0) the map passes through "
+        "bit-identical: an already-ramped curve is a fixed point of the "
+        "ramp. All clocks are the world clock; world_len is preserved.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "hold_map": ("STRING", {"default": "", "forceInput": True,
+                          "tooltip": "any oracle-format hold map (holds + world_len)"}),
+            "scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 8.0,
+                      "step": 0.05,
+                      "tooltip": "multiplies dilation above rest: hold' = 1 + (hold-1)*scale"}),
+            "floor": ("INT", {"default": 1, "min": 1, "max": 8,
+                      "tooltip": "minimum hold everywhere; above 1 the WHOLE clip regenerates"}),
+            "ceiling": ("INT", {"default": 8, "min": 1, "max": 8,
+                        "tooltip": "maximum hold after scaling"}),
+            "fps": ("INT", {"default": 24, "min": 1, "max": 120}),
+            "ramp": ("BOOLEAN", {"default": True,
+                     "tooltip": "re-relax to C1 shoulders after scaling, same rule as the oracle"}),
+            "bridge": ("INT", {"default": 0, "min": 0, "max": 20,
+                       "tooltip": "re-bridge short valleys at the new peak; 0 = keep the map's own bridging"}),
+        }, "optional": {
+            **_cost_widgets(),
+        }}
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("hold_map", "segments", "report")
+    FUNCTION = "remap"
+    CATEGORY = "latent/minimax/motion"
+
+    def remap(self, hold_map, scale, floor, ceiling, fps, ramp, bridge,
+              s_per_step=0.0, est_steps=18, overhead_s=OVERHEAD_S):
+        assert hold_map.strip(), \
+            "wire a hold_map in (H3 Jerk Oracle, H3 Manual Hold Map, ...)"
+        parsed = json.loads(hold_map)
+        holds_in = [int(h) for h in parsed["holds"]]
+        length = int(parsed.get("world_len", len(holds_in)))
+        assert len(holds_in) == length, (
+            f"map covers {len(holds_in)} frames, world_len says {length}")
+        assert ceiling >= floor, f"ceiling {ceiling} below floor {floor}"
+
+        frame_holds = np.asarray(
+            [min(max(1 + int((h - 1) * scale + 0.5), floor), ceiling)
+             for h in holds_in], int)
+        holds, segments, _t_lat = _compile_hold_map(frame_holds, length,
+                                                    ramp, bridge)
+
+        peak_in, peak_out = max(holds_in), max(holds)
+        held_out = sum(1 for h in holds if h > 1)
+        tail = (f"peak x{peak_in} -> x{peak_out}, "
+                f"{held_out} of {length} frames held")
+        if floor > 1:
+            tail += f"; floor {floor} dilates the whole clip"
+        report = _cost_report(length, _legal_ceil(sum(holds)), fps,
+                              s_per_step, est_steps, overhead_s, tail=tail)
+        out_map = json.dumps({"holds": holds, "world_len": length})
+        return (out_map, segments, report)
+
+
 class H3TimeSmear:
     """Retime frames onto a longer uniform grid by integer holds — the
     nonuniform (oracle) or uniform (dilation) smear that seeds v2v
@@ -4359,6 +4436,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3JerkOracle": H3JerkOracle,
     "H3IndecisionOracle": H3IndecisionOracle,
     "H3ManualHoldMap": H3ManualHoldMap,
+    "H3HoldMapRemap": H3HoldMapRemap,
     "H3TimeSmear": H3TimeSmear,
     "H3ExactRecover": H3ExactRecover,
     "H3TrueClock": H3TrueClock,
@@ -4388,6 +4466,7 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3JerkOracle": "H3 Jerk Oracle (profile / window / hold map)",
     "H3IndecisionOracle": "H3 Indecision Oracle (x0-jitter / blend) [experimental]",
     "H3ManualHoldMap": "H3 Manual Hold Map (ranges to holds, gate) [alpha]",
+    "H3HoldMapRemap": "H3 Hold Map Remap (scale / floor / ceiling) [alpha]",
     "H3TimeSmear": "H3 Time Smear (integer holds)",
     "H3ExactRecover": "H3 Exact Recover (24fps frame selection)",
     "H3TrueClock": "H3 True Clock (density-corrected RoPE t-grid) [experimental]",
