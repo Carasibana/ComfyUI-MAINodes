@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#916;</text></svg>">
+
+<title>A6 precision review: 4-bit MiniMax H3 on Blackwell</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#101014; color:#e8e8ea; font:16px/1.6 system-ui, sans-serif; max-width: 980px; margin: 0 auto; padding: 24px 16px 80px; }
+  h1 { font-size: 1.5rem; margin-bottom: .2em; }
+  h2 { font-size: 1.1rem; margin-top: 2em; color:#c9c9d2; }
+  a { color:#8ab4ff; }
+  p.sub { color:#9a9aa5; margin-top: 0; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; margin:1.2em 0; }
+  a.card { display:block; background:#17171d; border:1px solid #2a2a33; border-radius:12px; overflow:hidden;
+           text-decoration:none; color:#e8e8ea; transition:border-color .15s; }
+  a.card:hover { border-color:#8ab4ff; }
+  .card img { width:100%; aspect-ratio:1376/768; object-fit:cover; display:block; background:#000; }
+  .card .t { padding:10px 14px 4px; font-weight:600; }
+  .card .d { padding:0 14px 12px; color:#9a9aa5; font-size:.92rem; }
+  .note { background:#17171d; border:1px solid #2a2a33; border-left:3px solid #e0a83d; border-radius:8px;
+          padding:12px 16px; margin:1.2em 0; }
+  .repo { display:inline-block; margin-top:.6em; padding:.45em .9em; background:#1c1c24;
+          border:1px solid #33333e; border-radius:8px; text-decoration:none; }
+</style>
+</head>
+<body>
+<h1>A6 precision review</h1>
+<p class="sub">How low can the GEMM precision of MiniMax H3 go on Blackwell before you can see or hear it?</p>
+
+<p>On sm120 cards the only native 4-bit tensor-core path is NVFP4 (fp4 values, fp8 block scales).
+We measured what that costs in a video+audio diffusion model two ways: first by <b>simulating</b>
+fp4 activations on chosen projections, blocks and token segments of the shipped W4A8 model
+(fake quantisation, one region at a time, 40+ same-seed arms), then by <b>building real NVFP4
+checkpoints</b> and rendering the same scenes on the native fp4 kernels. Every clip below sits next
+to pixel, flow and audio rulers, with a synced head-to-head player: pick any two arms, flip them,
+wipe between them, and choose which side you hear.</p>
+
+<h2>What the runs showed</h2>
+<p>Every perturbed render is a <b>sibling take</b> of the reference: same scene and words, slightly
+different delivery. Distance from the reference does not rank quality inside this family. The
+control that proved it: the highest-fidelity int8 checkpoint (1 percent weight error) landed in the
+same distance band as full NVFP4 and moved the audio track more than any fp4 arm.</p>
+<div class="note"><b>The real thing is not the simulation.</b> The real NVFP4 checkpoints rendered
+takes noticeably different from the fake-quant arms that simulated the same regime, even though the
+per-GEMM error only rose from about 11 to 13 percent. Changing the rounding pattern of all 200
+weight matrices at once moves the sampler further than raising the per-op error, which is worth
+knowing whenever a quantisation study reports simulated results only.</div>
+<p>Measured speed of the real all-NVFP4 checkpoint against the shipped W4A8 file, same seed and
+graph: 0.84x wall on the 29k-token scene, 0.90-0.91x on the 45k-token scenes, with identical file
+size. The mixed regimes (keeping fc2 or the rim blocks at higher precision) bought no measurable
+quality back on any ruler.</p>
+
+<h2>The scenes</h2>
+<div class="cards">
+  <a class="card" href="spider/index.html">
+    <img src="https://matlowai.github.io/MAINodes-media/a6-review/spider/media/ref_w4a8_exact.jpg" alt="spider scene reference frame">
+    <div class="t">spider</div>
+    <div class="d">2D anime, 90 frames, a hard shot cut. 32 simulated arms, the saturation curve, one real checkpoint.</div>
+  </a>
+  <a class="card" href="painters/index.html">
+    <img src="https://matlowai.github.io/MAINodes-media/a6-review/painters/media/ref_w4a8_exact.jpg" alt="painters scene reference frame">
+    <div class="t">painters</div>
+    <div class="d">Live-action two-shot, 141 frames, two spoken lines. 13 simulated arms, one real checkpoint.</div>
+  </a>
+  <a class="card" href="bakery/index.html">
+    <img src="https://matlowai.github.io/MAINodes-media/a6-review/bakery/media/ref_w4a8_exact.jpg" alt="bakery scene reference frame">
+    <div class="t">bakery</div>
+    <div class="d">Real checkpoints only: W4A8 reference, int8 convrot, and four NVFP4 mixes, with measured wall times.</div>
+  </a>
+</div>
+
+<p class="sub">Rulers rank dose and name what changed; the verdict on any single clip belongs to
+eyes and ears. Cost columns marked [PROJ] are projections from GEMM microbenches, everything else
+is measured.</p>
+<a class="repo" href="https://github.com/matlowai/ComfyUI-MAINodes">github.com/matlowai/ComfyUI-MAINodes</a>
+</body>
+</html>

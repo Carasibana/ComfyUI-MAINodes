@@ -8,6 +8,9 @@ Like it? A star helps. Want to feed the GPU? [Sponsor the experiments](#support-
 
 ## What's new
 
+Cloned before 2026-08-19 and `git pull` errors? Run
+`git fetch origin && git reset --hard origin/main`, or re-clone.
+
 **Long de-ropes on small cards** (2026-08-18, alpha). A de-rope pass at
 d_max 4 on an 8 to 12 second clip is ~200k packed tokens, and the stock H3
 block materialises its fused QKV and SwiGLU tensors for the whole sequence
@@ -147,7 +150,17 @@ Three ready-made graphs live in [`examples/`](examples/):
 onto the ComfyUI canvas;
 [`motion_pipeline_api.json`](examples/motion_pipeline_api.json) is the
 same graph in API format for scripted use; and
-[`motion_pipeline_turbo.json`](examples/motion_pipeline_turbo.json) is the
+Three flows cover almost every job, and the examples keep one graph per job:
+the full-quality pipeline (25-step pass 1, 25-step pass 2, no turbo), the fast
+flow (12-step turbo pass 1, 6-step turbo pass 2, inject 0.48 or 0.7), and the
+low-VRAM stack in [LOWVRAM.md](LOWVRAM.md). Inject 0.48 replaced 0.50 as the
+shipped default: at 0.50 and above some scenes measurably loosen their hold on
+the reference. Historical dial studies and superseded variants live in
+[`examples/archive/`](examples/archive/), still runnable as committed. When the
+defaults are too slow for your card or your patience, [FASTER.md](FASTER.md)
+prices every speed dial from measured runs.
+
+[`motion_pipeline_turbo.json`](examples/archive/motion_pipeline_turbo.json) is the
 same pipeline with the regeneration pass running on the LightX2V 4-step
 turbo LoRA (Kijai's ComfyUI conversion, strength 0.8, er_sde with a beta
 schedule, 3 of 4 steps after injection). Point the LoRA loader at
@@ -170,7 +183,7 @@ with a preview/final toggle (H3 Mode Switch, lazy: only the chosen path
 executes) is the intended end state.
 
 A fourth graph,
-[`motion_pipeline_probe_expert.json`](examples/motion_pipeline_probe_expert.json),
+[`motion_pipeline_probe_expert.json`](examples/archive/motion_pipeline_probe_expert.json),
 is the fast path: instead of finishing the baseline it runs only the
 first 6 steps (H3 Probe Schedule, configurable) and reads the oracle and
 the init from the early x0 estimate, then regenerates with a base-model
@@ -178,12 +191,12 @@ head and a turbo tail (H3 Expert Schedule). Cheapest of the set; no
 full-speed audio track to blend, and the saved preview is intentionally
 rough.
 
-There is also [`motion_pipeline_i50.json`](examples/motion_pipeline_i50.json),
+There is also [`motion_pipeline_i50.json`](examples/archive/motion_pipeline_i50.json),
 the same finals graph with the inject 0.50 preset selected, for people who
 prefer the sharper flavor without touching a dropdown.
 
 For 24 to 32 GB cards there is
-[`motion_pipeline_featherweight.json`](examples/motion_pipeline_featherweight.json):
+[`motion_pipeline_featherweight.json`](examples/archive/motion_pipeline_featherweight.json):
 the same finals graph pointed at the smallest community-published models
 (w4a8 DiT, int8_convrot VAE, nvfp4 text encoder). Needs ComfyUI 0.31+.
 Measured numbers and the honest caveats live in
@@ -249,7 +262,7 @@ seam poses.
 
 Four shorter paths, each measured on one prompt and seed:
 
-[`motion_pipeline_split_lora.json`](examples/motion_pipeline_split_lora.json)
+[`motion_pipeline_split_lora.json`](examples/archive/motion_pipeline_split_lora.json)
 splits pass 1 mid-trajectory. The bare model runs the early, high-sigma
 steps -- where the motion is actually decided -- and a turbo LoRA takes
 over for the low-sigma steps, off one schedule with no re-noising

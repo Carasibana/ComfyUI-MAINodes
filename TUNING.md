@@ -10,12 +10,12 @@ test clips; expect your content to move the numbers a little.
 | priority | graph | cost (vs one baseline render) |
 |---|---|---|
 | best quality, audio dial available (recommended for finals) | `examples/motion_pipeline.json` | ~3.5x |
-| turbo inside the pipeline (not recommended: see below) | `examples/motion_pipeline_turbo.json` | ~1.6x |
-| fastest, no full baseline (scouting only: the probe init is not good enough to feed a base-model finals pass, we tried) | `examples/motion_pipeline_probe_expert.json` | ~1x or less |
+| turbo inside the pipeline (not recommended: see below) | `examples/archive/motion_pipeline_turbo.json` | ~1.6x |
+| fastest, no full baseline (scouting only: the probe init is not good enough to feed a base-model finals pass, we tried) | `examples/archive/motion_pipeline_probe_expert.json` | ~1x or less |
 | user knows where the problem is (two-pass: review the oraclemap, type ranges, requeue) | `examples/motion_pipeline_targeted.json` | baseline + regen cost of YOUR spans only |
 | GUI editing on the node (blocks, painting, automation) | `examples/motion_pipeline_editor.json` | as targeted |
 | maximum speed for one burst in a longer clip (segment crop + splice) | `examples/motion_pipeline_editor_segment.json` | baseline + regen of window+handles only; the crop report states the ratio |
-| de-roping footage that already exists (no baseline render) | `examples/motion_pipeline_v2v_source.json` [alpha] | regen only, ~2.5x one baseline-equivalent render; there is no baseline pass |
+| de-roping footage that already exists (no baseline render) | `examples/archive/motion_pipeline_v2v_source.json` [alpha] | regen only, ~2.5x one baseline-equivalent render; there is no baseline pass |
 | the dilated pass does not fit your card (OOM, or steps balloon while weights stream) | `examples/motion_pipeline_rolling_window.json` [alpha] | peak memory scales with the biggest WINDOW, not the clip. At the budget that forces a split: ~1.4x the generated frames, and on a card at the offload cliff wall time comes back to parity because the DiT stays resident instead of streaming. Measured on a fenced 32 GB budget: 30.7 GB peak + layer streaming one-pass vs 24.6 GB resident windowed, 460 s vs 440 s |
 
 The working rhythm we recommend: iterate prompts and seeds with plain
@@ -323,7 +323,7 @@ Two traps that cost a round each while this was being built:
 
 ## Source footage instead of a baseline render (alpha)
 
-`examples/motion_pipeline_v2v_source.json` swaps the first pass for a file
+`examples/archive/motion_pipeline_v2v_source.json` swaps the first pass for a file
 on disk: `LoadVideo -> GetVideoComponents -> H3 Video Fit -> ImageScale ->
 VAEEncode`, and from there the graph is the standard one. The oracle reads
 the source's own encoded latent; nothing else in the chain changes.
@@ -396,7 +396,9 @@ default and nothing else moved for it.
 ## Defaults, and why
 
 `q 0.75, d_max 4, ramp on, bridge 8, inject 0.70` is the playback-ratified
-starting point. `inject 0.50` measured sharper with closer motion tracking
+starting point. The shipped default is now `inject 0.48`: at 0.50 and above some
+scenes measurably loosen reference adherence, and 0.48 keeps the sharpness
+without that risk. `inject 0.50` measured sharper with closer motion tracking
 on our clips and is one preset away; some of us prefer it. The expert
 schedule defaults (`total 8, inject 0.70, base_head 2`) give the turbo
 tail its native 4 steps.

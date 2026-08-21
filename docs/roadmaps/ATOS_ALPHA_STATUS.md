@@ -79,11 +79,11 @@ Companions: `ROADMAP.md` (methods under investigation), `TESTING_ALPHA.md`
    repair pass. Masking (subject and region, item 6) and spatial
    upscaling ride along the same flows. Mechanism notes: core AddGuide
    anchors are the conditioning path; per-token clean-context masking
-   (upstream PR #15375, unmerged) is the pinning path the community
-   evidence favors for seams; anchors obey the placement grid (multiples
-   of 17 for clip guides, 39-frame overlaps); durations prefer the
-   clock-aligned lengths (90 / 141 / 192). The clock discipline
-   prerequisite is done.
+   (upstream PR #15375, merged 2026-08-18) is the pinning path the
+   community evidence favors for seams; anchors obey the placement grid
+   (multiples of 17 for clip guides, 39-frame overlaps); durations
+   prefer the clock-aligned lengths (90 / 141 / 192). The clock
+   discipline prerequisite is done.
 
 ## Recently retired
 

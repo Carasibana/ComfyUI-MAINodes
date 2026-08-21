@@ -356,7 +356,13 @@
    "samples": [
     "202",
     0
-   ]
+   ],
+   "audio_latent": [
+    "9102",
+    0
+   ],
+   "audio_mode": "follow the original performance (0.5)",
+   "audio_strength": 0.5
   },
   "_meta": {
    "title": "H3V2VInit"
@@ -409,7 +415,7 @@
    ],
    "scheduler": "beta",
    "total_steps": 6,
-   "inject": 0.5,
+   "inject": 0.48,
    "preset": "custom"
   },
   "_meta": {
@@ -424,7 +430,7 @@
     0
    ],
    "conditioning": [
-    "206",
+    "9304",
     0
    ]
   },
@@ -533,7 +539,8 @@
     "121",
     0
    ],
-   "reference_mix": 1.0
+   "reference_mix": 1.0,
+   "audio_source": "use pass 2's foley - ONLY IF the audio rows were seeded"
   },
   "_meta": {
    "title": "H3AudioRecover"
@@ -697,6 +704,115 @@
    "source": [
     "241",
     4
+   ]
+  }
+ },
+ "9101": {
+  "class_type": "H3AudioSmear",
+  "inputs": {
+   "audio": [
+    "121",
+    0
+   ],
+   "hold_map": [
+    "201",
+    1
+   ],
+   "fps": 24
+  }
+ },
+ "9102": {
+  "class_type": "VAEEncodeAudio",
+  "inputs": {
+   "audio": [
+    "9101",
+    0
+   ],
+   "vae": [
+    "120",
+    0
+   ]
+  }
+ },
+ "9301": {
+  "class_type": "ImageScale",
+  "inputs": {
+   "image": [
+    "240",
+    3
+   ],
+   "upscale_method": "lanczos",
+   "width": [
+    "330",
+    0
+   ],
+   "height": [
+    "330",
+    1
+   ],
+   "crop": "disabled"
+  }
+ },
+ "9302": {
+  "class_type": "ImageScale",
+  "inputs": {
+   "image": [
+    "240",
+    4
+   ],
+   "upscale_method": "lanczos",
+   "width": [
+    "330",
+    0
+   ],
+   "height": [
+    "330",
+    1
+   ],
+   "crop": "disabled"
+  }
+ },
+ "9303": {
+  "class_type": "MiniMaxH3AddGuide",
+  "inputs": {
+   "positive": [
+    "206",
+    0
+   ],
+   "latent": [
+    "203",
+    0
+   ],
+   "frame_idx": 0,
+   "vae": [
+    "119",
+    0
+   ],
+   "image": [
+    "9301",
+    0
+   ]
+  }
+ },
+ "9304": {
+  "class_type": "MiniMaxH3AddGuide",
+  "inputs": {
+   "positive": [
+    "9303",
+    0
+   ],
+   "latent": [
+    "203",
+    0
+   ],
+   "frame_idx": -1,
+   "vae": [
+    "119",
+    0
+   ],
+   "image": [
+    "9302",
+    0
    ]
   }
  }

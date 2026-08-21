@@ -41,6 +41,25 @@ Everything below is the why and the numbers.
 
 ## The workflow that ships: `examples/motion_pipeline_lowvram.json`
 
+On a Blackwell card there is a free speed lever on top of all of this: swap
+the example's W4A8 UNET for the NVFP4 build
+([MATLOWAI/minimax-h3-nvfp4](https://huggingface.co/MATLOWAI/minimax-h3-nvfp4)).
+Same file size, measured 0.84 to 0.91x wall on 25-step graphs and 0.88x with
+the turbo LoRA stacked, stock ComfyUI. A same-seed render is a sibling take;
+judge it on your own content. Non-Blackwell cards should not use it.
+
+Two things the example already includes that are easy to miss: the AUDIO INIT
+(`H3 V2V Init` takes the source performance's audio latent at strength 0.5, so
+pass 2 follows the original delivery) and the smear-aware audio recover. For
+clips whose dilated pass does not fit your card in one piece, the same stack is
+wired into the windowed graph:
+[`examples/motion_pipeline_rolling_window_lowvram.json`](examples/motion_pipeline_rolling_window_lowvram.json)
+(API twin alongside; plan report first, then queue per window; inject 0.48). Each
+window pins its first and last frame to the baseline via `MiniMax H3 Add Guide`,
+which holds the regenerated windows on the baseline's motion and look so the
+splice seams carry no state jumps; the pin frames come straight from
+`H3 Window Plan`'s first/last frame outputs.
+
 One graph, the whole motion pipeline for a small card, with the rotated int8
 K/V store on. What is in it and why, in the order it runs (2026-08-18):
 
