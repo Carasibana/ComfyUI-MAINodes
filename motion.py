@@ -2865,6 +2865,225 @@ class H3AudioSmear:
         return ({"waveform": y.reshape(b, c, -1).contiguous(), "sample_rate": sr},)
 
 
+class H3RetimeAudio:
+    """The audio bed for a KEPT dilated timeline (bullet time as the
+    product, not the intermediate): baseline verbatim on rate-1 spans,
+    a chosen treatment inside held spans, optional transient re-anchoring
+    on top."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha), new 2026-08-21; the classic pipeline nodes "
+        "are unchanged.\n\n"
+        "Builds the soundtrack for a clip that KEEPS the dilated timeline "
+        "(skip H3 Exact Recover, the slow motion is the product). Rate-1 "
+        "spans always carry the baseline track verbatim, placed sample-"
+        "exact against the hold map; only held spans get a treatment:\n\n"
+        "- stretched: pitch-kept phase-vocoder stretch of the baseline "
+        "(same engine as H3 Audio Smear). Deterministic, safe, transients "
+        "smear at high holds.\n"
+        "- varispeed: the classic film move, resample with the pitch "
+        "drop. Great at x2-3, rumbly by x8.\n"
+        "- generated: pass 2's own dilated-clock audio inside the held "
+        "spans (wire it into 'generated'). Without an audio-smear init "
+        "upstream, pass 2 writes natural-rate ambience over the slowed "
+        "picture - the cinematic bullet-time convention; with the init, "
+        "a genuinely slowed take. Which one you get is a GRAPH choice, "
+        "this node just composes it.\n\n"
+        "anchor_transients re-detects impacts in the baseline inside held "
+        "spans and lays the UNSTRETCHED hit back at its exactly-mapped "
+        "dilated position, replacing the bed locally - the whip crack "
+        "stays a crack instead of becoming a whoosh. Composes with every "
+        "mode.\n\n"
+        "All clocks: input baseline is the world clock, 'generated' and "
+        "the output are the dilated clock. Wire the SAME hold_map the "
+        "video side used.")
+
+    MODES = ["stretched", "varispeed", "generated"]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "baseline": ("AUDIO", {"tooltip": "pass-1 audio, world clock"}),
+            "hold_map": ("STRING", {"default": "", "forceInput": True}),
+            "fps": ("INT", {"default": 24, "min": 1, "max": 120}),
+            "held_spans": (cls.MODES, {"default": "stretched",
+                           "tooltip": "what fills the dilated spans; rate-1 spans are always the baseline"}),
+            "anchor_transients": ("BOOLEAN", {"default": False,
+                                  "tooltip": "re-anchor unstretched impacts at their mapped positions"}),
+        }, "optional": {
+            "generated": ("AUDIO", {"tooltip": "pass 2's audio (dilated clock), for held_spans=generated"}),
+        }}
+
+    RETURN_TYPES = ("AUDIO", "STRING")
+    RETURN_NAMES = ("audio", "report")
+    FUNCTION = "retime"
+    CATEGORY = "audio/minimax/motion"
+
+    def retime(self, baseline, hold_map, fps, held_spans, anchor_transients,
+               generated=None):
+        import math
+
+        assert hold_map.strip(), "wire the video side's hold_map in"
+        assert held_spans != "generated" or generated is not None, (
+            "held_spans=generated needs pass 2's audio wired into "
+            "'generated' (VAEDecodeAudio of the regenerated latent)")
+        holds = json.loads(hold_map)["holds"]
+
+        wav = baseline["waveform"].detach().float().cpu()
+        sr = baseline["sample_rate"]
+        b, c, n = wav.shape
+        x = wav.reshape(b * c, n)
+        gen = None
+        if generated is not None:
+            gen = generated["waveform"].detach().float().cpu()
+            if generated["sample_rate"] != sr:
+                _ta = _torchaudio("resample")
+                gen = _ta.functional.resample(
+                    gen.reshape(-1, gen.shape[-1]), generated["sample_rate"], sr)
+            gen = gen.reshape(-1, gen.shape[-1])
+            if gen.shape[0] != x.shape[0]:
+                gen = gen[:1].expand(x.shape[0], -1)
+
+        if held_spans == "stretched":
+            y = H3AudioSmear().smear(baseline, hold_map, fps)[0]["waveform"]
+            y = y.reshape(b * c, -1)
+            run_geo = self._geometry(holds, sr, fps)
+        else:
+            y, run_geo = self._compose(x, gen, holds, sr, fps, held_spans,
+                                       math)
+
+        n_hits = 0
+        if anchor_transients:
+            y, n_hits = self._anchor(x, y, run_geo, sr)
+
+        held_runs = sum(1 for h, _c, *_ in run_geo if h > 1)
+        world_s = len(holds) / float(fps)
+        dil_s = y.shape[1] / float(sr)
+        report = (f"{held_spans}: {world_s:.2f}s world -> {dil_s:.2f}s "
+                  f"dilated, {held_runs} held span(s)"
+                  + (f", {n_hits} transient(s) re-anchored" if
+                     anchor_transients else ""))
+        return ({"waveform": y.reshape(b, c, -1).contiguous(),
+                 "sample_rate": sr}, report)
+
+    @staticmethod
+    def _geometry(holds, sr, fps):
+        """Run-length geometry shared by every mode, mirroring H3 Audio
+        Smear's cursor arithmetic exactly: (hold, count, world s0, world s1,
+        dilated t0, dilated tgt) per run of consecutive equal holds."""
+        runs = []
+        for h in holds:
+            if runs and runs[-1][0] == h:
+                runs[-1][1] += 1
+            else:
+                runs.append([h, 1])
+        spf = sr / float(fps)
+        geo, cursor, t0 = [], 0.0, 0
+        for h, count in runs:
+            src = count * spf
+            tgt = int(round(h * count * spf))
+            s0, s1 = int(round(cursor)), int(round(cursor + src))
+            cursor += src
+            geo.append((h, count, s0, s1, t0, tgt))
+            t0 += tgt
+        return geo
+
+    def _compose(self, x, gen, holds, sr, fps, mode, math):
+        """varispeed / generated: baseline verbatim on rate-1 runs, the
+        treatment inside held runs, equal-power 5 ms crossfades at joins."""
+        geo = self._geometry(holds, sr, fps)
+        xfade = max(1, int(round(0.005 * sr)))
+        segs, joins, prev_tgt = [], [], 0
+        for h, count, s0, s1, t0, tgt in geo:
+            f = 0 if not segs else min(xfade, tgt, prev_tgt, s0)
+            prev_tgt = tgt
+            if h == 1:
+                seg = x[:, s0 - f:min(s1, x.shape[1])]
+            elif mode == "generated":
+                seg = gen[:, max(t0 - f, 0):min(t0 + tgt, gen.shape[1])]
+            else:                                    # varispeed
+                pre = int(math.ceil(f / float(h)))
+                src_seg = x[:, max(s0 - pre, 0):min(s1, x.shape[1])]
+                if src_seg.shape[1] >= 2:
+                    seg = torch.nn.functional.interpolate(
+                        src_seg[None], size=f + tgt, mode="linear",
+                        align_corners=True)[0]
+                else:
+                    seg = src_seg
+            if seg.shape[1] == 0:
+                segs.append(torch.zeros(x.shape[0], tgt))
+                joins.append(0)
+                continue
+            if seg.shape[1] < f + tgt:
+                seg = torch.nn.functional.pad(seg, (0, f + tgt - seg.shape[1]))
+            segs.append(seg[:, :f + tgt])
+            joins.append(f)
+        parts = []
+        for seg, f in zip(segs, joins):
+            if f:
+                t = torch.arange(1, f + 1, dtype=seg.dtype) / f
+                prev = parts[-1].clone()
+                prev[:, -f:] = (prev[:, -f:] * torch.cos(t * (math.pi / 2))
+                                + seg[:, :f] * torch.sin(t * (math.pi / 2)))
+                parts[-1] = prev
+            parts.append(seg[:, f:])
+        return torch.cat(parts, dim=1), geo
+
+    @staticmethod
+    def _anchor(x, y, geo, sr):
+        """Detect impacts in the baseline inside held runs and lay the
+        UNSTRETCHED snippet back at its mapped dilated position, replacing
+        the bed under a short envelope."""
+        mono = x.mean(0)
+        frame, hop = 256, 128
+        if mono.shape[0] < frame * 2:
+            return y, 0
+        env = mono.unfold(0, frame, hop).pow(2).mean(-1).sqrt()
+        flux = torch.clamp(env[1:] - env[:-1], min=0)
+        pos = flux[flux > 0]
+        if pos.numel() == 0:
+            return y, 0
+        thr = 4.0 * pos.median()
+        refractory = int(0.05 * sr / hop)
+        pre, post = int(0.005 * sr), int(0.06 * sr)
+        fall = int(0.03 * sr)
+        hits, last = [], -refractory
+        for i in torch.nonzero(flux > thr).flatten().tolist():
+            if i - last < refractory:
+                continue
+            last = i
+            # refine the frame-coarse onset to the peak sample: the mapping
+            # multiplies any offset by the hold factor, so a half-frame
+            # error here becomes an audible misplacement there
+            w0 = max((i + 1) * hop - hop, 0)
+            w1 = min((i + 1) * hop + frame + hop, mono.shape[0])
+            hits.append(w0 + int(torch.argmax(mono[w0:w1].abs())))
+        n_hits = 0
+        y = y.clone()
+        for sw in hits:
+            run = next(((h, s0, t0) for h, _c, s0, s1, t0, _t in geo
+                        if h > 1 and s0 <= sw < s1), None)
+            if run is None:
+                continue
+            h, s0, t0 = run
+            pd = t0 + (sw - s0) * h                  # mapped dilated position
+            a0, a1 = max(sw - pre, 0), min(sw + post, x.shape[1])
+            p0 = pd - (sw - a0)
+            if p0 < 0 or p0 + (a1 - a0) > y.shape[1] or a1 - a0 < pre + fall:
+                continue
+            snip = x[:, a0:a1]
+            w = torch.ones(snip.shape[1])
+            rise = sw - a0
+            if rise:
+                w[:rise] = torch.linspace(0, 1, rise)
+            t = torch.linspace(0, math.pi / 2, fall)
+            w[-fall:] = torch.cos(t) * w[-fall:].clone()
+            y[:, p0:p0 + snip.shape[1]] = (
+                y[:, p0:p0 + snip.shape[1]] * (1 - w) + snip * w)
+            n_hits += 1
+        return y, n_hits
+
+
 class H3ProbeSchedule:
     """Head-only schedule for oracle probing: skip most of the first pass."""
 
@@ -4447,6 +4666,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3JerkHeatmap": H3JerkHeatmap,
     "H3AudioRecover": H3AudioRecover,
     "H3AudioSmear": H3AudioSmear,
+    "H3RetimeAudio": H3RetimeAudio,
     "H3ProbeSchedule": H3ProbeSchedule,
     "H3ExpertSchedule": H3ExpertSchedule,
     "H3TrajectoryBank": H3TrajectoryBank,
@@ -4477,6 +4697,7 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3JerkHeatmap": "H3 Jerk Heatmap (oracle overlay tile)",
     "H3AudioRecover": "H3 Audio Recover (hold-map atempo, pitch kept)",
     "H3AudioSmear": "H3 Audio Smear (hold-map stretch, pitch kept) [alpha]",
+    "H3RetimeAudio": "H3 Retime Audio (bullet-time bed + transients) [alpha]",
     "H3ProbeSchedule": "H3 Probe Schedule (early-oracle head)",
     "H3ExpertSchedule": "H3 Expert Schedule (base head, turbo tail)",
     "H3TrajectoryBank": "H3 Trajectory Bank (checkpoint every step)",
