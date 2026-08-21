@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-mainodes"
 description = "MatlowAI's MiniMax-H3 nodes: Contact-Sheet diffusion + Motion Lab (test-time de-roping of fast motion via oracle-guided v2v time-smear)"
-version = "1.0.0"
+version = "1.0.1"
 license = { file = "LICENSE" }
 dependencies = []
 
