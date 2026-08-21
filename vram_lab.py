@@ -594,7 +594,7 @@ def _sol_attention(q, k, v, heads, mask=None, skip_reshape=False,
     is self-attention only (q_len == kv_len), which is why this replaces the whole
     op rather than riding inside the streamed executor's Q chunking.
     """
-    global _SOL_LOGGED
+    global _SOL_LOGGED, _SOL_AV_LOGGED
     ext = _sol_ext()
     qq = q.tensor if hasattr(q, "tensor") else q
     kk = k.tensor if hasattr(k, "tensor") else k
@@ -623,6 +623,23 @@ def _sol_attention(q, k, v, heads, mask=None, skip_reshape=False,
                  torch.cuda.current_stream(qq.device).cuda_stream,
                  centroid_tail=True, key_bias=None)
     o = out
+    if _SOL_EXACT_AV and _SOL_AV_SLICES is not None and _SOL_AV_SLICES[0] == S:
+        # the native scoping: video rows ride Sol, text+audio query rows take an
+        # exact dense bf16 path over the full K/V (same split as the kvfp4s fix;
+        # audio is ~1% of the sequence and phrase-level pacing is long-range, so
+        # a similarity top-k starves exactly what carries it)
+        kbh = kb.transpose(1, 2)                            # [B, H, S, D] bf16 views
+        vbh = vb.transpose(1, 2)
+        n_av = 0
+        for a, b in _SOL_AV_SLICES[1]:
+            qe = qb[:, a:b].transpose(1, 2)                 # [B, H, rows, D]
+            o[:, a:b] = torch.nn.functional.scaled_dot_product_attention(
+                qe, kbh, vbh).transpose(1, 2)
+            n_av += b - a
+        if n_av and not _SOL_AV_LOGGED:
+            _SOL_AV_LOGGED = True
+            log.info("H3SolAttention: exact A/V rows ON (%d of %d query rows dense "
+                     "bf16; video rows ride Sol)", n_av, S)
     if not _SOL_LOGGED:
         _SOL_LOGGED = True
         log.info("H3SolAttention: PR #117 CUDA kernel live (S=%d, heads=%d, tau=%.2f, "
@@ -634,6 +651,40 @@ def _sol_attention(q, k, v, heads, mask=None, skip_reshape=False,
 
 _SOL_FALLBACK = None
 _SOL_TAU = 1.0
+_SOL_EXACT_AV = False
+_SOL_AV_SLICES = None          # (total_rows, [(a, b), ...] text+audio spans, signature)
+_SOL_AV_LOGGED = False
+_SOL_FWD_ORIG = None
+
+
+def _sol_capture_forward(self, x, timestep, context, transformer_options={}, minimax_payload=None, **kwargs):
+    """Stash the packed layout's text+audio row spans for the Sol exact-AV path.
+
+    Mirrors the signature derivation at the top of MiniMaxH3Model._forward; the
+    layout is the payload's prebuilt one where present, else rebuilt (cheap,
+    cached on signature). cond/ref_img rows carry the video modality and stay on
+    Sol, matching the streamed executor's exact_av_rows split."""
+    global _SOL_AV_SLICES
+    try:
+        video_x, audio_x = x[0], x[1]
+        vx = comfy.ldm.common_dit.pad_to_patch_size(video_x, self.patch_size)
+        payload = minimax_payload or {}
+        sig = (context.shape[1], vx.shape[2], vx.shape[3], vx.shape[4], audio_x.shape[-1])
+        if _SOL_AV_SLICES is None or _SOL_AV_SLICES[2] != sig:
+            layout = payload.get("layout")
+            if layout is None or layout.signature != sig:
+                layout = _h3m.PackedLayout(*sig, keyframes=payload.get("keyframes"),
+                                           refs=payload.get("refs"))
+            av = [(a, b) for a, b, kind in layout.segments
+                  if kind in ("text", "audio", "cond_audio", "ref_audio")]
+            total = max(b for _, b, _ in layout.segments)
+            _SOL_AV_SLICES = (total, av, sig)
+    except Exception as e:  # noqa: BLE001 -- a stash failure must never break a render
+        log.warning("H3SolAttention: exact-AV layout capture failed (%s); "
+                    "AV rows ride Sol this run", e)
+    return _SOL_FWD_ORIG(self, x, timestep, context,
+                         transformer_options=transformer_options,
+                         minimax_payload=minimax_payload, **kwargs)
 
 
 class H3SolAttention:
@@ -652,6 +703,15 @@ class H3SolAttention:
             "tau": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 4.0, "step": 0.05,
                     "tooltip": "Sol's routing threshold. Lower routes MORE blocks "
                                "(denser, slower, more accurate); 1.0 is the paper default."}),
+        }, "optional": {
+            "exact_av_rows": ("BOOLEAN", {"default": False,
+                    "tooltip": "Route TEXT and AUDIO query rows through exact dense bf16 "
+                               "attention; only video rows ride Sol's sparse routing. This is "
+                               "the scoping MiniMax describe for native H3 sparsity (video-only "
+                               "sparse, non-video dense). The identical split fixed kvfp4s "
+                               "audio outright. Measured motivation: the tau sweep (0.5-1.4, "
+                               "bakery 20260821) left speech pacing rough at every density, so "
+                               "the loss is scoping, not density."}),
         }}
 
     RETURN_TYPES = ("MODEL",)
@@ -660,8 +720,8 @@ class H3SolAttention:
     DESCRIPTION = ("Sol-Attn sparse attention for MiniMax-H3, from the unmerged "
                    "comfy-kitchen PR #117 CUDA kernel built out-of-tree for sm120.")
 
-    def patch(self, model, tau):
-        global _SOL_FALLBACK, _SOL_TAU
+    def patch(self, model, tau, exact_av_rows=False):
+        global _SOL_FALLBACK, _SOL_TAU, _SOL_EXACT_AV, _SOL_FWD_ORIG, _SOL_AV_SLICES, _SOL_AV_LOGGED
         if _sol_ext() is None:
             log.warning("H3SolAttention: PR #117 extension not available; model unchanged")
             return (model,)
@@ -669,9 +729,15 @@ class H3SolAttention:
         if _SOL_FALLBACK is None:
             _SOL_FALLBACK = mm.optimized_attention
         _SOL_TAU = float(tau)
+        _SOL_EXACT_AV = bool(exact_av_rows)
+        _SOL_AV_SLICES = None
+        _SOL_AV_LOGGED = False
+        if _SOL_EXACT_AV and _SOL_FWD_ORIG is None:
+            _SOL_FWD_ORIG = _h3m.MiniMaxH3Model._forward
+            _h3m.MiniMaxH3Model._forward = _sol_capture_forward
         mm.optimized_attention = _sol_attention
         log.info("H3SolAttention: bound Sol to comfy.ldm.minimax.model.optimized_attention "
-                 "(tau %.2f)", _SOL_TAU)
+                 "(tau %.2f, exact_av_rows %s)", _SOL_TAU, _SOL_EXACT_AV)
         return (model,)
 
 
