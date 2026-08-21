@@ -181,7 +181,37 @@ PROFILE_MODES = {
     "value |d3| (default)": ("value", 3),
     "value |d1| (energy baseline)": ("value", 1),
     "trajectory centroid |d3|": ("traj", 3),
+    "value |d3| camera-compensated": ("camvalue", 3),
 }
+
+
+def _camera_compensate(v, max_shift=3):
+    """Align each latent frame to its predecessor by the integer (dy, dx) shift
+    that minimises their mean absolute difference, accumulated along the clip,
+    so a steady pan or scroll reads as stillness and only motion AGAINST the
+    camera survives into the differences. Edges wrap (np.roll); at <= 3 latent
+    cells on a 64-cell frame that is a border effect, not a signal.
+
+    ROADMAP section 2 ("camera-compensated jerk"): the documented cause of
+    panrun's over-dilation (124 -> 345 frames) was the pan itself scoring as
+    jerk. Same seam as the other modes: a different profile, the same compiler."""
+    T = v.shape[2]
+    out = np.empty_like(v)
+    out[:, :, 0] = v[:, :, 0]
+    dy = dx = 0
+    for t in range(1, T):
+        prev = out[:, :, t - 1]
+        cur = v[:, :, t]
+        best, bs = None, (dy, dx)
+        for sy in range(dy - max_shift, dy + max_shift + 1):
+            for sx in range(dx - max_shift, dx + max_shift + 1):
+                cand = np.roll(cur, (sy, sx), axis=(-2, -1))
+                err = float(np.abs(cand - prev).mean())
+                if best is None or err < best:
+                    best, bs = err, (sy, sx)
+        dy, dx = bs
+        out[:, :, t] = np.roll(cur, (dy, dx), axis=(-2, -1))
+    return out
 
 
 def _jerk_profile(z, mode="value |d3| (default)", phase_norm=True):
@@ -193,7 +223,10 @@ def _jerk_profile(z, mode="value |d3| (default)", phase_norm=True):
     """
     v = z.detach().float().cpu().numpy()          # (1, 24, T, h, w)
     kind, order = PROFILE_MODES.get(mode, ("value", 3))
-    prof = _value_profile(v, order) if kind == "value" else _trajectory_profile(v, order)
+    if kind == "camvalue":
+        prof = _value_profile(_camera_compensate(v), order)
+    else:
+        prof = _value_profile(v, order) if kind == "value" else _trajectory_profile(v, order)
     return _phase_norm(prof) if phase_norm else prof   # (t_lat,)
 
 
@@ -1546,8 +1579,9 @@ class H3TimeSmear:
         "than 17 world frames are left alone. The console and the report "
         "say so whenever a map is rewritten.\n\n"
         "Output length is snapped up to the H3-legal 17k+5 grid by extending "
-        "the final hold. ALWAYS pass hold_map_used to H3 Exact Recover — it "
-        "records exactly what happened so recovery is lossless.\n\n"
+        "the final hold - or to the TARGET model's grid when the map comes from "
+        "H3 Clock Remap (LTX-2.5: 8k+1). ALWAYS pass hold_map_used to H3 Exact "
+        "Recover — it records exactly what happened so recovery is lossless.\n\n"
         "EFFECTIVE SIZE: the report output is the price tag for everything "
         "downstream of here — a 5 s action clip regenerates as 11 to 13 s of "
         "frame data, and that dilated length, not the runtime, is what sets "
@@ -1579,20 +1613,31 @@ class H3TimeSmear:
               s_per_step=0.0, est_steps=18, overhead_s=OVERHEAD_S):
         images = images.detach().cpu()  # keep the (possibly huge) held batch off VRAM
         n = images.shape[0]
-        holds = (json.loads(hold_map)["holds"] if hold_map.strip()
-                 else [dilation] * n)
+        hm = json.loads(hold_map) if hold_map.strip() else {}
+        holds = hm["holds"] if hm else [dilation] * n
         assert len(holds) == n, f"hold map covers {len(holds)} frames, batch has {n}"
+        # A map from H3 Clock Remap carries the TARGET model's legal grid; an
+        # oracle / manual map carries none and gets H3's 17k+5 as before.
+        legal = tuple(hm["legal"]) if hm.get("legal") else None
         note = None
-        if expand_to_end:
+        if expand_to_end and not legal:
             holds, note = expand_hold_map_to_end(holds)
             if note:
                 print("[MAINodes] H3TimeSmear " + note)
-        target = _legal_ceil(sum(holds))
+        if legal:
+            try:
+                from .model_profiles import legal_ceil as _gen_legal
+            except ImportError:                  # tests import motion top-level
+                from model_profiles import legal_ceil as _gen_legal
+            target = _gen_legal(sum(holds), legal)
+        else:
+            target = _legal_ceil(sum(holds))
         n_held = sum(1 for h in holds if h > 1)   # count before the tail pad
         holds = list(holds)
         holds[-1] += target - sum(holds)          # tail pad lives in the last hold
         idx = torch.tensor([i for i, h in enumerate(holds) for _ in range(h)])
-        used = json.dumps({"holds": holds, "world_len": n})
+        used = dict(hm, holds=holds, world_len=n) if hm else {"holds": holds, "world_len": n}
+        used = json.dumps(used)
         mode = ("uniform x{}".format(dilation) if not hold_map.strip()
                 else "adaptive, {} of {} frames held".format(n_held, n))
         report = _cost_report(n, target, fps, s_per_step, est_steps,

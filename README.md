@@ -759,3 +759,13 @@ time, benchmarking and increasingly questionable experiments:
 ## License
 
 GPL-3.0-or-later. Copyright (C) 2026 MATLOWAI. See LICENSE.
+
+## De-rope for any model (branch `generic-derope`)
+
+One hold map, any regenerating model: `H3 Clock Remap` retimes the oracle's
+plan onto a model's clock from a preset (`minimax-h3`, `ltx-2.5`, a
+user-editable registry for the rest), `H3 Time Smear` pads to that model's
+grid, and `H3 Save Hold Map` keeps the clock beside the render. The LTX-2.5
+graphs behind https://matlowai.github.io/flipbook/derope.html live there too.
+See `DEROPE_ANY_MODEL.md`. Alpha, on a branch until the oracle-shaped LTX arm
+is measured.
