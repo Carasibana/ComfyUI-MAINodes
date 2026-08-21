@@ -623,6 +623,11 @@ def _sol_attention(q, k, v, heads, mask=None, skip_reshape=False,
                  torch.cuda.current_stream(qq.device).cuda_stream,
                  centroid_tail=True, key_bias=None)
     o = out
+    if _SOL_EXACT_AV and (_SOL_AV_SLICES is None or _SOL_AV_SLICES[0] != S) and S > 4096 and not _SOL_AV_LOGGED:
+        _SOL_AV_LOGGED = True
+        log.warning("H3SolAttention: exact_av_rows requested but INACTIVE on the main "
+                    "forward (S=%d, stashed=%s) - layout capture missed; AV rows are "
+                    "riding Sol", S, _SOL_AV_SLICES[0] if _SOL_AV_SLICES else None)
     if _SOL_EXACT_AV and _SOL_AV_SLICES is not None and _SOL_AV_SLICES[0] == S:
         # the native scoping: video rows ride Sol, text+audio query rows take an
         # exact dense bf16 path over the full K/V (same split as the kvfp4s fix;
@@ -679,6 +684,9 @@ def _sol_capture_forward(self, x, timestep, context, transformer_options={}, min
                   if kind in ("text", "audio", "cond_audio", "ref_audio")]
             total = max(b for _, b, _ in layout.segments)
             _SOL_AV_SLICES = (total, av, sig)
+            log.info("H3SolAttention: exact-AV layout stashed (%d spans, %d rows, "
+                     "total %d, kinds %s)", len(av), sum(b - a for a, b in av), total,
+                     [k for _, _, k in layout.segments])
     except Exception as e:  # noqa: BLE001 -- a stash failure must never break a render
         log.warning("H3SolAttention: exact-AV layout capture failed (%s); "
                     "AV rows ride Sol this run", e)
