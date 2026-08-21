@@ -45,6 +45,7 @@ same-seed difference clip against the stock block.
 import logging
 import math
 import os
+import sys
 import time
 
 import torch
@@ -65,6 +66,40 @@ except Exception:  # noqa: BLE001
     _SAGE_OK = False
 
 log = logging.getLogger("MAINodes.vram_lab")
+
+# A6: SageAttention3's fp4 kernels (kvfp4s). Built out-of-tree 2026-08-19 (that
+# build is not installed into any ComfyUI venv), so: try a plain import first, and
+# only if that fails add the out-of-tree build directory to sys.path and retry.
+# Lazy -- nothing here runs unless kvfp4s is selected.
+_SAGE3_DIR = "/mnt/work/ai/venvs/sage3-test/SageAttention/sageattention3_blackwell"
+_SAGE3 = None            # None = not tried yet, False = unavailable, else sageattn3.api
+
+
+def _sage3_api():
+    """The sageattn3.api module, or None. Import is attempted once per process."""
+    global _SAGE3
+    if _SAGE3 is not None:
+        return _SAGE3 or None
+    try:
+        import fp4attn_cuda  # noqa: F401
+    except ImportError:
+        if not os.path.isdir(_SAGE3_DIR):
+            _SAGE3 = False
+            return None
+        if _SAGE3_DIR not in sys.path:
+            sys.path.insert(0, _SAGE3_DIR)
+        try:
+            import fp4attn_cuda  # noqa: F401
+        except Exception:  # noqa: BLE001
+            _SAGE3 = False
+            return None
+    try:
+        from sageattn3 import api as _sage3_api_mod
+    except Exception:  # noqa: BLE001
+        _SAGE3 = False
+        return None
+    _SAGE3 = _sage3_api_mod
+    return _sage3_api_mod
 
 
 # --------------------------------------------------------------------------- helpers
@@ -359,6 +394,249 @@ def _sage_attention_q(qc, st, out_dtype):
     return acc.to(out_dtype)                                    # V is not rotated: no un-rotation
 
 
+# --------------------------------------------------------------------------- kvfp4s: SageAttention3 fp4 K/V store (A6, approximation tier)
+
+_KVFP4_LOGGED = False
+
+
+class _Sage3FP4KV:
+    """kvfp4s: K/V kept as NVFP4 in SageAttention3's kernel layouts -- E2M1 packed
+    two per byte plus one e4m3 scale per 16 elements = 0.5625 byte/elem, i.e.
+    0.28x bf16 (1.63 GiB vs 5.79 at 216k tokens, measured) -- and attended on
+    Blackwell fp4 tensor cores straight from the store. Q and K are Hadamard-
+    rotated first (scores invariant; measured 2026-08-19 to cut rel-rms from
+    0.394 to 0.293 on the outlier proxy, no change on plain gaussian). V is not
+    rotated, so the output needs no un-rotation.
+
+    Design notes (reports/overnight_2026-08-20/sage3.md s.4/s.6):
+      - ``per_block_mean`` MUST be False: at H3 lengths the True form's delta_s is
+        [B,H,ceil(L/128),KL] fp32 ~= 82 TB. With per_block_mean False, dropping
+        the Q-centering and delta_s entirely is not worse than computing them
+        (0.27104 vs 0.27167 rel-rms), so the store keeps ONLY the fp4 tensors:
+        no bf16 K, no delta_s, un-centred Q, and a zeros delta_s allocated once.
+      - ``preprocess_qkv`` is never used: it mutates the caller's k in place and
+        recomputes the K mean every call. The per-head K mean is computed once
+        over the full K and frozen (subtracting a constant from every key is
+        softmax-invariant per query row, so it needs no correction term).
+      - The kernel's softmax_scale is derived from the PACKED last dim
+        ((D/2)*2)**-0.5; correct at D=128, a trap if anything reshapes.
+      - The LSE the kernel returns is uninitialised memory (the epilogue store is
+        commented out upstream), so a K-blocked online-softmax combine is
+        impossible -- the store is one contiguous span and Q chunking alone
+        carries the memory win. That is why phase 1 buffers K/V in bf16 and
+        quantises once at finalize(): during that finalize the block holds both
+        (bf16 + fp4) before the bf16 is dropped.
+
+    NOT bit-equal to stock: approximation tier, one rung below kvi8s (measured
+    at 217k tokens: rel-rms 0.293 rotated vs kvi8s-family Sage 2.2's 0.055 on the
+    outlier proxy), ~2.4x faster attention than the exact path. Judged by eyes."""
+
+    def __init__(self, heads, S, hd, device, dtype=torch.bfloat16, rotate=True,
+                 keep_exact=False):
+        api = _sage3_api()
+        if api is None:
+            raise RuntimeError("kvfp4s needs SageAttention3's fp4 extension (fp4attn_cuda) importable")
+        self.api = api
+        self.heads, self.S, self.hd, self.device = heads, S, hd, device
+        self.R = _hadamard(hd, device, torch.bfloat16) if rotate else None
+        pad = (128 - S % 128) % 128
+        self.SP = S + pad
+        self.kbuf = torch.empty((1, heads, self.SP, hd), dtype=torch.bfloat16, device=device)
+        self.vbuf = torch.empty((1, heads, self.SP, hd), dtype=torch.bfloat16, device=device)
+        if pad:                                   # padded keys are masked by KL; keep them finite
+            self.kbuf[:, :, S:].zero_()
+            self.vbuf[:, :, S:].zero_()
+        self.k_fp4 = self.k_sf = self.v_fp4 = self.v_sf = self.ds = None
+        # exact_av: keep a bf16 K/V so text+audio query rows can take an exact
+        # path (reports/sol_sa3/18_fp4_audio_diagnosis.md). Costs one bf16 K/V
+        # per block in flight (~0.8 GiB at 29k tokens, 5.8 at 216k).
+        self.keep_exact = bool(keep_exact)
+        self.k_bf = self.v_bf = None
+        self.t0 = time.time()
+
+    def store(self, a, b, k, v):      # k, v [1, heads, b-a, hd] bf16, one phase-1 chunk
+        k = k.to(torch.bfloat16)
+        self.kbuf[:, :, a:b] = (k @ self.R) if self.R is not None else k
+        self.vbuf[:, :, a:b] = v.to(torch.bfloat16)
+
+    def finalize(self):
+        """Quantise the whole span once: K centred on its frozen per-head mean and
+        permuted, V transposed. The bf16 buffers are dropped here."""
+        global _KVFP4_LOGGED
+        kmean = self.kbuf[:, :, :self.S].mean(dim=-2, keepdim=True)
+        self.kbuf[:, :, :self.S] -= kmean
+        if self.keep_exact:
+            # centred + rotated is an EXACT reference: rotation preserves scores
+            # (R orthogonal) and softmax is invariant to a constant per-key shift.
+            self.k_bf = self.kbuf[:, :, :self.S].clone()
+            self.v_bf = self.vbuf[:, :, :self.S].clone()
+        self.k_fp4, self.k_sf = self.api.scale_and_quant_fp4_permute(self.kbuf)
+        self.v_fp4, self.v_sf = self.api.scale_and_quant_fp4_transpose(self.vbuf)
+        self.kbuf = self.vbuf = None
+        del kmean
+        self.ds = torch.zeros((1, self.heads, 1, self.v_fp4.size(-1) * 2),
+                              dtype=torch.float32, device=self.device)
+        if not _KVFP4_LOGGED:                     # once per process: the engagement check
+            _KVFP4_LOGGED = True
+            torch.cuda.synchronize(self.device)
+            log.info("H3StreamedBlocks kvfp4s: store built, %d tokens, %.3f GiB, %.0f ms, rotated %s",
+                     self.S, self.bytes() / 2 ** 30, (time.time() - self.t0) * 1e3,
+                     "yes" if self.R is not None else "no")
+
+    def bytes(self):
+        if self.k_fp4 is None:
+            return 0
+        n = (self.k_fp4.numel() + self.k_sf.numel() + self.v_fp4.numel() + self.v_sf.numel()
+             + self.ds.numel() * 4)
+        if self.k_bf is not None:
+            n += (self.k_bf.numel() + self.v_bf.numel()) * 2
+        return n
+
+
+def _sage3_attention_q(qc, st, out_dtype):
+    """qc [1,H,c,hd] bf16 against a _Sage3FP4KV store -> [1,H,c,hd] out_dtype."""
+    QL = qc.shape[2]
+    q = qc.to(torch.bfloat16)
+    if st.R is not None:
+        q = q @ st.R
+    pad = (128 - QL % 128) % 128
+    if pad:
+        q = torch.nn.functional.pad(q, (0, 0, 0, pad))
+    ql = st.api.scale_and_quant_fp4(q.contiguous())               # no Q centering (see class doc)
+    del q
+    o = st.api.blockscaled_fp4_attn(ql, (st.k_fp4, st.k_sf), (st.v_fp4, st.v_sf),
+                                    st.ds, st.S, False, False, True)
+    del ql
+    return o[0][:, :, :QL, :].to(out_dtype)                        # V is not rotated: no un-rotation
+
+
+_EXACT_AV_LOGGED = False
+
+
+def _exact_av_rows(o, qc, st, segments, c0, c1, out_dtype):
+    """kvfp4s audio fix: re-run the TEXT and AUDIO query rows on the exact bf16
+    K/V, leaving video rows on the fp4 store.
+
+    Why: audio is 300 of 28,931 packed tokens, so a ~4% attention error that
+    video's redundancy hides as slight ghosting lands audibly on a soundtrack
+    carried by 1% of the sequence. Measured in
+    reports/sol_sa3/18_fp4_audio_diagnosis.md: audio is not quantised WORSE
+    than video (its per-token error is the lowest of the three segments), it is
+    merely far more sensitive, so the fix is routing, not a better quantiser.
+    mod_segments rows carry the modality in row % 3 (0 video, 1 text, 2 audio).
+    """
+    global _EXACT_AV_LOGGED
+    n = 0
+    for sa, sb, row in segments:
+        if row % 3 == 0:                       # video rides the fp4 store
+            continue
+        lo, hi = max(sa, c0), min(sb, c1)
+        if lo >= hi:
+            continue
+        qe = qc[:, :, lo - c0:hi - c0].to(torch.bfloat16)
+        if st.R is not None:
+            qe = qe @ st.R
+        o[:, :, lo - c0:hi - c0] = torch.nn.functional.scaled_dot_product_attention(
+            qe, st.k_bf, st.v_bf).to(out_dtype)
+        n += hi - lo
+    if n and not _EXACT_AV_LOGGED:
+        _EXACT_AV_LOGGED = True
+        log.info("H3StreamedBlocks kvfp4s: exact A/V rows ON (%d text+audio rows "
+                 "in the first chunk take the bf16 path)", n)
+    return o
+
+
+# --------------------------------------------------------------------------- kvmix: per-head 4/8-bit (the ~6-bit tier)
+
+# Heads are independent in attention, so a mixed-precision tier needs no new
+# kernel: run the fp4 kernel on one head subset and Sage 2.2's int8/fp8 kernel on
+# the other, then write both into the same output. Promoting half the heads is a
+# 6-bit average. Which heads: measured fp4 attention-output damage on real
+# captured tensors under MOTION (reports/sol_sa3/22_motion_carrier_result.md);
+# damage spread across the full 56 heads is 3.69x, and an oracle selecting by it
+# captures 59-73% of summed damage at half the heads.
+_KVMIX_DEFAULT_HI = (0, 2, 3, 4, 5, 11, 12, 17, 18, 19, 21, 23, 24, 26, 27, 30,
+                     31, 32, 35, 39, 41, 42, 43, 46, 48, 49, 51, 54)
+_KVMIX_LOGGED = False
+
+
+class _MixedKV:
+    """kvmix: `hi` heads on Sage 2.2 int8/fp8 (clean), the rest on SA3 fp4 (fast)."""
+
+    def __init__(self, heads, S, hd, device, hi_heads=None, keep_exact=False):
+        hi = sorted({h for h in (hi_heads if hi_heads is not None else _KVMIX_DEFAULT_HI)
+                     if 0 <= h < heads})
+        self.hi = torch.tensor(hi, dtype=torch.long, device=device)
+        lo = [h for h in range(heads) if h not in set(hi)]
+        self.lo = torch.tensor(lo, dtype=torch.long, device=device)
+        self.n_hi, self.n_lo = len(hi), len(lo)
+        self.fp4 = _Sage3FP4KV(self.n_lo, S, hd, device) if self.n_lo else None
+        self.i8 = _SageKV(self.n_hi, S, hd, device) if self.n_hi else None
+        self.S = S
+        # the audio fix must cover EVERY head, not just the fp4 subset, so the
+        # bf16 reference lives here rather than in a sub-store. Unrotated: the
+        # exact path then needs no basis bookkeeping.
+        self.k_bf = self.v_bf = None
+        if keep_exact:
+            self.k_bf = torch.empty((1, heads, S, hd), dtype=torch.bfloat16, device=device)
+            self.v_bf = torch.empty((1, heads, S, hd), dtype=torch.bfloat16, device=device)
+
+    def store(self, a, b, k, v):
+        if self.k_bf is not None:
+            self.k_bf[:, :, a:b] = k.to(torch.bfloat16)
+            self.v_bf[:, :, a:b] = v.to(torch.bfloat16)
+        if self.fp4 is not None:
+            self.fp4.store(a, b, k[:, self.lo].contiguous(), v[:, self.lo].contiguous())
+        if self.i8 is not None:
+            self.i8.store(a, b, k[:, self.hi].contiguous(), v[:, self.hi].contiguous())
+
+    def finalize(self):
+        global _KVMIX_LOGGED
+        if self.fp4 is not None:
+            self.fp4.finalize()
+        if not _KVMIX_LOGGED:
+            _KVMIX_LOGGED = True
+            log.info("H3StreamedBlocks kvmix: %d heads int8/fp8 + %d heads fp4 "
+                     "(avg %.1f bits)", self.n_hi, self.n_lo,
+                     (8 * self.n_hi + 4 * self.n_lo) / max(1, self.n_hi + self.n_lo))
+
+    def bytes(self):
+        return ((self.fp4.bytes() if self.fp4 is not None else 0)
+                + (self.i8.bytes() if self.i8 is not None and hasattr(self.i8, "bytes") else 0))
+
+
+def _exact_av_rows_mixed(o, qc, st, segments, c0, c1, out_dtype):
+    """Same audio fix as the fp4 path, over the mixed store's own bf16 K/V so it
+    covers all heads. Unrotated on both sides, so it is plain exact attention."""
+    global _EXACT_AV_LOGGED
+    n = 0
+    for sa, sb, row in segments:
+        if row % 3 == 0:                       # video rides the quantised stores
+            continue
+        lo, hi = max(sa, c0), min(sb, c1)
+        if lo >= hi:
+            continue
+        qe = qc[:, :, lo - c0:hi - c0].to(torch.bfloat16)
+        o[:, :, lo - c0:hi - c0] = torch.nn.functional.scaled_dot_product_attention(
+            qe, st.k_bf, st.v_bf).to(out_dtype)
+        n += hi - lo
+    if n and not _EXACT_AV_LOGGED:
+        _EXACT_AV_LOGGED = True
+        log.info("H3StreamedBlocks kvmix: exact A/V rows ON (%d text+audio rows "
+                 "in the first chunk take the bf16 path, all heads)", n)
+    return o
+
+
+def _mixed_attention_q(qc, st, out_dtype):
+    """qc [1,H,c,hd] -> [1,H,c,hd], each head through its own kernel."""
+    o = torch.empty(qc.shape, dtype=out_dtype, device=qc.device)
+    if st.fp4 is not None:
+        o[:, st.lo] = _sage3_attention_q(qc[:, st.lo].contiguous(), st.fp4, out_dtype)
+    if st.i8 is not None:
+        o[:, st.hi] = _sage_attention_q(qc[:, st.hi].contiguous(), st.i8, out_dtype)
+    return o
+
+
 # --------------------------------------------------------------------------- F5: trimmed forward (release the embed buffers)
 
 _STOCK_FORWARD_SHA = "f40e52b23fb2f9c7"       # sha256[:16] of inspect.getsource(MiniMaxH3Model._forward) this copy was made from
@@ -570,6 +848,38 @@ class _PrecProbe:
         yr = self._fq_nvfp4(xr)
         return (yr.float().view(-1, n // 128, 128) @ self.H.T).view(-1, n).to(x2d.dtype)
 
+    def _fq_int4(self, x2d):
+        """A UNIFORM 4-bit lattice at NVFP4's block granularity: 16 evenly spaced codes with an
+        exact per-16-value scale. Not a deployable format on sm120 (the 4-bit tensor cores decode
+        E2M1 only) - this is the diagnostic arm that says whether E2M1's non-uniform spacing is
+        what the activation error is paying for, as the weight-side study found it is."""
+        f = x2d.float()
+        g = f.reshape(-1, 16)
+        sc = g.abs().amax(1, keepdim=True).clamp_min(1e-12) / 7.0
+        q = (g / sc).round_().clamp_(-8, 7)
+        return (q * sc).reshape(f.shape).to(x2d.dtype)
+
+    def _fq_int4_had(self, x2d):
+        n = x2d.shape[1]
+        if self.H is None or self.H.shape[0] != 128 or self.H.device != x2d.device:
+            self.H = _hadamard(128, x2d.device, torch.float32)
+        xr = (x2d.float().view(-1, n // 128, 128) @ self.H).view(-1, n).to(x2d.dtype)
+        yr = self._fq_int4(xr)
+        return (yr.float().view(-1, n // 128, 128) @ self.H.T).view(-1, n).to(x2d.dtype)
+
+    @staticmethod
+    def _group_crest(xs):
+        """Per-16-value crest factor (peak/rms), the quantity MixFP4's 2.224 threshold is defined
+        on. The recorded whole-tensor crest is a different and much coarser statistic."""
+        n = xs.numel() - xs.numel() % 16
+        if n < 16:
+            return None
+        g = xs.reshape(-1)[:n].reshape(-1, 16)
+        rms = g.pow(2).mean(1).sqrt().clamp_min(1e-12)
+        c = g.abs().amax(1) / rms
+        return {"g_crest_med": c.median().item(), "g_crest_p95": c.quantile(0.95).item(),
+                "g_crest_frac_lt_2224": (c < 2.224).float().mean().item()}
+
     def amax(self, block, proj, x):
         """Every chunk: running per-(block, proj) activation amax for this forward (calibrated
         input_scale for a chunk-invariant NVFP4/FP8 activation path needs the whole-layer amax)."""
@@ -611,6 +921,10 @@ class _PrecProbe:
             return
         y = layer(x)
         fq = {"nvfp4": self._fq_nvfp4, "nvfp4_had": self._fq_nvfp4_had, "fp8": self._fq_fp8}
+        if os.environ.get("MAINODES_PREC_INT4") == "1":
+            # opt-in so the default instrument stays bit-identical to the run that produced v024
+            fq["int4"] = self._fq_int4
+            fq["int4_had"] = self._fq_int4_had
         outs = {k: layer(f(x)) for k, f in fq.items()}
         wb = self._bf16_weight(layer, x.device)             # bf16 truth for the absolute scale
         y_ref = None
@@ -630,6 +944,10 @@ class _PrecProbe:
                    "rows": int(hi - lo), "x_rms": rms.item(), "x_amax": xs.abs().amax().item(),
                    "x_outlier_frac": (xs.abs() > 6 * rms).float().mean().item(),
                    "x_kurt": ((xs / rms) ** 4).mean().item()}
+            if os.environ.get("MAINODES_PREC_INT4") == "1":
+                gc = self._group_crest(xs)
+                if gc:
+                    rec.update(gc)
             yn = ys.pow(2).sum().sqrt().clamp_min(1e-12)
             for k, o in outs.items():
                 rec["err_" + k] = ((o[lo - a:hi - a].float() - ys).pow(2).sum().sqrt() / yn).item()
@@ -689,13 +1007,21 @@ class _FakeQuant:
 
 # --------------------------------------------------------------------------- the block
 
-def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=False, kv_sage=False, prec=None, block_index=0, fq=None):
+def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=False, kv_sage=False, kv_fp4=False, kv_fp4_exact_av=False, kv_mix=False, prec=None, block_index=0, fq=None):
     """K, V for the whole sequence, chunk by chunk (Q computed and dropped).
     kv_int8: store them as _Int8KV (kvi8r, half the bytes; approximation tier).
-    kv_sage: store them as one _SageKV (kvi8s, half the bytes, Sage kernels; approximation tier)."""
+    kv_sage: store them as one _SageKV (kvi8s, half the bytes, Sage kernels; approximation tier).
+    kv_fp4: store them as one _Sage3FP4KV (kvfp4s, 0.28x the bytes, sage3 fp4 kernels;
+    approximation tier) -- buffered bf16 while streaming, quantised once at finalize()."""
     S = x.shape[0]
     attn = block.attn
-    if kv_sage:
+    if kv_mix:
+        K = _MixedKV(heads, S, hd, x.device, keep_exact=kv_fp4_exact_av)
+        V = K                                                    # one store holds both
+    elif kv_fp4:
+        K = _Sage3FP4KV(heads, S, hd, x.device, keep_exact=kv_fp4_exact_av)
+        V = K                                                    # one store holds both
+    elif kv_sage:
         K = _SageKV(heads, S, hd, x.device)
         V = K                                                    # one store holds both
     elif kv_int8:
@@ -715,7 +1041,7 @@ def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chun
         q, k, v = qkv.split(inner, dim=-1)
         rope_c = rope_freqs[:, a:b].contiguous() if rope_freqs is not None else None
         _, k = _norm_rope(attn, q, k, rope_c, s)
-        if kv_sage:
+        if kv_sage or kv_fp4 or kv_mix:
             K.store(a, b, k.transpose(0, 1).unsqueeze(0), v.view(s, heads, hd).transpose(0, 1).unsqueeze(0))
         elif kv_int8:
             K.store(a, b, k.transpose(0, 1).unsqueeze(0))
@@ -724,6 +1050,8 @@ def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chun
             K[0, :, a:b] = k.transpose(0, 1)
             V[0, :, a:b] = v.view(s, heads, hd).transpose(0, 1)
         del h, qkv, q, k, v, rope_c
+    if kv_fp4 or kv_mix:
+        K.finalize()                                             # one quantisation pass, bf16 dropped
     return K, V
 
 
@@ -745,7 +1073,17 @@ def _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments,
         q, _ = _norm_rope(attn, q, k, rope_c, s)
         qc = q.transpose(0, 1).unsqueeze(0).contiguous()      # [1, heads, s, hd]
         del h, qkv, q, k, _v, rope_c
-        if isinstance(K, _SageKV):
+        if isinstance(K, _MixedKV):
+            o = _mixed_attention_q(qc, K, x.dtype)
+            if K.k_bf is not None:
+                _exact_av_rows_mixed(o, qc, K, mod_segments, a, b, x.dtype)
+            o = o.transpose(1, 2).reshape(1, s, inner)
+        elif isinstance(K, _Sage3FP4KV):
+            o = _sage3_attention_q(qc, K, x.dtype)
+            if K.k_bf is not None:
+                _exact_av_rows(o, qc, K, mod_segments, a, b, x.dtype)
+            o = o.transpose(1, 2).reshape(1, s, inner)
+        elif isinstance(K, _SageKV):
             o = _sage_attention_q(qc, K, x.dtype)
             o = o.transpose(1, 2).reshape(1, s, inner)
         elif isinstance(K, _Int8KV):
@@ -792,7 +1130,7 @@ def _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chun
 
 
 def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transformer_options,
-                           q_chunk=16384, kv_chunk=16384, mlp_chunk=16384, kv_block=0, probe=None, index=None, kv_int8=False, kv_sage=False):
+                           q_chunk=16384, kv_chunk=16384, mlp_chunk=16384, kv_block=0, probe=None, index=None, kv_int8=False, kv_sage=False, kv_fp4=False, kv_fp4_exact_av=False, kv_mix=False):
     """Exact replacement for DiTBlock.forward with chunk-bounded transients.
 
     The three phases are separate named functions so an allocator trace
@@ -812,6 +1150,7 @@ def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transforme
     x_in_sample = prec.block_in(x) if prec is not None else None
 
     K, V = _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=kv_int8, kv_sage=kv_sage,
+                      kv_fp4=kv_fp4, kv_fp4_exact_av=kv_fp4_exact_av, kv_mix=kv_mix,
                       prec=prec, block_index=index if index is not None else 0, fq=fq)
     if probe is not None:
         probe.mark(index, "kv")
@@ -847,7 +1186,10 @@ def _self_check(block, args, extra, cfg, tag):
     for name, c in variants.items():
         out = streamed_block_forward(block, x.clone(), args["t_emb"], args["mod_segments"], args["rope_freqs"],
                                      args["transformer_options"], q_chunk=c["q_chunk"], kv_chunk=c["kv_chunk"],
-                                     mlp_chunk=c["mlp_chunk"], kv_block=c["kv_block"], kv_int8=cfg.get("kv_int8", False), kv_sage=cfg.get("kv_sage", False))
+                                     mlp_chunk=c["mlp_chunk"], kv_block=c["kv_block"], kv_int8=cfg.get("kv_int8", False), kv_sage=cfg.get("kv_sage", False),
+                                     kv_fp4=cfg.get("kv_fp4", False),
+                                     kv_fp4_exact_av=cfg.get("kv_fp4_exact_av", False),
+                                     kv_mix=cfg.get("kv_mix", False))
         d = (out.float() - ref.float()).abs()
         parts.append(f"{name}: max {d.max().item():.3e} ({d.max().item() / ulp:.2f} ulp) mean {d.mean().item():.2e}")
         del out, d
@@ -874,7 +1216,10 @@ def _make_replacement(block, cfg, index=0):
         x = streamed_block_forward(block, x, args["t_emb"], args["mod_segments"], args["rope_freqs"],
                                    to, q_chunk=cfg["q_chunk"], kv_chunk=cfg["kv_chunk"],
                                    mlp_chunk=cfg["mlp_chunk"], kv_block=cfg["kv_block"], probe=probe, index=index,
-                                   kv_int8=cfg.get("kv_int8", False), kv_sage=cfg.get("kv_sage", False))
+                                   kv_int8=cfg.get("kv_int8", False), kv_sage=cfg.get("kv_sage", False),
+                                   kv_fp4=cfg.get("kv_fp4", False),
+                                   kv_fp4_exact_av=cfg.get("kv_fp4_exact_av", False),
+                                   kv_mix=cfg.get("kv_mix", False))
         return {"img": x}
     return _named(fn, f"block{index:02d}")
 
@@ -961,13 +1306,16 @@ class H3StreamedBlocks:
                 "final_layer_gemm": (["exact (whole GEMM, one fp32 buffer)", "streamed (chunked GEMM, ~1e-6 fp32 diffs)"],
                                      {"default": "exact (whole GEMM, one fp32 buffer)",
                                       "tooltip": "exact: same head GEMM as stock, transient = one fp32 [rows, hidden] (bit-equal). streamed: GEMM per chunk, transient ~chunk-sized, but fp32 cuBLAS is not chunk-invariant (numerically-equivalent tier)."}),
-                "kv_store": (["bf16 (exact)", "kvi8r: rotated int8 K/V (approximate)", "kvi8s: Sage int8/fp8 K/V, rotated (approximate, faster attention)"],
+                "kv_store": (["bf16 (exact)", "kvi8r: rotated int8 K/V (approximate)", "kvi8s: Sage int8/fp8 K/V, rotated (approximate, faster attention)",
+                              "kvfp4s: Sage3 FP4 K/V, rotated (approximate, fastest attention)", "kvmix: per-head 4/8-bit, fp4 + Sage int8 (the ~6-bit tier)"],
                              {"default": "bf16 (exact)",
-                              "tooltip": "kvi8r = rotated int8 K/V. K and V held as int8 with one fp16 scale per row (per token, per head) in a fixed orthonormal 128-wide Hadamard-rotated basis of the head dim; the query chunk is rotated to match and the output un-rotated once, so a K/V block dequant is a single int8->fp16 cast * scale and attention runs in fp16 blockwise (kv_block, default 16384) with an online-softmax combine. Halves the K/V bytes. NOT bit-equal to stock: a same-seed render is a sibling take (first cut 2026-08-18: operator judged the de-rope side by side 'almost perfect'). Second cut (2026-08-18 evening): standalone at 217k tokens the attention costs +16% over the exact path (first cut +24%) with a ~1 GiB transient (first cut ~3), so the K/V saving now shows in the forward peak; the live numbers are in LOWVRAM.md. kvi8s = the same K/V bytes kept in SageAttention's kernel layout (int8 K per 64-token block, fp8 V per channel, Q/K Hadamard-rotated first) and attended on int8/fp8 tensor cores straight from the store, no dequant: standalone ~1.6x faster attention than the exact path at 217k tokens, one rung more approximate than kvi8r; needs the sageattention package (2.x)."}),
+                              "tooltip": "kvi8r = rotated int8 K/V. K and V held as int8 with one fp16 scale per row (per token, per head) in a fixed orthonormal 128-wide Hadamard-rotated basis of the head dim; the query chunk is rotated to match and the output un-rotated once, so a K/V block dequant is a single int8->fp16 cast * scale and attention runs in fp16 blockwise (kv_block, default 16384) with an online-softmax combine. Halves the K/V bytes. NOT bit-equal to stock: a same-seed render is a sibling take (first cut 2026-08-18: operator judged the de-rope side by side 'almost perfect'). Second cut (2026-08-18 evening): standalone at 217k tokens the attention costs +16% over the exact path (first cut +24%) with a ~1 GiB transient (first cut ~3), so the K/V saving now shows in the forward peak; the live numbers are in LOWVRAM.md. kvi8s = the same K/V bytes kept in SageAttention's kernel layout (int8 K per 64-token block, fp8 V per channel, Q/K Hadamard-rotated first) and attended on int8/fp8 tensor cores straight from the store, no dequant: standalone ~1.6x faster attention than the exact path at 217k tokens, one rung more approximate than kvi8r; needs the sageattention package (2.x). kvfp4s = the same idea one precision rung further down, on SageAttention3's Blackwell fp4 kernels: K/V kept as NVFP4 (E2M1 + one e4m3 scale per 16 elements = 0.5625 byte/elem, 0.28x bf16 -- 1.63 GiB vs 5.79 at 216k tokens), Q/K Hadamard-rotated, no delta_s and no Q-centering (measured to cost nothing at per_block_mean False, which is the only affordable setting at H3 lengths). Standalone at 217k tokens: ~2.4x faster attention than the exact path and ~1.4x faster than kvi8s, at rel-rms 0.293 vs Sage 2.2's 0.055 on the outlier proxy (0.192 vs 0.039 plain gaussian) -- clearly the most approximate rung, gated on the operator's eyes. Because the fp4 kernel's log-sum-exp is not retrievable there is no K-blocked combine: phase 1 buffers K/V in bf16 and quantises once, so the block's peak during that one finalize is bf16 + fp4 before the bf16 is dropped. Needs SageAttention3's fp4 extension (fp4attn_cuda) importable; falls back to bf16 (exact) with a warning if it is not."}),
                 "trim_forward": ("BOOLEAN", {"default": True,
                                              "tooltip": "F5: run a copy of the stock model forward that releases the patch-embed and row buffers once the packed sequence is assembled (stock keeps them for the whole forward: 2.14 GiB at 216k tokens). Same math, exact. Applied only if the installed ComfyUI's forward matches the copy (source hash); otherwise skipped with a log line."}),
                 "self_check": ("BOOLEAN", {"default": False,
                                            "tooltip": "Diagnostic: on block 0's first call, run stock and streamed on the same input and log per-phase divergence. Costs one extra block forward."}),
+                "exact_av_rows": ("BOOLEAN", {"default": False,
+                                              "tooltip": "kvfp4s only. Route the TEXT and AUDIO query rows through an exact bf16 attention over a retained bf16 K/V, leaving the video rows (96.3% of the packed sequence, where the speed win lives) on the fp4 store. Audio is ~300 of 28,931 tokens, so the ~4% attention error that video's redundancy hides as slight ghosting lands audibly on a soundtrack carried by 1% of the sequence -- measured: audio is not quantised worse than video, it is merely far more sensitive, so the fix is routing rather than a better quantiser. Costs the bf16 K/V of the block in flight (~0.8 GiB at 29k tokens, 5.8 at 216k) and ~5% more attention time. No effect unless kv_store is kvfp4s."}),
             }
         }
 
@@ -979,7 +1327,8 @@ class H3StreamedBlocks:
                    "projection work at long lengths. See vram_lab.py for the ledger.")
 
     def patch(self, model, q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block, self_check=False, final_layer_chunk=16384,
-              final_layer_gemm="exact (whole GEMM, one fp32 buffer)", kv_store="bf16 (exact)", trim_forward=True):
+              final_layer_gemm="exact (whole GEMM, one fp32 buffer)", kv_store="bf16 (exact)", trim_forward=True,
+              exact_av_rows=False):
         dm = getattr(getattr(model, "model", None), "diffusion_model", None)
         blocks = getattr(dm, "blocks", None)
         if not blocks or not hasattr(blocks[0], "attn") or not hasattr(blocks[0].attn, "qkv_proj"):
@@ -987,10 +1336,16 @@ class H3StreamedBlocks:
             return (model,)
         cfg = {"q_chunk": q_chunk, "kv_chunk": kv_chunk, "mlp_chunk": mlp_chunk,
                "min_tokens": min_tokens, "kv_block": kv_block, "self_check": bool(self_check),
-               "kv_int8": str(kv_store).startswith("kvi8r"), "kv_sage": str(kv_store).startswith("kvi8s")}
+               "kv_int8": str(kv_store).startswith("kvi8r"), "kv_sage": str(kv_store).startswith("kvi8s"),
+               "kv_fp4": str(kv_store).startswith("kvfp4s"),
+               "kv_fp4_exact_av": bool(exact_av_rows),
+               "kv_mix": str(kv_store).startswith("kvmix")}
         if cfg["kv_sage"] and not _SAGE_OK:
             log.warning("H3StreamedBlocks: kv_store kvi8s needs the sageattention package; falling back to bf16 (exact)")
             cfg["kv_sage"] = False
+        if cfg["kv_fp4"] and _sage3_api() is None:
+            log.warning("H3StreamedBlocks: kv_store kvfp4s needs SageAttention3's fp4 extension (fp4attn_cuda, tried %s); falling back to bf16 (exact)", _SAGE3_DIR)
+            cfg["kv_fp4"] = False
         m = model.clone()
         for i, block in enumerate(blocks):
             m.set_model_patch_replace(_make_replacement(block, cfg, i), "dit", "double_block", i)
