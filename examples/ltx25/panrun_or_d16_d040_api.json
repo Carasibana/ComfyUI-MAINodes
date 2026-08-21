@@ -1,0 +1,329 @@
+{
+ "9000": {
+  "class_type": "VHS_LoadVideoPath",
+  "inputs": {
+   "video": "panrun_baseline_00001_.mp4",
+   "force_rate": 0,
+   "custom_width": 0,
+   "custom_height": 0,
+   "frame_load_cap": 0,
+   "skip_first_frames": 39,
+   "select_every_nth": 1,
+   "format": "None"
+  }
+ },
+ "9001": {
+  "class_type": "ImageFromBatch",
+  "inputs": {
+   "image": [
+    "9000",
+    0
+   ],
+   "batch_index": 0,
+   "length": 57
+  }
+ },
+ "9002": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "ltx25/ltx-2.5-video-vae-bf16.safetensors"
+  }
+ },
+ "9003": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "ltx25/ltx-2.5-audio-vae-bf16.safetensors"
+  }
+ },
+ "9004": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "ltx25/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+   "type": "ltxv",
+   "device": "default"
+  }
+ },
+ "9005": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "ltx25/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
+   "weight_dtype": "default"
+  }
+ },
+ "9006": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "[Shot 1] 2D anime, cel-shaded, cinematic, a lateral tracking shot pans steadily left-to-right following a young courier girl sprinting along the ridge of clay-tiled rooftops at dusk, warm orange sky behind chimneys, laundry lines and small banners streaming in the wind between rooftop poles, distant town lights below. She runs at full sprint with a satchel bouncing at her hip, the camera matching her speed in a smooth continuous pan. Mid-run she vaults a brick chimney and EXPLODES into a sudden spinning double-jump, her paper parasol snapping open in a flare of motion as she corkscrews over a gap between buildings, tiles scattering from her push-off, the camera still panning steadily through the burst. Then a fast whip-pan reframes ahead to the next rooftop just as she lands hard and slides down the sloped tiles on both feet, arm out for balance, banners and laundry whipping past her, coming to a crouched stop at the roof edge as the camera settles and the dusk wind carries loose leaves past.\n\noverall_soundscape: Steady wind and fluttering cloth from the banners and laundry lines; rapid rhythmic footfalls on clay tiles under a full sprint; a sharp scrape and clatter of loose tiles at the vault; a cloth-snap and airy whoosh as the parasol opens mid-spin; a whistling rush during the whip-pan; a long gritty tile-slide with small ceramic clinks ending in a firm stop; the wind settling with distant town ambience.\n\nnon_diegetic_music: N/A",
+   "clip": [
+    "9004",
+    0
+   ]
+  }
+ },
+ "9007": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "pc game, console game, video game, childish, ugly, low quality, blurry",
+   "clip": [
+    "9004",
+    0
+   ]
+  }
+ },
+ "9008": {
+  "class_type": "LTXVConditioning",
+  "inputs": {
+   "positive": [
+    "9006",
+    0
+   ],
+   "negative": [
+    "9007",
+    0
+   ],
+   "frame_rate": 48.0
+  }
+ },
+ "9009": {
+  "class_type": "ImageBatchRepeatInterleaving",
+  "inputs": {
+   "images": [
+    "9001",
+    0
+   ],
+   "repeats": 16
+  }
+ },
+ "9010": {
+  "class_type": "ImageFromBatch",
+  "inputs": {
+   "image": [
+    "9009",
+    0
+   ],
+   "batch_index": 0,
+   "length": 1
+  }
+ },
+ "9011": {
+  "class_type": "RepeatImageBatch",
+  "inputs": {
+   "image": [
+    "9010",
+    0
+   ],
+   "amount": 1
+  }
+ },
+ "9012": {
+  "class_type": "ImageBatch",
+  "inputs": {
+   "image1": [
+    "9011",
+    0
+   ],
+   "image2": [
+    "9009",
+    0
+   ]
+  }
+ },
+ "9013": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "9012",
+    0
+   ],
+   "vae": [
+    "9002",
+    0
+   ]
+  }
+ },
+ "9014": {
+  "class_type": "LTXVEmptyLatentAudio",
+  "inputs": {
+   "frames_number": 913,
+   "frame_rate": 48.0,
+   "batch_size": 1,
+   "audio_vae": [
+    "9003",
+    0
+   ]
+  }
+ },
+ "9015": {
+  "class_type": "LTXVConcatAVLatent",
+  "inputs": {
+   "video_latent": [
+    "9013",
+    0
+   ],
+   "audio_latent": [
+    "9014",
+    0
+   ]
+  }
+ },
+ "9016": {
+  "class_type": "RandomNoise",
+  "inputs": {
+   "noise_seed": 20260821
+  }
+ },
+ "9017": {
+  "class_type": "LTXVDualCFGGuider",
+  "inputs": {
+   "video_cfg": 1,
+   "audio_cfg": 1,
+   "model": [
+    "9005",
+    0
+   ],
+   "positive": [
+    "9008",
+    0
+   ],
+   "negative": [
+    "9008",
+    1
+   ]
+  }
+ },
+ "9018": {
+  "class_type": "KSamplerSelect",
+  "inputs": {
+   "sampler_name": "euler_ancestral"
+  }
+ },
+ "9019": {
+  "class_type": "ManualSigmas",
+  "inputs": {
+   "sigmas": "0.4000, 0.3412, 0.1986, 0.0000"
+  }
+ },
+ "9020": {
+  "class_type": "SamplerCustomAdvanced",
+  "inputs": {
+   "noise": [
+    "9016",
+    0
+   ],
+   "guider": [
+    "9017",
+    0
+   ],
+   "sampler": [
+    "9018",
+    0
+   ],
+   "sigmas": [
+    "9019",
+    0
+   ],
+   "latent_image": [
+    "9015",
+    0
+   ]
+  }
+ },
+ "9021": {
+  "class_type": "LTXVSeparateAVLatent",
+  "inputs": {
+   "av_latent": [
+    "9020",
+    0
+   ]
+  }
+ },
+ "9022": {
+  "class_type": "VAEDecodeTiled",
+  "inputs": {
+   "samples": [
+    "9021",
+    0
+   ],
+   "vae": [
+    "9002",
+    0
+   ],
+   "tile_size": 512,
+   "overlap": 64,
+   "temporal_size": 64,
+   "temporal_overlap": 16
+  }
+ },
+ "9023": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "images": [
+    "9022",
+    0
+   ],
+   "fps": 48.0,
+   "bit_depth": 8
+  }
+ },
+ "9024": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "video": [
+    "9023",
+    0
+   ],
+   "filename_prefix": "video/ltx25up/panrun_or_d16_d040_dilated",
+   "format": "auto",
+   "codec": "auto"
+  }
+ },
+ "9025": {
+  "class_type": "ImageFromBatch",
+  "inputs": {
+   "image": [
+    "9022",
+    0
+   ],
+   "batch_index": 1,
+   "length": 912
+  }
+ },
+ "9026": {
+  "class_type": "VHS_SelectEveryNthImage",
+  "inputs": {
+   "images": [
+    "9025",
+    0
+   ],
+   "select_every_nth": 16,
+   "skip_first_images": 0
+  }
+ },
+ "9027": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "images": [
+    "9026",
+    0
+   ],
+   "fps": 24.0,
+   "audio": [
+    "9000",
+    2
+   ],
+   "bit_depth": 8
+  }
+ },
+ "9028": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "video": [
+    "9027",
+    0
+   ],
+   "filename_prefix": "video/ltx25up/panrun_or_d16_d040",
+   "format": "auto",
+   "codec": "auto"
+  }
+ }
+}

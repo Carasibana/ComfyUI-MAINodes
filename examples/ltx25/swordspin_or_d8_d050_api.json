@@ -1,0 +1,329 @@
+{
+ "9000": {
+  "class_type": "VHS_LoadVideoPath",
+  "inputs": {
+   "video": "swordspin_fast_v001_00001_.mp4",
+   "force_rate": 0,
+   "custom_width": 0,
+   "custom_height": 0,
+   "frame_load_cap": 0,
+   "skip_first_frames": 16,
+   "select_every_nth": 1,
+   "format": "None"
+  }
+ },
+ "9001": {
+  "class_type": "ImageFromBatch",
+  "inputs": {
+   "image": [
+    "9000",
+    0
+   ],
+   "batch_index": 0,
+   "length": 57
+  }
+ },
+ "9002": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "ltx25/ltx-2.5-video-vae-bf16.safetensors"
+  }
+ },
+ "9003": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "ltx25/ltx-2.5-audio-vae-bf16.safetensors"
+  }
+ },
+ "9004": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "ltx25/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+   "type": "ltxv",
+   "device": "default"
+  }
+ },
+ "9005": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "ltx25/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
+   "weight_dtype": "default"
+  }
+ },
+ "9006": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "[Shot 1] 2D anime, cel-shaded, cinematic, a medium-wide shot frames a young swordswoman alone on the flat worn flagstones of a temple courtyard at golden hour, warm low sunlight raking across the stone and throwing her long shadow to one side, a weathered wooden shrine gate and a gnarled cherry tree standing behind her against a clear amber sky. She wears a fitted indigo gi with white trim over dark grey hakama trousers gathered at the ankle, split-toe canvas shoes, and a long crimson sash whose tails hang to her knees; her black hair is tied in a high ponytail with a crimson ribbon. She performs a continuous spinning sword attack: pivoting on the ball of her left foot with her right foot crossing and re-planting on the stone between turns, she whirls her whole body around in complete fast rotations at a constant rapid rate of about one full turn per second from the first frame to the last, her katana held out at chest height in both hands so the bright steel blade sweeps a flat wide horizontal arc around her with every rotation. Her ponytail, the crimson ribbon and the tails of her sash whip outward and trail behind her spin, and a handful of loose pink cherry petals scatter outward across the flagstones on the air she stirs. The camera holds a Static Shot at chest height for the whole clip; the courtyard stays fixed while only the swordswoman, her blade, her hair, her sash and the petals move. Every frame is crisp and sharp as if shot at a very high shutter speed, the blade edge and her arms and legs held in fine clean detail at every point of the rotation, deep depth of field front to back.",
+   "clip": [
+    "9004",
+    0
+   ]
+  }
+ },
+ "9007": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "pc game, console game, video game, childish, ugly, low quality, blurry",
+   "clip": [
+    "9004",
+    0
+   ]
+  }
+ },
+ "9008": {
+  "class_type": "LTXVConditioning",
+  "inputs": {
+   "positive": [
+    "9006",
+    0
+   ],
+   "negative": [
+    "9007",
+    0
+   ],
+   "frame_rate": 24.0
+  }
+ },
+ "9009": {
+  "class_type": "ImageBatchRepeatInterleaving",
+  "inputs": {
+   "images": [
+    "9001",
+    0
+   ],
+   "repeats": 8
+  }
+ },
+ "9010": {
+  "class_type": "ImageFromBatch",
+  "inputs": {
+   "image": [
+    "9009",
+    0
+   ],
+   "batch_index": 0,
+   "length": 1
+  }
+ },
+ "9011": {
+  "class_type": "RepeatImageBatch",
+  "inputs": {
+   "image": [
+    "9010",
+    0
+   ],
+   "amount": 1
+  }
+ },
+ "9012": {
+  "class_type": "ImageBatch",
+  "inputs": {
+   "image1": [
+    "9011",
+    0
+   ],
+   "image2": [
+    "9009",
+    0
+   ]
+  }
+ },
+ "9013": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "9012",
+    0
+   ],
+   "vae": [
+    "9002",
+    0
+   ]
+  }
+ },
+ "9014": {
+  "class_type": "LTXVEmptyLatentAudio",
+  "inputs": {
+   "frames_number": 457,
+   "frame_rate": 24.0,
+   "batch_size": 1,
+   "audio_vae": [
+    "9003",
+    0
+   ]
+  }
+ },
+ "9015": {
+  "class_type": "LTXVConcatAVLatent",
+  "inputs": {
+   "video_latent": [
+    "9013",
+    0
+   ],
+   "audio_latent": [
+    "9014",
+    0
+   ]
+  }
+ },
+ "9016": {
+  "class_type": "RandomNoise",
+  "inputs": {
+   "noise_seed": 20260821
+  }
+ },
+ "9017": {
+  "class_type": "LTXVDualCFGGuider",
+  "inputs": {
+   "video_cfg": 1,
+   "audio_cfg": 1,
+   "model": [
+    "9005",
+    0
+   ],
+   "positive": [
+    "9008",
+    0
+   ],
+   "negative": [
+    "9008",
+    1
+   ]
+  }
+ },
+ "9018": {
+  "class_type": "KSamplerSelect",
+  "inputs": {
+   "sampler_name": "euler_ancestral"
+  }
+ },
+ "9019": {
+  "class_type": "ManualSigmas",
+  "inputs": {
+   "sigmas": "0.5000, 0.4264, 0.2482, 0.0000"
+  }
+ },
+ "9020": {
+  "class_type": "SamplerCustomAdvanced",
+  "inputs": {
+   "noise": [
+    "9016",
+    0
+   ],
+   "guider": [
+    "9017",
+    0
+   ],
+   "sampler": [
+    "9018",
+    0
+   ],
+   "sigmas": [
+    "9019",
+    0
+   ],
+   "latent_image": [
+    "9015",
+    0
+   ]
+  }
+ },
+ "9021": {
+  "class_type": "LTXVSeparateAVLatent",
+  "inputs": {
+   "av_latent": [
+    "9020",
+    0
+   ]
+  }
+ },
+ "9022": {
+  "class_type": "VAEDecodeTiled",
+  "inputs": {
+   "samples": [
+    "9021",
+    0
+   ],
+   "vae": [
+    "9002",
+    0
+   ],
+   "tile_size": 512,
+   "overlap": 64,
+   "temporal_size": 64,
+   "temporal_overlap": 16
+  }
+ },
+ "9023": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "images": [
+    "9022",
+    0
+   ],
+   "fps": 24.0,
+   "bit_depth": 8
+  }
+ },
+ "9024": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "video": [
+    "9023",
+    0
+   ],
+   "filename_prefix": "video/ltx25up/swordspin_or_d8_d050_dilated",
+   "format": "auto",
+   "codec": "auto"
+  }
+ },
+ "9025": {
+  "class_type": "ImageFromBatch",
+  "inputs": {
+   "image": [
+    "9022",
+    0
+   ],
+   "batch_index": 1,
+   "length": 456
+  }
+ },
+ "9026": {
+  "class_type": "VHS_SelectEveryNthImage",
+  "inputs": {
+   "images": [
+    "9025",
+    0
+   ],
+   "select_every_nth": 8,
+   "skip_first_images": 0
+  }
+ },
+ "9027": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "images": [
+    "9026",
+    0
+   ],
+   "fps": 24.0,
+   "audio": [
+    "9000",
+    2
+   ],
+   "bit_depth": 8
+  }
+ },
+ "9028": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "video": [
+    "9027",
+    0
+   ],
+   "filename_prefix": "video/ltx25up/swordspin_or_d8_d050",
+   "format": "auto",
+   "codec": "auto"
+  }
+ }
+}
