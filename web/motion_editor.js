@@ -77,7 +77,9 @@ class MotionEditor {
     }
     this.buildDOM();
     this.redrawAll();
-    this.restoreLast();
+    // the node's id is final only after the loader has placed it; ask then
+    setTimeout(() => this.restoreLast(), 300);
+    setTimeout(() => { if (!this.frames.strip.length) this.restoreLast(); }, 2000);
   }
   // A fresh page load asks the server for this node's last payload (filmstrip,
   // profile, hold curve). Same lifetime as ComfyUI's cache: gone after a restart.
@@ -257,6 +259,12 @@ class MotionEditor {
       fontFamily: "sans-serif", fontSize: "11px", color: "#ccc",
       width: "100%", boxSizing: "border-box" });
     root.dataset.h3 = "editor-root";
+    // A DEFINITE width. The DOM widget's container shrink-wraps to content and
+    // the canvases size themselves from their client width, so without this
+    // the rows panel and the timeline collapse each other (seen headless
+    // 2026-08-22: 558 -> 268 px, and drags overshooting to the last frame).
+    root.style.width = Math.max(600, (this.node.size?.[0] || 640) - 24) + "px";
+    root.style.minWidth = "0";
     root.addEventListener("pointerdown", (e) => e.stopPropagation());
     root.addEventListener("keydown", (e) => e.stopPropagation());
     root.tabIndex = 0;
@@ -395,13 +403,14 @@ class MotionEditor {
     wrap.innerHTML = "";
     const blocks = this.state.blocks;
     if (!blocks.length) return;
-    const head = this.el("div", { display: "grid", gridTemplateColumns: "22px 1fr 64px 64px 56px 56px 56px 36px 40px 46px",
+    wrap.style.minWidth = "0"; wrap.style.overflowX = "auto";
+    const head = this.el("div", { display: "grid", gridTemplateColumns: "22px minmax(120px,1fr) 64px 64px 56px 56px 56px 36px 40px 46px",
       gap: "4px", color: "#777", fontSize: "10px", padding: "0 2px" }, wrap);
     for (const h of ["#", "range", "in", "out", "hold", "feather", "strength", "mute", "", ""]) this.el("span", {}, head, h);
     const t = (f) => (f / this.fps).toFixed(2) + "s";
     blocks.forEach((b, i) => {
       const col = BLOCK_COLORS[i % BLOCK_COLORS.length];
-      const row = this.el("div", { display: "grid", gridTemplateColumns: "22px 1fr 64px 64px 56px 56px 56px 36px 40px 46px",
+      const row = this.el("div", { display: "grid", gridTemplateColumns: "22px minmax(120px,1fr) 64px 64px 56px 56px 56px 36px 40px 46px",
         gap: "4px", alignItems: "center", padding: "2px", borderRadius: "3px",
         background: b.id === this.sel ? "#2a3a2a" : "#222", opacity: b.mute ? "0.55" : "1" }, wrap);
       row.onclick = () => { this.sel = b.id; this.redrawAll(); };
@@ -1076,6 +1085,10 @@ class MotionEditor {
   }
 
   redrawAll() {
+    if (this.root) {
+      const want = Math.max(600, (this.node.size?.[0] || 640) - 24) + "px";
+      if (this.root.style.width !== want) this.root.style.width = want;
+    }
     this.buildRows();
     this.drawTimeline();
     this.drawLane();

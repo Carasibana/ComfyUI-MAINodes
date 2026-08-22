@@ -56,6 +56,30 @@ and the finalize pass are two executions by design.
 
 ## MAI Motion Editor additions
 
+Verified headless against a lab instance (2026-08-22, Playwright): run-to-here
+renders base + oracle + filmstrip and holds the graph; a drag on the block lane
+creates exactly the dragged range (snapped to the token grid); the live envelope
+drives the dilated clock, the play loop and the price before any render; the
+modal applies as one undo step; run-from-here resumes at the editor with the
+whole base chain from ComfyUI's cache (14 nodes cached, editor + downstream
+executed); a fresh page load restores the last run's filmstrip from the server.
+
+- **run to here / run from here** on the node: the first is partial execution
+  (nothing downstream), the second a normal queue where unchanged upstream
+  nodes come from the cache, so it resumes at this node. Editing a row then
+  "run from here" is the retry loop.
+- **Undo**: the node's undo/redo is the fine-grained one (every row edit, drag,
+  modal apply). ComfyUI's own ctrl+z jumps back to the graph's last snapshot
+  (the widget re-hydrates from it and says so); the graph tracker does not see
+  edits made inside the widget individually, so ctrl+shift+z at graph level
+  has nothing to redo after that. Use the node's buttons or ctrl+z/ctrl+shift+z
+  while the editor has focus.
+- **hold_until_edited** (default on): with no rows, a run stops after the
+  filmstrip; lay out rows and run again.
+- **Cache reality**: ComfyUI keeps only the previous prompt's outputs, so
+  running other graphs in between evicts the base pass and the next
+  run-from-here re-renders it.
+
 - **Play** (space): the filmstrip plays at fps; in the dilated clock each
   frame lingers for its hold, so the slowdown is seen, not inferred.
 - **clock: world / dilated**: the timeline's x-axis reads as "when" (frame)
