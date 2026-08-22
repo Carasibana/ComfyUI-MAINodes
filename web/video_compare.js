@@ -35,12 +35,16 @@ class CompareWidget {
     this.build();
   }
   build() {
+    // The root fills the box the node gives the widget; the stage takes what
+    // is left after the two bars and never grows past it (videos fit inside).
     const root = el("div", { fontFamily: "system-ui, sans-serif", fontSize: "12px", color: "#ddd",
-      background: "#1b1b1b", padding: "6px", borderRadius: "6px", userSelect: "none" });
-    this.bar = el("div", { display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center", marginBottom: "6px" }, root);
-    this.stage = el("div", { position: "relative", width: "100%", background: "#000", minHeight: "120px" }, root);
-    this.crow = el("div", { display: "flex", gap: "6px", alignItems: "center", marginTop: "6px" }, root);
-    this.hint = el("div", { color: "#888", marginTop: "4px" }, root,
+      background: "#1b1b1b", padding: "6px", borderRadius: "6px", userSelect: "none",
+      boxSizing: "border-box", width: "100%", height: "100%", minHeight: "360px",
+      display: "flex", flexDirection: "column", overflow: "hidden" });
+    this.bar = el("div", { display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center", marginBottom: "6px", flex: "0 0 auto" }, root);
+    this.stage = el("div", { position: "relative", width: "100%", background: "#000", flex: "1 1 auto", minHeight: "0", overflow: "hidden" }, root);
+    this.crow = el("div", { display: "flex", gap: "6px", alignItems: "center", marginTop: "6px", flex: "0 0 auto" }, root);
+    this.hint = el("div", { color: "#888", marginTop: "4px", flex: "0 0 auto", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, root,
       "queue once to load previews. hover = hear, click = lock audio, ★ = winner (next queue passes it through), space play, ←/→ step, F flicker, 1-6 pick A then B");
     const modes = { side: "Side by side", flip: "Flip A/B", wipe: "Wipe", grid: "Grid" };
     this.modeBtns = {};
@@ -53,8 +57,9 @@ class CompareWidget {
     this.wipe.oninput = () => this.stage.style.setProperty("--w", this.wipe.value + "%");
     root.tabIndex = 0;
     root.addEventListener("keydown", (e) => this.key(e));
-    this.node.addDOMWidget("mai_compare_ui", "div", root, { serialize: false });
-    const sz = this.node.size; this.node.setSize([Math.max(sz[0], 720), Math.max(sz[1], 520)]);
+    const w = this.node.addDOMWidget("mai_compare_ui", "div", root, { serialize: false });
+    if (w) w.computeSize = (width) => [width, 380];      // minimum; the node's height gives the rest
+    const sz = this.node.size; this.node.setSize([Math.max(sz[0], 720), Math.max(sz[1], 560)]);
     this.root = root;
     this.setMode("side");
   }
@@ -101,7 +106,7 @@ class CompareWidget {
     this.layout();
   }
   pane(x, idx, style) {
-    const p = el("div", Object.assign({ position: "relative", overflow: "hidden", background: "#000" }, style), this.stage);
+    const p = el("div", Object.assign({ position: "relative", overflow: "hidden", background: "#000", height: "100%" }, style), this.stage);
     p.appendChild(x.video);
     const tag = el("span", { position: "absolute", left: "6px", top: "4px", padding: "1px 6px", background: "rgba(0,0,0,.6)",
       borderRadius: "3px", fontSize: "11px", pointerEvents: "none" }, p,
@@ -121,17 +126,18 @@ class CompareWidget {
     for (const x of this.vids) x.pane = null;
     if (!this.vids.length) return;
     const n = this.vids.length;
+    this.stage.style.aspectRatio = "";
     if (this.mode === "grid" || n === 1) {
-      const cols = n <= 2 ? n : n <= 4 ? 2 : 3;
-      Object.assign(this.stage.style, { display: "grid", gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: "3px" });
-      this.vids.forEach((x, i) => this.pane(x, i, { aspectRatio: `${x.item.width}/${x.item.height}` }));
+      const cols = n <= 2 ? n : n <= 4 ? 2 : 3, rows = Math.ceil(n / cols);
+      Object.assign(this.stage.style, { display: "grid", gridTemplateColumns: `repeat(${cols}, 1fr)`,
+        gridTemplateRows: `repeat(${rows}, 1fr)`, gap: "3px" });
+      this.vids.forEach((x, i) => this.pane(x, i, { minHeight: "0", minWidth: "0" }));
     } else {
       const [a, b] = this.pair.map((i) => this.vids[i]);
       Object.assign(this.stage.style, { display: this.mode === "side" ? "grid" : "block",
-        gridTemplateColumns: this.mode === "side" ? "1fr 1fr" : "", gap: "3px",
-        aspectRatio: this.mode === "side" ? `${2 * a.item.width}/${a.item.height}` : `${a.item.width}/${a.item.height}` });
-      const pa = this.pane(a, this.pair[0], this.mode === "side" ? {} : { position: "absolute", inset: "0" });
-      const pb = this.pane(b, this.pair[1], this.mode === "side" ? {} : { position: "absolute", inset: "0" });
+        gridTemplateColumns: this.mode === "side" ? "1fr 1fr" : "", gridTemplateRows: "1fr", gap: "3px" });
+      const pa = this.pane(a, this.pair[0], this.mode === "side" ? { minHeight: "0", minWidth: "0" } : { position: "absolute", inset: "0" });
+      const pb = this.pane(b, this.pair[1], this.mode === "side" ? { minHeight: "0", minWidth: "0" } : { position: "absolute", inset: "0" });
       if (this.mode === "flip") { pb.style.display = this.showB ? "" : "none"; pa.style.display = this.showB ? "none" : ""; }
       if (this.mode === "wipe") {
         this.stage.style.setProperty("--w", this.wipe.value + "%");

@@ -27,14 +27,15 @@ class MAIVideoCompare:
 
     @classmethod
     def INPUT_TYPES(cls):
+        req = {"winner": ("INT", {"default": 1, "min": 1, "max": 6,
+                          "tooltip": "set by the viewer's star; which source winner_video passes through"}),
+               "preview_crf": ("INT", {"default": 23, "min": 10, "max": 40})}
         opt = {}
         for i in range(1, 7):
             opt[f"video_{i}"] = ("VIDEO",)
+        for i in range(1, 7):
             opt[f"label_{i}"] = ("STRING", {"default": ""})
-        opt["winner"] = ("INT", {"default": 1, "min": 1, "max": 6,
-                          "tooltip": "set by the viewer's star; which source winner_video passes through"})
-        opt["preview_crf"] = ("INT", {"default": 23, "min": 10, "max": 40})
-        return {"required": {}, "optional": opt, "hidden": {"unique_id": "UNIQUE_ID"}}
+        return {"required": req, "optional": opt, "hidden": {"unique_id": "UNIQUE_ID"}}
 
     RETURN_TYPES = ("VIDEO", "INT", "STRING")
     RETURN_NAMES = ("winner_video", "winner_index", "manifest")
@@ -90,7 +91,7 @@ class MAISeedHunter(MAIVideoCompare):
     def INPUT_TYPES(cls):
         t = MAIVideoCompare.INPUT_TYPES()
         for i in range(1, 7):
-            t["optional"][f"seed_{i}"] = ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
+            t["optional"][f"seed_{i}"] = ("INT", {"default": 0, "min": 0, "max": 2**53 - 1,
                                          "tooltip": f"the seed candidate {i} ran on"})
         return t
 
