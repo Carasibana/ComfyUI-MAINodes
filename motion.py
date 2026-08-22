@@ -472,7 +472,7 @@ def _cost_widgets(with_fps=False):
                        "tooltip": "seconds per step from a baseline render of this clip; 0 skips the minutes estimate"})
     w["est_steps"] = ("INT", {"default": 18, "min": 1, "max": 100,
                       "tooltip": "steps the regen pass will actually run (total_steps x inject)"})
-    w["overhead_s"] = ("FLOAT", {"default": OVERHEAD_S, "min": 0.0, "max": 600.0, "step": 1.0,
+    w["overhead_s"] = ("FLOAT", {"default": OVERHEAD_S, "min": 0.0, "max": 600.0, "step": 0.1,
                        "tooltip": "fixed non-sampling seconds per render (setup, VAE encode/decode). "
                                   "40 measured at 1.5 MP on a warm instance; take it from the gap "
                                   "between your own 1-step and 2-step wall times"})
