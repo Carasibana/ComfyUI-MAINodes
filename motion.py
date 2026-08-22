@@ -3353,7 +3353,7 @@ class H3MotionEditor:
         state = {}
         if editor_state.strip():
             state = json.loads(editor_state)
-        blocks = state.get("blocks") or []
+        blocks = [b for b in (state.get("blocks") or []) if not b.get("mute")]   # muted rows are kept, not compiled
 
         oracle = None
         if oracle_hold_map.strip():
