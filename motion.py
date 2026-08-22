@@ -769,14 +769,6 @@ class H3JerkOracle:
                                   "SMOOTH synthetic content the centroid is nearly noise-free, "
                                   "so its contrast is not comparable to the value domain's "
                                   "there. Ablate it, do not assume it."}),
-            "model_profile": (["minimax-h3"] + [k for k in _profile_ids() if k != "minimax-h3"],
-                              {"default": "minimax-h3",
-                               "tooltip": "which model's latent is wired in. minimax-h3 is the shipped path, "
-                                          "bit-identical. Any other preset reads THAT model's video latent "
-                                          "(LTX-2.5: 128 channels, 1+8k token clock; Wan 2.2: 16 channels, "
-                                          "1+4k) with the same planner, no phase normalisation, and emits "
-                                          "holds per SOURCE frame as before - wire into H3 Clock Remap or "
-                                          "straight into H3 Time Smear."}),
             "abstain_below": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10.0, "step": 0.1,
                        "tooltip": "(alpha) ABSOLUTE gate, 0 = off (shipped behaviour). "
                                   "q is a quantile, so the oracle always dilates the top "
@@ -788,6 +780,14 @@ class H3JerkOracle:
                                   "about 2x higher on a jerky clip than a smooth one, so "
                                   "try 1.5-2.5 and check against a clip you know is calm."}),
             **_cost_widgets(with_fps=True),
+            "model_profile": (["minimax-h3"] + [k for k in _profile_ids() if k != "minimax-h3"],
+                              {"default": "minimax-h3",
+                               "tooltip": "which model's latent is wired in. minimax-h3 is the shipped path, "
+                                          "bit-identical. Any other preset reads THAT model's video latent "
+                                          "(LTX-2.5: 128 channels, 1+8k token clock; Wan 2.2: 16 channels, "
+                                          "1+4k) with the same planner, no phase normalisation, and emits "
+                                          "holds per SOURCE frame as before - wire into H3 Clock Remap or "
+                                          "straight into H3 Time Smear."}),
         }}
 
     RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "STRING", "STRING")
