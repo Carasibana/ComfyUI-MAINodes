@@ -257,7 +257,7 @@ class MotionEditor {
       display: "flex", flexDirection: "column", gap: "4px",
       background: "#1b1b1b", padding: "6px", borderRadius: "6px",
       fontFamily: "sans-serif", fontSize: "11px", color: "#ccc",
-      width: "100%", boxSizing: "border-box" });
+      width: "100%", height: "100%", boxSizing: "border-box", overflowY: "auto", overflowX: "hidden" });
     root.dataset.h3 = "editor-root";
     // A DEFINITE width. The DOM widget's container shrink-wraps to content and
     // the canvases size themselves from their client width, so without this
@@ -288,7 +288,7 @@ class MotionEditor {
 
     // toolbar
     const tb = this.el("div", { display: "flex", gap: "5px", flexWrap: "wrap",
-                                alignItems: "center" }, root);
+                                alignItems: "center", flex: "0 0 auto" }, root);
     this.btn(tb, "+ block", () => {
       this.pushUndo();
       const a = clamp(this.cur, 0, this.length - 9);
@@ -348,21 +348,21 @@ class MotionEditor {
     this.setTool("brush");
 
     // edit rows: one line per block, above the timeline (DAW-style clip list)
-    this.rowsWrap = this.el("div", { display: "flex", flexDirection: "column", gap: "2px" }, root);
+    this.rowsWrap = this.el("div", { display: "flex", flexDirection: "column", gap: "2px", flex: "0 0 auto" }, root);
     this.rowsWrap.dataset.h3 = "rows";
-    this.statusEl = this.el("div", { color: "#9ab", minHeight: "14px", fontSize: "11px" }, root,
+    this.statusEl = this.el("div", { color: "#9ab", minHeight: "14px", fontSize: "11px", flex: "0 0 auto" }, root,
       "drag on the block lane to create a block; rows above list every edit");
 
     // timeline
     this.tl = this.el("canvas", { width: "100%", cursor: "crosshair",
-                                  borderRadius: "4px" }, root);
+                                  borderRadius: "4px", flex: "0 0 auto" }, root);
     this.tl.dataset.h3 = "timeline";
     this.tl.height = 130;
     this.bindTimeline();
 
     // automation lane
     this.laneWrap = this.el("div", { display: "none", flexDirection: "column",
-                                     gap: "2px" }, root);
+                                     gap: "2px", flex: "0 0 auto" }, root);
     this.laneLabel = this.el("div", {}, this.laneWrap, "automation");
     this.lane = this.el("canvas", { width: "100%", borderRadius: "4px",
                                     cursor: "crosshair" }, this.laneWrap);
@@ -370,8 +370,9 @@ class MotionEditor {
     this.bindLane();
 
     // paint area
-    this.paintWrap = this.el("div", { position: "relative", width: "100%" }, root);
-    this.paint = this.el("canvas", { width: "100%", borderRadius: "4px",
+    this.paintWrap = this.el("div", { position: "relative", width: "100%", flex: "0 0 auto",
+                                      display: "flex", justifyContent: "center", background: "#000", borderRadius: "4px" }, root);
+    this.paint = this.el("canvas", { height: "340px", width: "auto", maxWidth: "100%", borderRadius: "4px",
                                      cursor: "none", display: "block" },
                          this.paintWrap);
     this.paint.height = 300;
@@ -385,13 +386,13 @@ class MotionEditor {
     // dials
     this.dials = this.el("div", { display: "flex", gap: "10px",
                                   flexWrap: "wrap", alignItems: "center",
-                                  minHeight: "22px" }, root);
-    this.priceEl = this.el("div", { color: "#9c9", minHeight: "14px" }, root);
+                                  minHeight: "22px", flex: "0 0 auto" }, root);
+    this.priceEl = this.el("div", { color: "#9c9", minHeight: "14px", flex: "0 0 auto" }, root);
     this.priceEl.dataset.h3 = "price"; this.statusEl.dataset.h3 = "status";
 
     this.node.addDOMWidget("h3_editor_ui", "div", root, { serialize: false });
     const sz = this.node.size;
-    this.node.setSize([Math.max(sz[0], 640), Math.max(sz[1], 760)]);
+    this.node.setSize([Math.max(sz[0], 640), Math.max(sz[1], 980)]);
     this.root = root;
     new ResizeObserver(() => this.redrawAll()).observe(root);
     this.watchWidget();
