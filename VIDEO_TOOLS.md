@@ -56,6 +56,10 @@ and the finalize pass are two executions by design.
 
 ## MAI Motion Editor additions
 
+Alpha. The editor's rows, modal, undo and run buttons have only been exercised by
+an automated browser so far; expect rough edges, and treat anything surprising
+as a bug to report rather than a design choice.
+
 Verified headless against a lab instance (2026-08-22, Playwright): run-to-here
 renders base + oracle + filmstrip and holds the graph; a drag on the block lane
 creates exactly the dragged range (snapped to the token grid); the live envelope

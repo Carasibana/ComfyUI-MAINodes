@@ -1,7 +1,7 @@
 """MAIVideoOut: the file, the sidecars, the meta, the every-nth. No GPU; encode via av."""
 import json, os, sys, types
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, os.path.dirname(HERE))
-sys.path.insert(0, "/mnt/work/ai/apps/ComfyUI")
+sys.path.insert(0, os.environ.get("COMFYUI_DIR", "/mnt/work/ai/apps/ComfyUI"))
 import torch
 
 
