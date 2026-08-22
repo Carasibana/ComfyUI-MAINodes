@@ -83,9 +83,12 @@ class H3ClockRemap:
                                  f"known: {sorted(profiles)}")
             prof = profiles[model_profile]
         holds_out = remap_holds(holds_in, prof)
-        holds_pad, total, pad = pad_to_legal(holds_out, prof["legal"])
-        rep = _report(holds_in, holds_pad, total, pad, prof)
-        out = {"holds": holds_pad, "world_len": m.get("world_len", len(holds_in)),
+        # padding to the legal grid is H3 Time Smear's job (it reads the grid
+        # carried below); the map itself stays unpadded so minimax-h3 is the
+        # exact identity and a remapped map can be cropped before smearing.
+        _, total, pad = pad_to_legal(holds_out, prof["legal"])
+        rep = _report(holds_in, holds_out, total, pad, prof)
+        out = {"holds": holds_out, "world_len": m.get("world_len", len(holds_in)),
                "profile": prof["id"], "legal": list(prof["legal"]), "fps": prof["fps"],
                "source_holds": holds_in}
         print("[MAINodes] H3ClockRemap " + rep.replace("\n", " | "))
@@ -146,6 +149,13 @@ class H3LoadHoldMap:
         return {"required": {
             "path": ("STRING", {"default": "video/derope",
                      "tooltip": "SaveVideo prefix of the arm whose clock you want, or a .json path"}),
+        }, "optional": {
+            "start": ("INT", {"default": 0, "min": 0, "max": 100000,
+                      "tooltip": "crop the clock to a window of source frames (for a model whose "
+                                 "per-pass cap the whole clip exceeds); feed the SAME window of "
+                                 "frames to H3 Time Smear (ImageFromBatch start/length)"}),
+            "length": ("INT", {"default": 0, "min": 0, "max": 100000,
+                       "tooltip": "window length in source frames; 0 = to the end"}),
         }}
 
     RETURN_TYPES = ("STRING", "INT", "STRING")
@@ -153,7 +163,7 @@ class H3LoadHoldMap:
     FUNCTION = "load"
     CATEGORY = "image/minimax/motion"
 
-    def load(self, path):
+    def load(self, path, start=0, length=0):
         import glob
         import folder_paths
         root = folder_paths.get_output_directory()
@@ -171,7 +181,15 @@ class H3LoadHoldMap:
                  "world_len": int(data.get("world_len", len(data["holds"])))}
         if "source_holds" in data:          # a remapped map: hand back the ORIGINAL clock
             clock["holds"] = [int(h) for h in data["source_holds"]]
-        print(f"[MAINodes] H3LoadHoldMap <- {path} ({clock['world_len']} world frames)")
+        if start or length:
+            end = start + length if length else len(clock["holds"])
+            clock["holds"] = clock["holds"][start:end]
+            clock["world_len"] = len(clock["holds"])
+            clock["window"] = [int(start), int(end)]
+            if not clock["holds"]:
+                raise ValueError(f"window {start}:{end} is outside the {len(data['holds'])}-frame clock")
+        print(f"[MAINodes] H3LoadHoldMap <- {path} ({clock['world_len']} world frames"
+              + (f", window {clock['window']}" if "window" in clock else "") + ")")
         return (json.dumps(clock), clock["world_len"], path)
 
 

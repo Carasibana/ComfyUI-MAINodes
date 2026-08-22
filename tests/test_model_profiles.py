@@ -53,7 +53,9 @@ def test_clock_remap_node_carries_grid_and_reports_unmeasured():
     out, length, rep, prof = node.remap(hm, "ltx-2.5")
     o = json.loads(out)
     assert o["legal"] == [8, 1] and o["profile"] == "ltx-2.5" and o["source_holds"][2] == 4
-    assert sum(o["holds"]) == length and (length - 1) % 8 == 0
+    ident = json.loads(node.remap(hm, "minimax-h3")[0])
+    assert ident["holds"] == json.loads(hm)["holds"]                  # exact identity, no pad
+    assert sum(o["holds"]) <= length and (length - 1) % 8 == 0 and length - sum(o["holds"]) < 8
     assert "UNMEASURED" not in rep
     out2, length2, rep2, _ = node.remap(hm, derope_any.CUSTOM, custom_block=4, custom_hold_scale=2,
                                         custom_legal_step=4, custom_legal_offset=1, custom_fps=16.0)
@@ -92,6 +94,8 @@ def test_sidecar_round_trip(tmp_path):
         assert got["holds"] == [1, 1, 4, 4, 2, 1] and n == 6 and "legal" not in got   # the ORIGINAL clock travels
         hm2, _, _ = derope_any.H3LoadHoldMap().load(path)
         assert json.loads(hm2)["holds"] == [1, 1, 4, 4, 2, 1]
+        hm3, n3, _ = derope_any.H3LoadHoldMap().load(path, start=2, length=3)
+        assert json.loads(hm3)["holds"] == [4, 4, 2] and n3 == 3 and json.loads(hm3)["window"] == [2, 5]
     finally:
         del sys.modules["folder_paths"]
 

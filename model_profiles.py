@@ -52,9 +52,10 @@ PRESETS = {
              "clips are windows, spliced"),
     "wan-2.2 (unmeasured)": dict(
         name="Wan 2.2", block=4, hold_scale=4, legal=(4, 1), fps=16,
-        cap_seconds=None, measured=False, latent=dict(channels=16, first=1, block=4),
-        note="placeholder from the model's published grid (4x time, 4k+1 frames, 16 fps); "
-             "hold_scale is a guess until a ladder is run. Treat every number as unmeasured"),
+        cap_seconds=5.0, measured=False, latent=dict(channels=16, first=1, block=4),
+        note="placeholder from the model's published grid (4x time, 4k+1 frames, 16 fps, "
+             "trained at 81 frames = 5 s so that is the cap); hold_scale is a guess until a "
+             "ladder is run. Treat every number as unmeasured"),
 }
 
 FIELDS = ("name", "block", "hold_scale", "legal", "fps", "cap_seconds", "measured", "note", "latent")
