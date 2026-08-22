@@ -3344,10 +3344,47 @@ class H3MotionEditor:
             strip.append({"filename": name_s, "subfolder": sub, "type": "temp"})
         return paint, strip
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, fps=None, ramp=None, bridge=None, invert_mask=None,
+                        outside_blocks=None, paint_res=None, hold_until_edited=None):
+        # The frontend has been seen to submit this node's widget values shifted
+        # by a slot after interactive edits (2026-08-21). The editor_state JSON
+        # is the real input and is self-describing; the chrome values are
+        # coerced in compile() with a warning rather than failing the prompt.
+        return True
+
+    @staticmethod
+    def _coerce(name, value, default, kind, choices=None, lo=None, hi=None):
+        try:
+            if kind is bool:
+                v = value if isinstance(value, bool) else str(value).lower() in ("true", "1", "yes")
+            elif kind is int:
+                v = int(float(value))
+                if lo is not None and (v < lo or v > hi):
+                    raise ValueError
+            elif kind is str:
+                v = str(value)
+                if choices and v not in choices:
+                    raise ValueError
+            else:
+                v = value
+            return v
+        except (TypeError, ValueError):
+            print(f"[MAINodes] H3MotionEditor: {name}={value!r} is not usable (widget values shifted?); using {default!r}")
+            return default
+
     def compile(self, images, editor_state, samples=None, oracle_hold_map="",
                 fps=24, ramp=True, bridge=8, invert_mask=False,
                 outside_blocks="baseline", paint_res=512, hold_until_edited=True,
                 unique_id=None):
+        fps = self._coerce("fps", fps, 24, int, lo=1, hi=120)
+        ramp = self._coerce("ramp", ramp, True, bool)
+        bridge = self._coerce("bridge", bridge, 8, int, lo=0, hi=20)
+        invert_mask = self._coerce("invert_mask", invert_mask, False, bool)
+        outside_blocks = self._coerce("outside_blocks", outside_blocks, "baseline", str,
+                                      choices=("baseline", "regenerated"))
+        paint_res = self._coerce("paint_res", paint_res, 512, int, lo=128, hi=1024)
+        hold_until_edited = self._coerce("hold_until_edited", hold_until_edited, True, bool)
         import torch.nn.functional as F
 
         images = images.detach().float().cpu()
