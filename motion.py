@@ -1606,13 +1606,23 @@ class H3ManualHoldMap:
             a, b = max(0, to_frame(a_s)), min(length - 1, to_frame(b_s))
             assert a <= b, f"empty range '{part}' after clamping to the clip"
             spans.append((a, b, h))
-        assert spans, "give at least one range, e.g. '36-60' or '1.5s-2.4s:4'"
+        wired = bool(oracle_hold_map.strip())
+        assert spans or wired, ("give at least one range, e.g. '36-60' or "
+                                "'1.5s-2.4s:4' (or wire the oracle)")
 
         frame_holds = np.ones(length, int)
-        if oracle_hold_map.strip():
+        passthrough = False
+        if wired:
             oracle = json.loads(oracle_hold_map)["holds"]
             assert len(oracle) == length, (
                 f"oracle map covers {len(oracle)} frames, length is {length}")
+            if not spans:
+                # wired oracle, nothing typed yet: pass its plan straight through,
+                # so the first run needs no typing and shows the spans to edit
+                # (operator 2026-08-21: "populated with what the oracle is thinking")
+                frame_holds[:] = oracle
+                passthrough = True
+                print("[MAINodes] H3ManualHoldMap: no ranges typed, passing the oracle's map through")
             for a, b, _ in spans:                 # gate: oracle inside, 1 outside
                 frame_holds[a:b + 1] = oracle[a:b + 1]
         else:
@@ -1623,6 +1633,9 @@ class H3ManualHoldMap:
                                                    ramp, bridge)
         report = _cost_report(length, _legal_ceil(sum(holds)), fps,
                               s_per_step, est_steps, overhead_s)
+        if passthrough:
+            report += ("\noracle passed through (no ranges typed); copy the spans "
+                       "above into ranges to edit them")
         hold_map = json.dumps({"holds": holds, "world_len": length})
         return (hold_map, segments, report)
 

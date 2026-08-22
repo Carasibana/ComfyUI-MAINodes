@@ -74,6 +74,24 @@ def test_h3_oracle_path_is_unchanged_by_default():
     assert a[0] == b[0] and "oracle_latent" not in json.loads(a[0])
 
 
+def test_manual_hold_map_passes_the_oracle_through_when_nothing_is_typed():
+    torch.manual_seed(3)
+    z = torch.zeros(1, 24, 32, 4, 4); z[:, :, 10:16] = torch.randn(1, 24, 6, 4, 4) * 5; z += torch.randn_like(z) * 0.01
+    oracle_map = M.H3JerkOracle().read({"samples": z}, 107, 0.75, 4, True)[0]
+    node = M.H3ManualHoldMap()
+    through, segs, rep = node.build(107, 24, "", 4, True, 8, oracle_hold_map=oracle_map)
+    assert json.loads(through)["holds"] == json.loads(oracle_map)["holds"] and "passed through" in rep
+    gated, _, _ = node.build(107, 24, "0-20", 4, True, 8, oracle_hold_map=oracle_map)
+    g = json.loads(gated)["holds"]
+    assert max(g[40:]) == 1                     # outside the range the oracle is gated off
+    try:
+        node.build(107, 24, "", 4, True, 8)      # no oracle, nothing typed: still an error
+    except AssertionError as e:
+        assert "wire the oracle" in str(e)
+    else:
+        raise AssertionError("expected an assertion")
+
+
 if __name__ == "__main__":          # house style: python tests/<file>.py
     import inspect
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and inspect.isfunction(v)]
