@@ -77,6 +77,17 @@ class MotionEditor {
     }
     this.buildDOM();
     this.redrawAll();
+    this.restoreLast();
+  }
+  // A fresh page load asks the server for this node's last payload (filmstrip,
+  // profile, hold curve). Same lifetime as ComfyUI's cache: gone after a restart.
+  async restoreLast() {
+    try {
+      const r = await api.fetchApi(`/mainodes/editor/${encodeURIComponent(String(this.node.id))}`);
+      if (!r.ok) return;
+      const msg = await r.json();
+      if (msg && (msg.h3_strip || msg.h3_profile)) { this.onExecuted(msg); this.status("restored the last run's filmstrip from the server"); }
+    } catch (e) { /* no stash, fine */ }
   }
 
   // ---------- state ----------
@@ -180,6 +191,7 @@ class MotionEditor {
     if (msg?.h3_fps?.length) this.fps = msg.h3_fps[0];
     if (msg?.h3_report?.length) this.report = msg.h3_report[0];
     if (msg?.h3_holds) this.holds = msg.h3_holds;
+    if (msg?.h3_held?.[0]) this.status("held: no blocks yet, nothing downstream ran. Lay out blocks (drag on the block lane) and run again");
     this.imgCache.clear();
     this.cur = clamp(this.cur, 0, this.length - 1);
     this.redrawAll();

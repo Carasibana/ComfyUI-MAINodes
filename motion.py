@@ -3301,7 +3301,11 @@ class H3MotionEditor:
                                "tooltip": "what the composite shows on frames no block covers"}),
             "paint_res": ("INT", {"default": 512, "min": 128, "max": 1024, "step": 64,
                           "tooltip": "mask compile width; the composite rescales to full res"}),
-        }}
+            "hold_until_edited": ("BOOLEAN", {"default": True,
+                                  "tooltip": "with no blocks laid out yet, stop the graph here after the "
+                                             "filmstrip is written (nothing downstream runs); lay out blocks "
+                                             "and run again. Off = an empty editor passes the oracle's map through"}),
+        }, "hidden": {"unique_id": "UNIQUE_ID"}}
 
     RETURN_TYPES = ("STRING", "MASK", "STRING", "STRING")
     RETURN_NAMES = ("hold_map", "mask", "envelopes", "report")
@@ -3342,7 +3346,8 @@ class H3MotionEditor:
 
     def compile(self, images, editor_state, samples=None, oracle_hold_map="",
                 fps=24, ramp=True, bridge=8, invert_mask=False,
-                outside_blocks="baseline", paint_res=512):
+                outside_blocks="baseline", paint_res=512, hold_until_edited=True,
+                unique_id=None):
         import torch.nn.functional as F
 
         images = images.detach().float().cpu()
@@ -3459,8 +3464,66 @@ class H3MotionEditor:
               "h3_profile": prof, "h3_length": [n], "h3_fps": [fps],
               "h3_report": [report],
               "h3_holds": [int(h) for h in holds]}     # the compiled clock, for the playhead views
+        held = bool(hold_until_edited) and not blocks
+        ui["h3_held"] = [held]
+        _editor_stash(unique_id, ui)
+        if held:
+            # Nothing laid out yet: the filmstrip is what this run was for. Block
+            # every consumer silently (no error, no pass 2); a run after blocks
+            # exist goes through, and the base pass is cached by then.
+            from comfy_execution.graph_utils import ExecutionBlocker
+            report += "\nHELD: no blocks yet, nothing downstream ran. Lay out blocks and run again."
+            print("[MAINodes] H3MotionEditor held the graph: no blocks yet (hold_until_edited)")
+            return {"ui": ui, "result": (ExecutionBlocker(None), ExecutionBlocker(None),
+                                         ExecutionBlocker(None), report)}
         return {"ui": ui,
                 "result": (hold_map, mask, envelopes, report)}
+
+
+# ---- the editor's last payload per node, for a fresh page load ----------
+# Lives in the temp directory, so it has exactly ComfyUI's own cache lifetime:
+# survives a page reload, dies with a server restart.
+def _editor_stash_dir():
+    import folder_paths
+    d = os.path.join(folder_paths.get_temp_directory(), "h3_editor")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _editor_stash(unique_id, ui):
+    if unique_id is None:
+        return
+    try:
+        with open(os.path.join(_editor_stash_dir(), f"last_{unique_id}.json"), "w") as f:
+            json.dump(ui, f)
+    except Exception as e:                       # never let bookkeeping fail a run
+        print(f"[MAINodes] editor stash skipped: {type(e).__name__}: {e}")
+
+
+def _install_editor_route():
+    try:
+        from server import PromptServer
+        from aiohttp import web
+    except Exception:
+        return
+    srv = getattr(PromptServer, "instance", None)
+    if srv is None or getattr(srv, "_h3_editor_route", False):
+        return
+
+    @srv.routes.get("/mainodes/editor/{nid}")
+    async def _last(request):
+        nid = "".join(ch for ch in request.match_info["nid"] if ch.isalnum() or ch in "-_")
+        path = os.path.join(_editor_stash_dir(), f"last_{nid}.json")
+        if not os.path.exists(path):
+            return web.json_response({}, status=404)
+        try:
+            return web.json_response(json.load(open(path)))
+        except Exception:
+            return web.json_response({}, status=404)
+    srv._h3_editor_route = True
+
+
+_install_editor_route()
 
 
 class H3SegmentCrop:
