@@ -143,6 +143,24 @@ class MotionEditor {
     }, 400);
   }
   idx(b) { return this.state.blocks.indexOf(b); }
+  // The hold map the CURRENT blocks would compile to, client-side: explicit
+  // holds from the rows (with their automation), oracle blocks (hold 0) from the
+  // last run's compiled map where we have it (estimated x4 where we do not),
+  // everything outside blocks at 1. This drives the dilated clock, the play
+  // loop and the price, so an edit is seen before it is rendered.
+  previewHolds() {
+    const n = this.length, last = this.holds.length === n ? this.holds : null;
+    const out = new Array(n).fill(1);
+    for (const b of this.state.blocks) {
+      if (b.mute) continue;
+      for (let f = Math.max(0, b.start); f <= Math.min(b.end, n - 1); f++) {
+        let h = Math.round(envValue(b.auto, "hold", f, b.hold || 0));
+        if (h <= 0) h = last ? last[f] : 4;
+        out[f] = Math.max(out[f], h);
+      }
+    }
+    return this.state.blocks.some((b) => !b.mute) ? out : (last || out);
+  }
   status(t) { if (this.statusEl) this.statusEl.textContent = t; }
   block(id) { return this.state.blocks.find((b) => b.id === id); }
 
@@ -238,6 +256,7 @@ class MotionEditor {
       background: "#1b1b1b", padding: "6px", borderRadius: "6px",
       fontFamily: "sans-serif", fontSize: "11px", color: "#ccc",
       width: "100%", boxSizing: "border-box" });
+    root.dataset.h3 = "editor-root";
     root.addEventListener("pointerdown", (e) => e.stopPropagation());
     root.addEventListener("keydown", (e) => e.stopPropagation());
     root.tabIndex = 0;
@@ -308,6 +327,11 @@ class MotionEditor {
     this.el("span", { width: "8px" }, tb);
     this.playBtn = this.btn(tb, "Play", () => this.setPlay(!this.playTimer),
       "play the clip from the filmstrip at fps (space); in the dilated clock each frame lingers for its hold");
+    this.el("span", { width: "8px" }, tb);
+    this.btn(tb, "run to here", () => this.run(true),
+      "queue only up to this node: base pass + oracle + filmstrip, nothing downstream (partial execution)");
+    this.btn(tb, "run from here", () => this.run(false),
+      "queue the graph; unchanged upstream nodes come from ComfyUI's cache, so it resumes at this node");
     this.clockBtn = this.btn(tb, "clock: world", (b) => {
       this.clock = this.clock === "world" ? "dilated" : "world";
       b.textContent = `clock: ${this.clock}`;
@@ -317,12 +341,14 @@ class MotionEditor {
 
     // edit rows: one line per block, above the timeline (DAW-style clip list)
     this.rowsWrap = this.el("div", { display: "flex", flexDirection: "column", gap: "2px" }, root);
+    this.rowsWrap.dataset.h3 = "rows";
     this.statusEl = this.el("div", { color: "#9ab", minHeight: "14px", fontSize: "11px" }, root,
       "drag on the block lane to create a block; rows above list every edit");
 
     // timeline
     this.tl = this.el("canvas", { width: "100%", cursor: "crosshair",
                                   borderRadius: "4px" }, root);
+    this.tl.dataset.h3 = "timeline";
     this.tl.height = 130;
     this.bindTimeline();
 
@@ -353,10 +379,11 @@ class MotionEditor {
                                   flexWrap: "wrap", alignItems: "center",
                                   minHeight: "22px" }, root);
     this.priceEl = this.el("div", { color: "#9c9", minHeight: "14px" }, root);
+    this.priceEl.dataset.h3 = "price"; this.statusEl.dataset.h3 = "status";
 
     this.node.addDOMWidget("h3_editor_ui", "div", root, { serialize: false });
     const sz = this.node.size;
-    this.node.setSize([Math.max(sz[0], 640), Math.max(sz[1], 700)]);
+    this.node.setSize([Math.max(sz[0], 640), Math.max(sz[1], 760)]);
     this.root = root;
     new ResizeObserver(() => this.redrawAll()).observe(root);
     this.watchWidget();
@@ -405,9 +432,10 @@ class MotionEditor {
       this.btn(row, "edit", () => this.openModal(b.id), "open this block in the editor (E)");
       this.btn(row, "delete", () => this.deleteBlock(b.id), "remove this block (Delete)");
     });
-    // the node grows with its rows, the video strip moves down
-    const want = 700 + blocks.length * 26;
-    if (this.node.size[1] < want) this.node.setSize([this.node.size[0], want]);
+    // rows scroll past four; resizing the node from inside a redraw collapsed
+    // the widget to a third of its width (seen headless 2026-08-22), so the
+    // node's size is left to the user and to the one setSize at build time.
+    wrap.style.maxHeight = "120px"; wrap.style.overflowY = "auto";
   }
 
   // ---------- modal: one block, zoomed, apply or cancel ----------
@@ -507,6 +535,14 @@ class MotionEditor {
     this.modal = ov; box.focus(); draw();
   }
   closeModal() { if (this.modal) { this.modal.remove(); this.modal = null; } }
+  async run(toHere) {
+    try {
+      this.commit(false);
+      const opts = toHere ? { partialExecutionTargets: [this.node.id] } : undefined;
+      this.status(toHere ? "queued: run to here (filmstrip + oracle)" : "queued: run from here (upstream from cache if unchanged)");
+      await app.queuePrompt(0, 1, opts);
+    } catch (e) { this.status("queue failed: " + e); console.error(e); }
+  }
 
   setTool(t) {
     this.tool = t;
@@ -528,18 +564,20 @@ class MotionEditor {
   // x-axis: world clock (frame / length) or dilated clock (cumulative holds /
   // dilated length), so the same block reads as "when" or as "how long it costs".
   cum() {
-    if (this._cumFor === this.holds && this._cum) return this._cum;
-    const c = [0]; for (const h of this.holds) c.push(c[c.length - 1] + (h || 1));
-    this._cumFor = this.holds; this._cum = c; return c;
+    const key = JSON.stringify(this.state.blocks) + "|" + this.holds.length;
+    if (this._cumKey === key && this._cum) return this._cum;
+    const ph = this.previewHolds();
+    const c = [0]; for (const h of ph) c.push(c[c.length - 1] + (h || 1));
+    this._cumKey = key; this._cum = c; this._ph = ph; return c;
   }
   fx(f, w) {
-    if (this.clock === "dilated" && this.holds.length === this.length) {
+    if (this.clock === "dilated" && this.length) {
       const c = this.cum(); return c[clamp(Math.round(f), 0, this.length)] / Math.max(1, c[this.length]) * w;
     }
     return f / Math.max(1, this.length) * w;
   }
   xf(x, w) {
-    if (this.clock === "dilated" && this.holds.length === this.length) {
+    if (this.clock === "dilated" && this.length) {
       const c = this.cum(), t = x / w * c[this.length];
       let f = 0; while (f < this.length - 1 && c[f + 1] <= t) f++;
       return clamp(f, 0, this.length - 1);
@@ -553,7 +591,7 @@ class MotionEditor {
     // the strip/paint frames ARE the clip: stepping the playhead at fps plays it,
     // and in the dilated clock each frame lingers for its hold (the slowdown, seen)
     const tick = () => {
-      const h = this.clock === "dilated" ? (this.holds[this.cur] || 1) : 1;
+      const h = this.clock === "dilated" ? (this.previewHolds()[this.cur] || 1) : 1;
       this._playAcc = (this._playAcc || 0) + 1;
       if (this._playAcc >= h) { this._playAcc = 0; this.setFrame(this.cur + 1 >= this.length ? 0 : this.cur + 1); }
     };
@@ -689,18 +727,25 @@ class MotionEditor {
       });
       g.stroke();
     }
-    // the compiled hold curve (what the last run actually held), 1..d_max
-    if (this.holds.length === this.length) {
-      const hmax = Math.max(4, ...this.holds);
-      g.strokeStyle = "#e0b050"; g.lineWidth = 1.5; g.beginPath();
-      for (let f = 0; f < this.length; f++) {
-        const y = G.P1 - 2 - (this.holds[f] - 1) / (hmax - 1) * 40;
-        const x0 = this.fx(f, W), x1 = this.fx(f + 1, W);
-        f ? g.lineTo(x0, y) : g.moveTo(x0, y); g.lineTo(x1, y);
+    // hold curves: the LIVE envelope from the rows (solid) and the last run's
+    // compiled map (ghost), so an edit is visible before it is rendered
+    const curves = [];
+    if (this.holds.length === this.length) curves.push([this.holds, "#e0b05066", 1, "last run"]);
+    if (this.length) curves.push([this.previewHolds(), "#ffd060", 1.8, "live envelope"]);
+    if (curves.length) {
+      const hmax = Math.max(4, ...curves.flatMap((c) => c[0]));
+      for (const [holds, col, lw] of curves) {
+        g.strokeStyle = col; g.lineWidth = lw; g.beginPath();
+        for (let f = 0; f < this.length; f++) {
+          const y = G.P1 - 2 - ((holds[f] || 1) - 1) / (hmax - 1) * 40;
+          const x0 = this.fx(f, W), x1 = this.fx(f + 1, W);
+          f ? g.lineTo(x0, y) : g.moveTo(x0, y); g.lineTo(x1, y);
+        }
+        g.stroke();
       }
-      g.stroke(); g.lineWidth = 1;
-      g.fillStyle = "#e0b050"; g.font = "9px sans-serif";
-      g.fillText(this.clock === "dilated" ? "hold curve, dilated clock (width = cost)" : "hold curve, world clock", 4, G.P0 + 9);
+      g.lineWidth = 1; g.fillStyle = "#ffd060"; g.font = "9px sans-serif";
+      g.fillText((this.clock === "dilated" ? "dilated clock (width = cost): " : "world clock: ") +
+        "live envelope" + (this.holds.length === this.length ? " / ghost = last run" : ""), 4, G.P0 + 9);
     }
     // token grid ticks
     g.strokeStyle = "#2c2c2c";
@@ -1047,7 +1092,7 @@ app.registerExtension({
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       const r = onNodeCreated?.apply(this, arguments);
-      try { this.h3 = new MotionEditor(this); }
+      try { this.h3 = new MotionEditor(this); (window.__h3editors = window.__h3editors || []).push(this.h3); }
       catch (e) { console.error("H3MotionEditor widget failed:", e); }
       return r;
     };
