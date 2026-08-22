@@ -104,7 +104,8 @@ class CompareWidget {
     const p = el("div", Object.assign({ position: "relative", overflow: "hidden", background: "#000" }, style), this.stage);
     p.appendChild(x.video);
     const tag = el("span", { position: "absolute", left: "6px", top: "4px", padding: "1px 6px", background: "rgba(0,0,0,.6)",
-      borderRadius: "3px", fontSize: "11px", pointerEvents: "none" }, p, `${idx + 1} · ${x.item.label}`);
+      borderRadius: "3px", fontSize: "11px", pointerEvents: "none" }, p,
+      `${idx + 1} · ${x.item.label}` + (x.item.seed !== undefined && !String(x.item.label).includes("seed") ? ` · seed ${x.item.seed}` : ""));
     const star = el("button", { position: "absolute", right: "6px", top: "4px", font: "14px system-ui", background: "rgba(0,0,0,.6)",
       color: x.item.index === this.winner ? "#fc3" : "#888", border: "none", cursor: "pointer", borderRadius: "3px" }, p, "★");
     star.title = "winner: the next queue passes this source through";
@@ -219,7 +220,7 @@ class CompareWidget {
 app.registerExtension({
   name: "MAINodes.VideoCompare",
   async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (nodeData.name !== "MAIVideoCompare") return;
+    if (nodeData.name !== "MAIVideoCompare" && nodeData.name !== "MAISeedHunter") return;
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       const r = onNodeCreated?.apply(this, arguments);

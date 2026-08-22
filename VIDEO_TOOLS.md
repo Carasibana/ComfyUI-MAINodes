@@ -46,6 +46,22 @@ for a pair, a grid for more.
 The flipbook deck (https://matlowai.github.io/flipbook/derope.html) is the
 offline twin, same player code.
 
+## MAI Seed Hunter (compare + winner seed)
+
+Video Compare that knows about seeds: wire 2-6 cheap candidates and the seed
+each ran on (labels default to the seed), star the keeper, and the NEXT queue
+passes the starred candidate's seed out of `winner_seed` for the finalize
+pass's RandomNoise (and its video out of `winner_video`). The seed-hunt pass
+and the finalize pass are two executions by design.
+
+## MAI Motion Editor additions
+
+- **Play** (space): the filmstrip plays at fps; in the dilated clock each
+  frame lingers for its hold, so the slowdown is seen, not inferred.
+- **clock: world / dilated**: the timeline's x-axis reads as "when" (frame)
+  or as "how long it costs" (cumulative holds). The compiled hold curve from
+  the last run is drawn over the jerk profile in both.
+
 ## What these replace
 
 Our graphs used VHS_LoadVideoPath and VHS_SelectEveryNthImage; both are

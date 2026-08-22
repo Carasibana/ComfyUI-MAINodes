@@ -63,6 +63,9 @@ class MotionEditor {
     this.undoStack = [];
     this.imgCache = new Map();
     this.report = "";
+    this.holds = [];            // compiled hold map (1 per world frame), from the last run
+    this.clock = "world";       // "world" | "dilated": how the timeline's x-axis reads time
+    this.playTimer = null;
     this.drag = null;
 
     this.sw = node.widgets.find((w) => w.name === "editor_state");
@@ -141,6 +144,7 @@ class MotionEditor {
     if (msg?.h3_length?.length) this.length = msg.h3_length[0];
     if (msg?.h3_fps?.length) this.fps = msg.h3_fps[0];
     if (msg?.h3_report?.length) this.report = msg.h3_report[0];
+    if (msg?.h3_holds) this.holds = msg.h3_holds;
     this.imgCache.clear();
     this.cur = clamp(this.cur, 0, this.length - 1);
     this.redrawAll();
@@ -191,6 +195,7 @@ class MotionEditor {
     root.addEventListener("keydown", (e) => e.stopPropagation());
     root.tabIndex = 0;
     root.addEventListener("keydown", (e) => {
+      if (e.key === " ") { this.setPlay(!this.playTimer); e.preventDefault(); }
       if (e.key === "ArrowLeft") { this.setFrame(this.cur - 1); e.preventDefault(); }
       if (e.key === "ArrowRight") { this.setFrame(this.cur + 1); e.preventDefault(); }
       if ((e.ctrlKey || e.metaKey) && e.key === "z") { this.undo(); e.preventDefault(); }
@@ -242,6 +247,14 @@ class MotionEditor {
       this.drawPaint();
     });
     this.btn(tb, "undo", () => this.undo(), "ctrl+z");
+    this.el("span", { width: "8px" }, tb);
+    this.playBtn = this.btn(tb, "Play", () => this.setPlay(!this.playTimer),
+      "play the clip from the filmstrip at fps (space); in the dilated clock each frame lingers for its hold");
+    this.clockBtn = this.btn(tb, "clock: world", (b) => {
+      this.clock = this.clock === "world" ? "dilated" : "world";
+      b.textContent = `clock: ${this.clock}`;
+      this.redrawAll();
+    }, "world: x = when (frame). dilated: x = how long it costs (cumulative holds), the slowdown seen");
     this.setTool("brush");
 
     // timeline
@@ -302,8 +315,40 @@ class MotionEditor {
   }
 
   // ---------- timeline ----------
-  fx(f, w) { return f / Math.max(1, this.length) * w; }
-  xf(x, w) { return clamp(Math.floor(x / w * this.length), 0, this.length - 1); }
+  // x-axis: world clock (frame / length) or dilated clock (cumulative holds /
+  // dilated length), so the same block reads as "when" or as "how long it costs".
+  cum() {
+    if (this._cumFor === this.holds && this._cum) return this._cum;
+    const c = [0]; for (const h of this.holds) c.push(c[c.length - 1] + (h || 1));
+    this._cumFor = this.holds; this._cum = c; return c;
+  }
+  fx(f, w) {
+    if (this.clock === "dilated" && this.holds.length === this.length) {
+      const c = this.cum(); return c[clamp(Math.round(f), 0, this.length)] / Math.max(1, c[this.length]) * w;
+    }
+    return f / Math.max(1, this.length) * w;
+  }
+  xf(x, w) {
+    if (this.clock === "dilated" && this.holds.length === this.length) {
+      const c = this.cum(), t = x / w * c[this.length];
+      let f = 0; while (f < this.length - 1 && c[f + 1] <= t) f++;
+      return clamp(f, 0, this.length - 1);
+    }
+    return clamp(Math.floor(x / w * this.length), 0, this.length - 1);
+  }
+  setPlay(on) {
+    if (this.playTimer) { clearInterval(this.playTimer); this.playTimer = null; }
+    if (this.playBtn) this.playBtn.textContent = on ? "Pause" : "Play";
+    if (!on) return;
+    // the strip/paint frames ARE the clip: stepping the playhead at fps plays it,
+    // and in the dilated clock each frame lingers for its hold (the slowdown, seen)
+    const tick = () => {
+      const h = this.clock === "dilated" ? (this.holds[this.cur] || 1) : 1;
+      this._playAcc = (this._playAcc || 0) + 1;
+      if (this._playAcc >= h) { this._playAcc = 0; this.setFrame(this.cur + 1 >= this.length ? 0 : this.cur + 1); }
+    };
+    this.playTimer = setInterval(tick, 1000 / Math.max(1, this.fps));
+  }
 
   bindTimeline() {
     const c = this.tl;
@@ -412,6 +457,19 @@ class MotionEditor {
         t ? g.lineTo(x, y) : g.moveTo(x, y);
       });
       g.stroke();
+    }
+    // the compiled hold curve (what the last run actually held), 1..d_max
+    if (this.holds.length === this.length) {
+      const hmax = Math.max(4, ...this.holds);
+      g.strokeStyle = "#e0b050"; g.lineWidth = 1.5; g.beginPath();
+      for (let f = 0; f < this.length; f++) {
+        const y = 100 - (this.holds[f] - 1) / (hmax - 1) * 40;
+        const x0 = this.fx(f, W), x1 = this.fx(f + 1, W);
+        f ? g.lineTo(x0, y) : g.moveTo(x0, y); g.lineTo(x1, y);
+      }
+      g.stroke(); g.lineWidth = 1;
+      g.fillStyle = "#e0b050"; g.font = "9px sans-serif";
+      g.fillText(this.clock === "dilated" ? "hold curve, dilated clock (width = cost)" : "hold curve, world clock", 4, 64);
     }
     // token grid ticks
     g.strokeStyle = "#2c2c2c";

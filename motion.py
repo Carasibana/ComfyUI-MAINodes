@@ -3446,7 +3446,8 @@ class H3MotionEditor:
                     for v in _jerk_profile(_video_component(samples))]
         ui = {"h3_paint": paint, "h3_strip": strip,
               "h3_profile": prof, "h3_length": [n], "h3_fps": [fps],
-              "h3_report": [report]}
+              "h3_report": [report],
+              "h3_holds": [int(h) for h in holds]}     # the compiled clock, for the playhead views
         return {"ui": ui,
                 "result": (hold_map, mask, envelopes, report)}
 

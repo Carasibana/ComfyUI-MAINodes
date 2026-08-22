@@ -72,5 +72,46 @@ class MAIVideoCompare:
                 "result": (videos[win], int(win), json.dumps(manifest))}
 
 
-NODE_CLASS_MAPPINGS = {"MAIVideoCompare": MAIVideoCompare}
-NODE_DISPLAY_NAME_MAPPINGS = {"MAIVideoCompare": "MAI Video Compare (2-6, synchronized)"}
+class MAISeedHunter(MAIVideoCompare):
+    """Video Compare that knows about seeds: cheap candidates in (with the seed
+    each ran on), the starred one's seed out, for the finalize pass's noise node.
+    Pin / reject are view state in the widget; the decision that matters is the
+    star, and it only takes effect on the next queue."""
+
+    DESCRIPTION = (
+        "Seed hunting: wire 2-6 cheap candidates and the seed each ran on, watch "
+        "them synchronized (hover to hear, flicker, frame-lock), star the keeper. "
+        "The next queue passes the starred candidate's seed out of `winner_seed` "
+        "(wire it into the finalize pass's RandomNoise) and its video out of "
+        "`winner_video`. Pick, then finalize: two executions, never a graph "
+        "waiting on a human.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        t = MAIVideoCompare.INPUT_TYPES()
+        for i in range(1, 7):
+            t["optional"][f"seed_{i}"] = ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
+                                         "tooltip": f"the seed candidate {i} ran on"})
+        return t
+
+    RETURN_TYPES = ("VIDEO", "INT", "INT", "STRING")
+    RETURN_NAMES = ("winner_video", "winner_seed", "winner_index", "manifest")
+
+    def compare(self, winner=1, preview_crf=23, unique_id=None, **kw):
+        seeds = {i: kw.pop(f"seed_{i}", 0) for i in range(1, 7)}
+        for i in range(1, 7):
+            if kw.get(f"video_{i}") is not None and not kw.get(f"label_{i}"):
+                kw[f"label_{i}"] = f"seed {seeds[i]}"
+        res = MAIVideoCompare.compare(self, winner=winner, preview_crf=preview_crf, unique_id=unique_id, **kw)
+        video, win, manifest = res["result"]
+        m = json.loads(manifest)
+        for it in m["items"]:
+            it["seed"] = seeds.get(it["index"], 0)
+        res["ui"]["mai_compare"] = [m]
+        res["result"] = (video, int(seeds.get(win, 0)), win, json.dumps(m))
+        return res
+
+
+NODE_CLASS_MAPPINGS = {"MAIVideoCompare": MAIVideoCompare, "MAISeedHunter": MAISeedHunter}
+NODE_DISPLAY_NAME_MAPPINGS = {"MAIVideoCompare": "MAI Video Compare (2-6, synchronized)",
+                              "MAISeedHunter": "MAI Seed Hunter (compare + winner seed)"}
