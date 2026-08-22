@@ -545,9 +545,21 @@ class MotionEditor {
     this.modal = ov; box.focus(); draw();
   }
   closeModal() { if (this.modal) { this.modal.remove(); this.modal = null; } }
+  // "run from here" means the same seeds: pin every seed widget whose
+  // control-after-generate would bump it (the frontend's default for nodes it
+  // builds is randomize, which re-renders the base pass on every queue).
+  pinSeeds() {
+    let n = 0;
+    for (const node of this.node.graph?._nodes || [])
+      for (const w of node.widgets || [])
+        if (w.name === "control_after_generate" && w.value !== "fixed") { w.value = "fixed"; n++; }
+    return n;
+  }
   async run(toHere) {
     try {
       this.commit(false);
+      const pinned = this.pinSeeds();
+      if (pinned) this.status(`pinned ${pinned} seed control(s) to fixed so the base pass stays cached`);
       const opts = toHere ? { partialExecutionTargets: [this.node.id] } : undefined;
       this.status(toHere ? "queued: run to here (filmstrip + oracle)" : "queued: run from here (upstream from cache if unchanged)");
       await app.queuePrompt(0, 1, opts);

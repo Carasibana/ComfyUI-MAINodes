@@ -78,7 +78,11 @@ executed); a fresh page load restores the last run's filmstrip from the server.
   filmstrip; lay out rows and run again.
 - **Cache reality**: ComfyUI keeps only the previous prompt's outputs, so
   running other graphs in between evicts the base pass and the next
-  run-from-here re-renders it.
+  run-from-here re-renders it. The other way to lose the cache is a seed that
+  moves: the frontend's default "control after generate" is randomize on
+  nodes it builds, so the plain Run button re-renders the base every time
+  until both RandomNoise nodes are set to fixed. The node's run buttons pin
+  every seed control to fixed before queueing.
 
 - **Play** (space): the filmstrip plays at fps; in the dilated clock each
   frame lingers for its hold, so the slowdown is seen, not inferred.
