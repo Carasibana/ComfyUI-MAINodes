@@ -92,6 +92,26 @@ create `<ComfyUI user dir>/mainodes_models.json` (or point
 and restart: it appears in the dropdown, and a row with a preset's id
 overrides that preset. Send us the row and the ladder behind it.
 
+### First measurements (2026-08-21, one pass on two lab instances)
+
+- H3 two-stage graph with the identity remap in the chain: **bit-identical**
+  to the production render (PSNR inf on baseline, dilated and recovered).
+- LTX-2.5 on the camera-compensated H3 clock at x4: panrun needs a window
+  (the live clock is 1201 dilated frames at x4, over the 960 cap; a 98-frame
+  window fits at 951), swordspin fits whole (866). Hold-map staircase 0.864
+  (panrun) / 0.818 (swordspin) at starting sigma 0.4, against 0.80 / 0.78 for
+  the uniform d=16 windows: **the oracle-shaped clock does not fix LTX's weak
+  response at that denoise; the denoise is the limiter, not the clock.**
+  298 s / 247 s, peak 59-60 GiB.
+- Wan 2.2, first ladder cell (x1, 21-source-frame window on the densest
+  hold-4 run, low-noise 14B expert, denoise 0.4, 640^2): staircase **0.693**
+  on swordspin (the lowest of the set), 0.877 on panrun's window; 119-126 s
+  including the model load, peak 33-52 GiB. The `wan-2.2` preset stays
+  unmeasured until the x1/x2 ladder settles its hold_scale; x4 cannot fit
+  Wan's 81-frame training length.
+- Camera-compensated oracle: identical to the default on the static swordspin
+  shot; trims panrun's held span 80 -> 76 frames.
+
 ### Sizing the oracle-shaped LTX arm
 
 On the saved oracle profiles the x4 rule gives panrun 712 / swordspin 816
