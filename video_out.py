@@ -89,7 +89,7 @@ class MAIVideoOut:
     def INPUT_TYPES(cls):
         return {"required": {
             "images": ("IMAGE",),
-            "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 0.5}),
+            "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 0.001}),
             "filename_prefix": ("STRING", {"default": "video/mai"}),
             "codec": (["h264", "av1"], {"default": "h264"}),
             "crf": ("INT", {"default": 18, "min": 0, "max": 51,

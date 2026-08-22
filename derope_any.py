@@ -55,8 +55,8 @@ class H3ClockRemap:
             "custom_legal_step": ("INT", {"default": 8, "min": 1, "max": 64,
                                   "tooltip": "custom: legal lengths are step*k + offset"}),
             "custom_legal_offset": ("INT", {"default": 1, "min": 0, "max": 64}),
-            "custom_fps": ("FLOAT", {"default": 25.0, "min": 1.0, "max": 120.0, "step": 0.5}),
-            "custom_cap_seconds": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 600.0, "step": 0.5,
+            "custom_fps": ("FLOAT", {"default": 25.0, "min": 1.0, "max": 120.0, "step": 0.001}),
+            "custom_cap_seconds": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 600.0, "step": 0.1,
                                    "tooltip": "custom: longest single pass in seconds; 0 = no cap"}),
         }}
 
