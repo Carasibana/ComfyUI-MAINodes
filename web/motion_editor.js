@@ -356,13 +356,13 @@ class MotionEditor {
     wrap.innerHTML = "";
     const blocks = this.state.blocks;
     if (!blocks.length) return;
-    const head = this.el("div", { display: "grid", gridTemplateColumns: "22px 1fr 64px 64px 56px 48px 56px 56px 36px 40px 46px",
+    const head = this.el("div", { display: "grid", gridTemplateColumns: "22px 1fr 64px 64px 56px 56px 56px 36px 40px 46px",
       gap: "4px", color: "#777", fontSize: "10px", padding: "0 2px" }, wrap);
-    for (const h of ["#", "range", "in", "out", "hold", "ramp", "feather", "strength", "mute", "", ""]) this.el("span", {}, head, h);
+    for (const h of ["#", "range", "in", "out", "hold", "feather", "strength", "mute", "", ""]) this.el("span", {}, head, h);
     const t = (f) => (f / this.fps).toFixed(2) + "s";
     blocks.forEach((b, i) => {
       const col = BLOCK_COLORS[i % BLOCK_COLORS.length];
-      const row = this.el("div", { display: "grid", gridTemplateColumns: "22px 1fr 64px 64px 56px 48px 56px 56px 36px 40px 46px",
+      const row = this.el("div", { display: "grid", gridTemplateColumns: "22px 1fr 64px 64px 56px 56px 56px 36px 40px 46px",
         gap: "4px", alignItems: "center", padding: "2px", borderRadius: "3px",
         background: b.id === this.sel ? "#2a3a2a" : "#222", opacity: b.mute ? "0.55" : "1" }, wrap);
       row.onclick = () => { this.sel = b.id; this.redrawAll(); };
@@ -383,10 +383,6 @@ class MotionEditor {
       }
       hold.onclick = (e) => e.stopPropagation();
       hold.onchange = (e) => { e.stopPropagation(); this.pushUndo(); b.hold = parseInt(hold.value); this.commit(); this.redrawAll(); };
-      const ramp = this.el("input", {}, row); ramp.type = "checkbox"; ramp.checked = b.ramp !== false;
-      ramp.title = "C1 ramp shoulders on this block";
-      ramp.onclick = (e) => e.stopPropagation();
-      ramp.onchange = () => { this.pushUndo(); b.ramp = ramp.checked; this.commit(); this.redrawAll(); };
       b.dials = b.dials || {};
       num(() => b.dials.feather ?? 48, (v) => { b.dials.feather = clamp(Math.round(v), 0, 256); }, 0, 256, 1);
       num(() => b.dials.strength ?? 1, (v) => { b.dials.strength = clamp(v, 0, 1); }, 0, 1, 0.05);
@@ -486,9 +482,6 @@ class MotionEditor {
     num("feather", () => b.dials.feather ?? 48, (v) => { b.dials.feather = clamp(Math.round(v), 0, 256); }, 0, 256, 1);
     num("strength", () => b.dials.strength ?? 1, (v) => { b.dials.strength = clamp(v, 0, 1); }, 0, 1, 0.05);
     num("fade", () => b.dials.fade ?? 6, (v) => { b.dials.fade = clamp(Math.round(v), 0, 48); }, 0, 48, 1);
-    const ramp = this.el("label", { display: "inline-flex", gap: "4px", alignItems: "center" }, dialsRow);
-    const rc = this.el("input", {}, ramp); rc.type = "checkbox"; rc.checked = b.ramp !== false; rc.onchange = () => { b.ramp = rc.checked; };
-    this.el("span", {}, ramp, "ramp shoulders");
     this.el("div", { color: "#777" }, box, "drag the edges for in/out, the middle to move, click elsewhere to scrub. Painted masks and automation lanes stay on the main view of this block. Ctrl+Enter applies, Esc cancels.");
     const btns = this.el("div", { display: "flex", gap: "8px", justifyContent: "flex-end" }, box);
     const apply = () => {
