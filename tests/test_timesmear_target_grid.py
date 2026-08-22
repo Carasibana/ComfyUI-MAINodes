@@ -92,6 +92,16 @@ def test_manual_hold_map_passes_the_oracle_through_when_nothing_is_typed():
         raise AssertionError("expected an assertion")
 
 
+def test_oracle_routes_unknown_profile_to_h3():
+    torch.manual_seed(4)
+    z = torch.randn(1, 24, 32, 4, 4)
+    a = M.H3JerkOracle().read({"samples": z}, 107, 0.75, 4, True)
+    for bad in (0, "0", "", "no-such-model"):
+        b = M.H3JerkOracle().read({"samples": z}, 107, 0.75, 4, True, model_profile=bad)
+        assert b[0] == a[0], bad
+    assert M.H3JerkOracle.VALIDATE_INPUTS(model_profile=0) is True
+
+
 if __name__ == "__main__":          # house style: python tests/<file>.py
     import inspect
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and inspect.isfunction(v)]

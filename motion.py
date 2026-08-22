@@ -795,6 +795,12 @@ class H3JerkOracle:
     FUNCTION = "read"
     CATEGORY = "latent/minimax/motion"
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, model_profile=None):
+        # Own the check so a stale or wrong value (0, "", an old name) never
+        # rejects the prompt: read() routes anything unknown to minimax-h3.
+        return True
+
     def read(self, samples, length, q, d_max, ramp, preset="custom", bridge=8,
              profile_mode="value |d3| (default)", abstain_below=0.0, model_profile="minimax-h3",
              fps=24, s_per_step=0.0, est_steps=18, overhead_s=OVERHEAD_S):
@@ -802,6 +808,11 @@ class H3JerkOracle:
             p = self.PRESETS[preset]
             q, d_max, ramp = p["q"], p["d_max"], p["ramp"]
         clock = None
+        if model_profile not in (None, "", "minimax-h3") and str(model_profile) not in _load_profiles():
+            print(f"[MAINodes] H3JerkOracle: model_profile {model_profile!r} is not a profile; using minimax-h3")
+            model_profile = "minimax-h3"
+        if model_profile in (None, "", 0, "0"):
+            model_profile = "minimax-h3"
         if model_profile != "minimax-h3":
             # another model's latent: same planner, that model's token clock,
             # no H3 phase normalisation. The checks are loud because a wrong
