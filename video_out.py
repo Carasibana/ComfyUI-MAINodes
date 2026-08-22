@@ -142,24 +142,27 @@ class MAIVideoOut:
             with open(hp, "w") as f:
                 json.dump(json.loads(hold_map), f)
             sidecars["holdmap"] = os.path.basename(hp)
+        draft = None
+        if draft_preview and latent is not None:
+            try:
+                td = time.time()
+                draft = self._draft(latent, draft_vae_name, fps, base[:-1] + "_draft", full, subfolder)
+                draft["seconds"] = round(time.time() - td, 2)
+                results.append(draft)
+            except Exception as e:                      # a preview must never cost the render
+                print(f"[MAINodes] MAIVideoOut draft preview skipped: {type(e).__name__}: {e}")
         meta = {}
-        if write_meta:
+        if write_meta:                                  # written last, so it can name the draft
             meta = {"file": file, "frames": int(images.shape[0]), "width": w, "height": h,
                     "fps": fps, "codec": codec, "crf": crf, "audio": audio is not None,
                     "notes": notes, "encode_s": round(time.time() - t0, 2),
                     "graph": _graph_summary(prompt), "sidecars": sidecars,
+                    "draft": (draft["filename"] if draft else None),
+                    "draft_s": (draft["seconds"] if draft else None),
                     "written": time.strftime("%Y-%m-%dT%H:%M:%S")}
             mp = _unique(base[:-1] + ".meta", ".json")
             with open(mp, "w") as f:
                 json.dump(meta, f, indent=1)
-        if draft_preview and latent is not None:
-            try:
-                draft = self._draft(latent, draft_vae_name, fps, base[:-1] + "_draft", full, subfolder)
-                results.append(draft)
-                if meta:
-                    meta["draft"] = draft["filename"]
-            except Exception as e:                      # a preview must never cost the render
-                print(f"[MAINodes] MAIVideoOut draft preview skipped: {type(e).__name__}: {e}")
         print(f"[MAINodes] MAIVideoOut -> {path}" + (f" (+{', '.join(sidecars.values())})" if sidecars else ""))
         return {"ui": {"images": results, "animated": (True,)},
                 "result": (path, json.dumps(meta))}
