@@ -1,0 +1,1168 @@
+{
+ "id": "00000000-0000-0000-0000-000000000000",
+ "revision": 0,
+ "last_node_id": 21,
+ "last_link_id": 24,
+ "nodes": [
+  {
+   "id": 1,
+   "type": "VHS_LoadVideoPath",
+   "pos": [
+    60,
+    60
+   ],
+   "size": [
+    400,
+    346
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "vae",
+     "type": "VAE",
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      1
+     ],
+     "slot_index": 0
+    },
+    {
+     "name": "frame_count",
+     "type": "INT",
+     "links": null,
+     "slot_index": 1
+    },
+    {
+     "name": "audio",
+     "type": "AUDIO",
+     "links": [
+      23
+     ],
+     "slot_index": 2
+    },
+    {
+     "name": "video_info",
+     "type": "VHS_VIDEOINFO",
+     "links": null,
+     "slot_index": 3
+    }
+   ],
+   "title": "VHS_LoadVideoPath",
+   "properties": {
+    "Node name for S&R": "VHS_LoadVideoPath"
+   },
+   "widgets_values": [
+    "panrun_baseline_00001_.mp4",
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    "",
+    "None"
+   ]
+  },
+  {
+   "id": 3,
+   "type": "H3LoadHoldMap",
+   "pos": [
+    60,
+    446
+   ],
+   "size": [
+    400,
+    154
+   ],
+   "flags": {},
+   "order": 1,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "hold_map",
+     "type": "STRING",
+     "links": [
+      2
+     ],
+     "slot_index": 0
+    },
+    {
+     "name": "world_len",
+     "type": "INT",
+     "links": null,
+     "slot_index": 1
+    },
+    {
+     "name": "path",
+     "type": "STRING",
+     "links": null,
+     "slot_index": 2
+    }
+   ],
+   "title": "H3LoadHoldMap",
+   "properties": {
+    "Node name for S&R": "H3LoadHoldMap"
+   },
+   "widgets_values": [
+    "video/panrun_any_h3cam",
+    0,
+    0
+   ]
+  },
+  {
+   "id": 7,
+   "type": "VAELoader",
+   "pos": [
+    60,
+    640
+   ],
+   "size": [
+    400,
+    98
+   ],
+   "flags": {},
+   "order": 2,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "VAE",
+     "type": "VAE",
+     "links": [
+      11,
+      17
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "VAELoader",
+   "properties": {
+    "Node name for S&R": "VAELoader"
+   },
+   "widgets_values": [
+    "wan_2.1_vae.safetensors"
+   ]
+  },
+  {
+   "id": 9,
+   "type": "UNETLoader",
+   "pos": [
+    60,
+    778
+   ],
+   "size": [
+    400,
+    126
+   ],
+   "flags": {},
+   "order": 3,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "MODEL",
+     "type": "MODEL",
+     "links": [
+      3
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "UNETLoader",
+   "properties": {
+    "Node name for S&R": "UNETLoader"
+   },
+   "widgets_values": [
+    "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors",
+    "default"
+   ]
+  },
+  {
+   "id": 11,
+   "type": "CLIPLoader",
+   "pos": [
+    60,
+    944
+   ],
+   "size": [
+    400,
+    154
+   ],
+   "flags": {},
+   "order": 4,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "CLIP",
+     "type": "CLIP",
+     "links": [
+      4,
+      5
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "CLIPLoader",
+   "properties": {
+    "Node name for S&R": "CLIPLoader"
+   },
+   "widgets_values": [
+    "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+    "wan",
+    "default"
+   ]
+  },
+  {
+   "id": 2,
+   "type": "ImageFromBatch",
+   "pos": [
+    520,
+    60
+   ],
+   "size": [
+    400,
+    150
+   ],
+   "flags": {},
+   "order": 5,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "image",
+     "type": "IMAGE",
+     "link": 1
+    }
+   ],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      6
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "ImageFromBatch",
+   "properties": {
+    "Node name for S&R": "ImageFromBatch"
+   },
+   "widgets_values": [
+    0,
+    124
+   ]
+  },
+  {
+   "id": 4,
+   "type": "H3ClockRemap",
+   "pos": [
+    520,
+    250
+   ],
+   "size": [
+    400,
+    318
+   ],
+   "flags": {},
+   "order": 6,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "hold_map",
+     "type": "STRING",
+     "link": 2,
+     "widget": {
+      "name": "hold_map"
+     }
+    }
+   ],
+   "outputs": [
+    {
+     "name": "hold_map",
+     "type": "STRING",
+     "links": [
+      7
+     ],
+     "slot_index": 0
+    },
+    {
+     "name": "length",
+     "type": "INT",
+     "links": null,
+     "slot_index": 1
+    },
+    {
+     "name": "report",
+     "type": "STRING",
+     "links": null,
+     "slot_index": 2
+    },
+    {
+     "name": "profile_json",
+     "type": "STRING",
+     "links": null,
+     "slot_index": 3
+    }
+   ],
+   "title": "H3ClockRemap",
+   "properties": {
+    "Node name for S&R": "H3ClockRemap"
+   },
+   "widgets_values": [
+    "",
+    "wan-2.2 (unmeasured)",
+    8,
+    4,
+    8,
+    1,
+    25.0,
+    0.0
+   ]
+  },
+  {
+   "id": 10,
+   "type": "ModelSamplingSD3",
+   "pos": [
+    520,
+    608
+   ],
+   "size": [
+    400,
+    122
+   ],
+   "flags": {},
+   "order": 7,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "model",
+     "type": "MODEL",
+     "link": 3
+    }
+   ],
+   "outputs": [
+    {
+     "name": "MODEL",
+     "type": "MODEL",
+     "links": [
+      12
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "ModelSamplingSD3",
+   "properties": {
+    "Node name for S&R": "ModelSamplingSD3"
+   },
+   "widgets_values": [
+    5.0
+   ]
+  },
+  {
+   "id": 12,
+   "type": "CLIPTextEncode",
+   "pos": [
+    520,
+    770
+   ],
+   "size": [
+    400,
+    242
+   ],
+   "flags": {},
+   "order": 8,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "clip",
+     "type": "CLIP",
+     "link": 4
+    }
+   ],
+   "outputs": [
+    {
+     "name": "CONDITIONING",
+     "type": "CONDITIONING",
+     "links": [
+      13
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "CLIPTextEncode",
+   "properties": {
+    "Node name for S&R": "CLIPTextEncode"
+   },
+   "widgets_values": [
+    "integrated_multimodal_description: [Shot 1] 2D anime, cel-shaded, cinematic, a lateral tracking shot pans steadily left-to-right following a young courier girl sprinting along the ridge of clay-tiled rooftops at dusk, warm orange sky behind chimneys, laundry lines and small banners streaming in the wind between rooftop poles, distant town lights below. She runs at full sprint with a satchel bouncing at her hip, the camera matching her speed in a smooth continuous pan. Mid-run she vaults a brick chimney and EXPLODES into a sudden spinning double-jump, her paper parasol snapping open in a flare of motion as she corkscrews over a gap between buildings, tiles scattering from her push-off, the camera still panning steadily through the burst. Then a fast whip-pan reframes ahead to the next rooftop just as she lands hard and slides down the sloped tiles on both feet, arm out for balance, banners and laundry whipping past her, coming to a crouched stop at the roof edge as the camera settles and the dusk wind carries loose leaves past.\n\noverall_soundscape: Steady wind and fluttering cloth from the banners and laundry lines; rapid rhythmic footfalls on clay tiles under a full sprint; a sharp scrape and clatter of loose tiles at the vault; a cloth-snap and airy whoosh as the parasol opens mid-spin; a whistling rush during the whip-pan; a long gritty tile-slide with small ceramic clinks ending in a firm stop; the wind settling with distant town ambience.\n\nnon_diegetic_music: N/A"
+   ]
+  },
+  {
+   "id": 13,
+   "type": "CLIPTextEncode",
+   "pos": [
+    520,
+    1052
+   ],
+   "size": [
+    400,
+    122
+   ],
+   "flags": {},
+   "order": 9,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "clip",
+     "type": "CLIP",
+     "link": 5
+    }
+   ],
+   "outputs": [
+    {
+     "name": "CONDITIONING",
+     "type": "CONDITIONING",
+     "links": [
+      14
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "CLIPTextEncode",
+   "properties": {
+    "Node name for S&R": "CLIPTextEncode"
+   },
+   "widgets_values": [
+    "static, blurry, low quality, subtitles, watermark, jittery, duplicated limbs"
+   ]
+  },
+  {
+   "id": 5,
+   "type": "H3TimeSmear",
+   "pos": [
+    980,
+    60
+   ],
+   "size": [
+    400,
+    314
+   ],
+   "flags": {},
+   "order": 10,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 6
+    },
+    {
+     "name": "hold_map",
+     "type": "STRING",
+     "link": 7,
+     "widget": {
+      "name": "hold_map"
+     }
+    }
+   ],
+   "outputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "links": [
+      8
+     ],
+     "slot_index": 0
+    },
+    {
+     "name": "hold_map_used",
+     "type": "STRING",
+     "links": [
+      9,
+      20
+     ],
+     "slot_index": 1
+    },
+    {
+     "name": "length",
+     "type": "INT",
+     "links": null,
+     "slot_index": 2
+    },
+    {
+     "name": "report",
+     "type": "STRING",
+     "links": null,
+     "slot_index": 3
+    }
+   ],
+   "title": "H3TimeSmear",
+   "properties": {
+    "Node name for S&R": "H3TimeSmear"
+   },
+   "widgets_values": [
+    4,
+    "",
+    false,
+    16,
+    0.0,
+    18,
+    6.7
+   ]
+  },
+  {
+   "id": 6,
+   "type": "ImageScale",
+   "pos": [
+    1440,
+    60
+   ],
+   "size": [
+    400,
+    206
+   ],
+   "flags": {},
+   "order": 11,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "image",
+     "type": "IMAGE",
+     "link": 8
+    }
+   ],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      10
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "ImageScale",
+   "properties": {
+    "Node name for S&R": "ImageScale"
+   },
+   "widgets_values": [
+    "lanczos",
+    640,
+    640,
+    "disabled"
+   ]
+  },
+  {
+   "id": 21,
+   "type": "H3SaveHoldMap",
+   "pos": [
+    1440,
+    306
+   ],
+   "size": [
+    400,
+    150
+   ],
+   "flags": {},
+   "order": 12,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "hold_map",
+     "type": "STRING",
+     "link": 9,
+     "widget": {
+      "name": "hold_map"
+     }
+    }
+   ],
+   "outputs": [
+    {
+     "name": "path",
+     "type": "STRING",
+     "links": null,
+     "slot_index": 0
+    }
+   ],
+   "title": "H3SaveHoldMap",
+   "properties": {
+    "Node name for S&R": "H3SaveHoldMap"
+   },
+   "widgets_values": [
+    "",
+    "video/panrun_any_wan22"
+   ]
+  },
+  {
+   "id": 8,
+   "type": "VAEEncode",
+   "pos": [
+    1900,
+    60
+   ],
+   "size": [
+    400,
+    118
+   ],
+   "flags": {},
+   "order": 13,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "pixels",
+     "type": "IMAGE",
+     "link": 10
+    },
+    {
+     "name": "vae",
+     "type": "VAE",
+     "link": 11
+    }
+   ],
+   "outputs": [
+    {
+     "name": "LATENT",
+     "type": "LATENT",
+     "links": [
+      15
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "VAEEncode",
+   "properties": {
+    "Node name for S&R": "VAEEncode"
+   },
+   "widgets_values": []
+  },
+  {
+   "id": 14,
+   "type": "KSamplerAdvanced",
+   "pos": [
+    2360,
+    60
+   ],
+   "size": [
+    400,
+    446
+   ],
+   "flags": {},
+   "order": 14,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "model",
+     "type": "MODEL",
+     "link": 12
+    },
+    {
+     "name": "positive",
+     "type": "CONDITIONING",
+     "link": 13
+    },
+    {
+     "name": "negative",
+     "type": "CONDITIONING",
+     "link": 14
+    },
+    {
+     "name": "latent_image",
+     "type": "LATENT",
+     "link": 15
+    }
+   ],
+   "outputs": [
+    {
+     "name": "LATENT",
+     "type": "LATENT",
+     "links": [
+      16
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "KSamplerAdvanced",
+   "properties": {
+    "Node name for S&R": "KSamplerAdvanced"
+   },
+   "widgets_values": [
+    "enable",
+    20260880,
+    "fixed",
+    20,
+    3.5,
+    "euler",
+    "simple",
+    12,
+    20,
+    "disable"
+   ]
+  },
+  {
+   "id": 15,
+   "type": "VAEDecode",
+   "pos": [
+    2820,
+    60
+   ],
+   "size": [
+    400,
+    118
+   ],
+   "flags": {},
+   "order": 15,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "samples",
+     "type": "LATENT",
+     "link": 16
+    },
+    {
+     "name": "vae",
+     "type": "VAE",
+     "link": 17
+    }
+   ],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      18,
+      19
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "VAEDecode",
+   "properties": {
+    "Node name for S&R": "VAEDecode"
+   },
+   "widgets_values": []
+  },
+  {
+   "id": 16,
+   "type": "CreateVideo",
+   "pos": [
+    3280,
+    60
+   ],
+   "size": [
+    400,
+    174
+   ],
+   "flags": {},
+   "order": 16,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 18
+    },
+    {
+     "name": "audio",
+     "type": "AUDIO",
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "name": "VIDEO",
+     "type": "VIDEO",
+     "links": [
+      21
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "CreateVideo",
+   "properties": {
+    "Node name for S&R": "CreateVideo"
+   },
+   "widgets_values": [
+    16,
+    8
+   ]
+  },
+  {
+   "id": 18,
+   "type": "H3ExactRecover",
+   "pos": [
+    3280,
+    274
+   ],
+   "size": [
+    400,
+    146
+   ],
+   "flags": {},
+   "order": 17,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 19
+    },
+    {
+     "name": "hold_map",
+     "type": "STRING",
+     "link": 20,
+     "widget": {
+      "name": "hold_map"
+     }
+    }
+   ],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      22
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "H3ExactRecover",
+   "properties": {
+    "Node name for S&R": "H3ExactRecover"
+   },
+   "widgets_values": [
+    ""
+   ]
+  },
+  {
+   "id": 17,
+   "type": "SaveVideo",
+   "pos": [
+    3740,
+    60
+   ],
+   "size": [
+    400,
+    178
+   ],
+   "flags": {},
+   "order": 18,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "video",
+     "type": "VIDEO",
+     "link": 21
+    }
+   ],
+   "outputs": [
+    {
+     "name": "video",
+     "type": "VIDEO",
+     "links": null,
+     "slot_index": 0
+    }
+   ],
+   "title": "SaveVideo",
+   "properties": {
+    "Node name for S&R": "SaveVideo"
+   },
+   "widgets_values": [
+    "video/panrun_any_wan22_dilated",
+    "auto",
+    "auto"
+   ]
+  },
+  {
+   "id": 19,
+   "type": "CreateVideo",
+   "pos": [
+    3740,
+    278
+   ],
+   "size": [
+    400,
+    174
+   ],
+   "flags": {},
+   "order": 19,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 22
+    },
+    {
+     "name": "audio",
+     "type": "AUDIO",
+     "link": 23
+    }
+   ],
+   "outputs": [
+    {
+     "name": "VIDEO",
+     "type": "VIDEO",
+     "links": [
+      24
+     ],
+     "slot_index": 0
+    }
+   ],
+   "title": "CreateVideo",
+   "properties": {
+    "Node name for S&R": "CreateVideo"
+   },
+   "widgets_values": [
+    24,
+    8
+   ]
+  },
+  {
+   "id": 20,
+   "type": "SaveVideo",
+   "pos": [
+    4200,
+    60
+   ],
+   "size": [
+    400,
+    178
+   ],
+   "flags": {},
+   "order": 20,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "video",
+     "type": "VIDEO",
+     "link": 24
+    }
+   ],
+   "outputs": [
+    {
+     "name": "video",
+     "type": "VIDEO",
+     "links": null,
+     "slot_index": 0
+    }
+   ],
+   "title": "SaveVideo",
+   "properties": {
+    "Node name for S&R": "SaveVideo"
+   },
+   "widgets_values": [
+    "video/panrun_any_wan22",
+    "auto",
+    "auto"
+   ]
+  }
+ ],
+ "links": [
+  [
+   1,
+   1,
+   0,
+   2,
+   0,
+   "IMAGE"
+  ],
+  [
+   2,
+   3,
+   0,
+   4,
+   0,
+   "STRING"
+  ],
+  [
+   3,
+   9,
+   0,
+   10,
+   0,
+   "MODEL"
+  ],
+  [
+   4,
+   11,
+   0,
+   12,
+   0,
+   "CLIP"
+  ],
+  [
+   5,
+   11,
+   0,
+   13,
+   0,
+   "CLIP"
+  ],
+  [
+   6,
+   2,
+   0,
+   5,
+   0,
+   "IMAGE"
+  ],
+  [
+   7,
+   4,
+   0,
+   5,
+   1,
+   "STRING"
+  ],
+  [
+   8,
+   5,
+   0,
+   6,
+   0,
+   "IMAGE"
+  ],
+  [
+   9,
+   5,
+   1,
+   21,
+   0,
+   "STRING"
+  ],
+  [
+   10,
+   6,
+   0,
+   8,
+   0,
+   "IMAGE"
+  ],
+  [
+   11,
+   7,
+   0,
+   8,
+   1,
+   "VAE"
+  ],
+  [
+   12,
+   10,
+   0,
+   14,
+   0,
+   "MODEL"
+  ],
+  [
+   13,
+   12,
+   0,
+   14,
+   1,
+   "CONDITIONING"
+  ],
+  [
+   14,
+   13,
+   0,
+   14,
+   2,
+   "CONDITIONING"
+  ],
+  [
+   15,
+   8,
+   0,
+   14,
+   3,
+   "LATENT"
+  ],
+  [
+   16,
+   14,
+   0,
+   15,
+   0,
+   "LATENT"
+  ],
+  [
+   17,
+   7,
+   0,
+   15,
+   1,
+   "VAE"
+  ],
+  [
+   18,
+   15,
+   0,
+   16,
+   0,
+   "IMAGE"
+  ],
+  [
+   19,
+   15,
+   0,
+   18,
+   0,
+   "IMAGE"
+  ],
+  [
+   20,
+   5,
+   1,
+   18,
+   1,
+   "STRING"
+  ],
+  [
+   21,
+   16,
+   0,
+   17,
+   0,
+   "VIDEO"
+  ],
+  [
+   22,
+   18,
+   0,
+   19,
+   0,
+   "IMAGE"
+  ],
+  [
+   23,
+   1,
+   2,
+   19,
+   1,
+   "AUDIO"
+  ],
+  [
+   24,
+   19,
+   0,
+   20,
+   0,
+   "VIDEO"
+  ]
+ ],
+ "groups": [],
+ "config": {},
+ "extra": {},
+ "version": 0.4
+}
