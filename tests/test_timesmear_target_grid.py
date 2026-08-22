@@ -40,6 +40,40 @@ def test_camera_compensated_mode_ignores_a_pure_pan():
     assert comp.mean() < 0.05 * plain.mean()
 
 
+def test_oracle_reads_an_ltx_latent_through_the_profile():
+    # 97 frames on LTX's 1+8k clock = 13 latent positions; a burst in the middle
+    torch.manual_seed(1)
+    z = torch.zeros(1, 128, 13, 8, 8)
+    z[:, :, 5:8] = torch.randn(1, 128, 3, 8, 8) * 5        # tokens 5-7 jerk
+    z += torch.randn_like(z) * 0.01
+    hm, segs, w0, wlen, prof, rep = M.H3JerkOracle().read({"samples": z}, 97, 0.75, 4, True,
+                                                            model_profile="ltx-2.5")
+    d = json.loads(hm)
+    assert d["world_len"] == 97 and len(d["holds"]) == 97 and d["oracle_latent"] == "ltx-2.5"
+    holds = d["holds"]
+    # holds are per SOURCE frame and follow the 1+8k clock: frame 0 alone, then 8-frame blocks
+    assert max(holds) == 4 and holds[0] == 1
+    for t in range(1, 13):
+        blk = holds[1 + (t - 1) * 8: 1 + t * 8]
+        assert len(set(blk)) == 1, (t, blk)                  # one hold per latent token
+    assert (wlen - 1) % 8 == 0 and w0 >= 0
+    # the wrong frame count is refused loudly, never silently misaligned
+    try:
+        M.H3JerkOracle().read({"samples": z}, 124, 0.75, 4, True, model_profile="ltx-2.5")
+    except ValueError as e:
+        assert "latent time positions" in str(e)
+    else:
+        raise AssertionError("expected a length mismatch error")
+
+
+def test_h3_oracle_path_is_unchanged_by_default():
+    torch.manual_seed(2)
+    z = torch.randn(1, 24, 32, 4, 4)                          # 107 frames -> 32 tokens
+    a = M.H3JerkOracle().read({"samples": z}, 107, 0.75, 4, True)
+    b = M.H3JerkOracle().read({"samples": z}, 107, 0.75, 4, True, model_profile="minimax-h3")
+    assert a[0] == b[0] and "oracle_latent" not in json.loads(a[0])
+
+
 if __name__ == "__main__":          # house style: python tests/<file>.py
     import inspect
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and inspect.isfunction(v)]

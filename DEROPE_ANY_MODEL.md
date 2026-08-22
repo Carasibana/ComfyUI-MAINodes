@@ -53,13 +53,24 @@ law is now data, `model_profiles.py`, and one node applies it:
   differencing, so a pan or scroll stops scoring as jerk (the documented cause
   of panrun dilating 124 -> 345 frames). Same compiler, different signal.
 
+- **H3 Jerk Oracle `model_profile`** - the oracle can read ANOTHER model's
+  video latent: pick the preset whose latent is wired in (LTX-2.5: 128
+  channels on a 1+8k token clock; Wan 2.2: 16 channels, 1+4k). Same planner,
+  that model's frame<->token mapping, no H3 phase normalisation, holds per
+  source frame as before. Wrong channel counts and wrong lengths are refused
+  with a message that says what was expected. `minimax-h3` is the shipped
+  path, bit-identical (tested). An independent port of the three motion nodes
+  onto LTX-2.3/2.5 latents appeared publicly in August 2026 and confirmed this
+  is the right seam: the oracle, the smear and the recover carried over with
+  only the grid law changed, which is exactly what the profile holds.
+
 ### Profiles
 
-| id | block | hold_scale | legal | fps | cap | measured |
-|---|---|---|---|---|---|---|
-| `minimax-h3` | 1 | 1 | 17k+5 | 24 | VRAM | yes |
-| `ltx-2.5` | 8 | 4 | 8k+1 | 48 (the conditioning frame_rate) | 20 s / pass = 960 frames | yes (2026-08-21 ladder) |
-| `wan-2.2 (unmeasured)` | 4 | 4 | 4k+1 | 16 | none | NO - placeholder |
+| id | block | hold_scale | legal | fps | cap | latent (channels, clock) | measured |
+|---|---|---|---|---|---|---|---|
+| `minimax-h3` | 1 | 1 | 17k+5 | 24 | VRAM | 24, (1,4,4,4,4) per 17 (H3 code path) | yes |
+| `ltx-2.5` | 8 | 4 | 8k+1 | 48 (the conditioning frame_rate) | 20 s / pass = 960 frames | 128, 1+8k | yes (2026-08-21 ladder) |
+| `wan-2.2 (unmeasured)` | 4 | 4 | 4k+1 | 16 | none | 16, 1+4k | NO - placeholder |
 
 `hold_scale` is measured, never derived: LTX-2.5 needed two 8-frame blocks per
 hot hold (d=16) before the dial responded at all, which its compression ratio
@@ -74,7 +85,8 @@ create `<ComfyUI user dir>/mainodes_models.json` (or point
 
 ```json
 {"my-model": {"name": "My Model", "block": 4, "hold_scale": 4,
-              "legal": [4, 1], "fps": 16, "cap_seconds": null, "measured": false}}
+              "legal": [4, 1], "fps": 16, "cap_seconds": null, "measured": false,
+              "latent": {"channels": 16, "first": 1, "block": 4}}}
 ```
 
 and restart: it appears in the dropdown, and a row with a preset's id

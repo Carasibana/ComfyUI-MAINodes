@@ -19,6 +19,14 @@ A profile is five numbers and a flag:
                model. A custom or unmeasured profile is stamped as such in every
                report: a confident default here is how LTX d=8 fooled us for a day.
 
+  latent       how that model's VIDEO LATENT maps onto pixel frames, so the jerk
+               oracle can read the model's own latent: channels, and the token
+               clock as (first, block): token 0 owns `first` frames, every later
+               token owns `block` frames (LTX-2.5: 1 + 8k; Wan: 1 + 4k). H3 is
+               the exception with its (1,4,4,4,4)-per-17 grid and five-phase
+               normalisation, kept in motion.py bit-identical; `latent: None`
+               here means "use the H3 code path".
+
 Holds of 1 are never scaled: a hold of 1 is plain video on any model.
 
 Presets live in PRESETS. Users extend them without touching code by dropping a
@@ -32,11 +40,11 @@ import os
 PRESETS = {
     "minimax-h3": dict(
         name="MiniMax-H3", block=1, hold_scale=1, legal=(17, 5), fps=24,
-        cap_seconds=None, measured=True,
+        cap_seconds=None, measured=True, latent=None,
         note="native: the oracle's holds are in H3 frames already; smear pads to 17k+5"),
     "ltx-2.5": dict(
         name="LTX-2.5", block=8, hold_scale=4, legal=(8, 1), fps=48,
-        cap_seconds=20.0, measured=True,
+        cap_seconds=20.0, measured=True, latent=dict(channels=128, first=1, block=8),
         note="time compressed x8; hot holds must fill whole 8-frame blocks. x4 measured 2026-08-21 "
              "(d=8 uniform: staircase 0.94-0.90 across the denoise range; d=16: 0.90-0.28). "
              "fps is the frame_rate the LTXV conditioning is told (48 in the deck's graphs); the 20 s "
@@ -44,12 +52,12 @@ PRESETS = {
              "clips are windows, spliced"),
     "wan-2.2 (unmeasured)": dict(
         name="Wan 2.2", block=4, hold_scale=4, legal=(4, 1), fps=16,
-        cap_seconds=None, measured=False,
+        cap_seconds=None, measured=False, latent=dict(channels=16, first=1, block=4),
         note="placeholder from the model's published grid (4x time, 4k+1 frames, 16 fps); "
              "hold_scale is a guess until a ladder is run. Treat every number as unmeasured"),
 }
 
-FIELDS = ("name", "block", "hold_scale", "legal", "fps", "cap_seconds", "measured", "note")
+FIELDS = ("name", "block", "hold_scale", "legal", "fps", "cap_seconds", "measured", "note", "latent")
 
 
 def _user_registry_path():
@@ -77,6 +85,10 @@ def normalize(pid, raw):
         cap_seconds=(None if p.get("cap_seconds") in (None, 0, "") else float(p["cap_seconds"])),
         measured=bool(p.get("measured", False)),
         note=str(p.get("note", "")),
+        latent=(None if not p.get("latent") else dict(
+            channels=int(p["latent"].get("channels", 0)),
+            first=max(1, int(p["latent"].get("first", 1))),
+            block=max(1, int(p["latent"].get("block", 1))))),
     )
     if out["legal"][0] < 1:
         raise ValueError(f"profile {pid}: legal step must be >= 1")
@@ -164,3 +176,33 @@ def _hist(holds):
     from collections import Counter
     c = Counter(int(h) for h in holds)
     return "{" + ", ".join(f"{k}:{v}" for k, v in sorted(c.items())) + "}"
+
+
+# ------------------------------------------------------------ latent clock
+# A generic (first, block) token clock: token 0 owns `first` pixel frames, each
+# later token owns `block`. These are the three functions the oracle's planner
+# needs; motion.py keeps H3's own (1,4,4,4,4)-per-17 versions and uses these
+# only when a profile carries a `latent` entry.
+
+class LatentClock:
+    def __init__(self, profile):
+        lat = profile["latent"]
+        self.first, self.block = lat["first"], lat["block"]
+        self.channels = lat.get("channels", 0)
+        self.legal = profile["legal"]
+        self.id = profile["id"]
+
+    def tok_start_frame(self, t):
+        return 0 if t == 0 else self.first + (t - 1) * self.block
+
+    def frame_token(self, f, t_lat):
+        if f < self.first:
+            return 0
+        return min(1 + (f - self.first) // self.block, t_lat - 1)
+
+    def token_count(self, frames):
+        n = legal_ceil(frames, self.legal)
+        return 1 + max(0, -(-(n - self.first) // self.block))
+
+    def legal_ceil(self, n):
+        return legal_ceil(n, self.legal)

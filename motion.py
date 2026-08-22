@@ -185,6 +185,32 @@ PROFILE_MODES = {
 }
 
 
+def _load_profiles():
+    """model_profiles.load_profiles, tolerant of how this module was imported
+    (package in ComfyUI, top-level in the test scripts). Never raises."""
+    try:
+        try:
+            from .model_profiles import load_profiles
+        except ImportError:
+            from model_profiles import load_profiles
+        return load_profiles()
+    except Exception as e:                       # a registry typo must not kill the oracle
+        print(f"[MAINodes] model profiles unavailable: {type(e).__name__}: {e}")
+        return {}
+
+
+def _profile_ids():
+    return list(_load_profiles()) or ["minimax-h3"]
+
+
+def _LatentClock(row):
+    try:
+        from .model_profiles import LatentClock
+    except ImportError:
+        from model_profiles import LatentClock
+    return LatentClock(row)
+
+
 def _camera_compensate(v, max_shift=3):
     """Align each latent frame to its predecessor by the integer (dy, dx) shift
     that minimises their mean absolute difference, accumulated along the clip,
@@ -742,6 +768,14 @@ class H3JerkOracle:
                                   "SMOOTH synthetic content the centroid is nearly noise-free, "
                                   "so its contrast is not comparable to the value domain's "
                                   "there. Ablate it, do not assume it."}),
+            "model_profile": (["minimax-h3"] + [k for k in _profile_ids() if k != "minimax-h3"],
+                              {"default": "minimax-h3",
+                               "tooltip": "which model's latent is wired in. minimax-h3 is the shipped path, "
+                                          "bit-identical. Any other preset reads THAT model's video latent "
+                                          "(LTX-2.5: 128 channels, 1+8k token clock; Wan 2.2: 16 channels, "
+                                          "1+4k) with the same planner, no phase normalisation, and emits "
+                                          "holds per SOURCE frame as before - wire into H3 Clock Remap or "
+                                          "straight into H3 Time Smear."}),
             "abstain_below": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10.0, "step": 0.1,
                        "tooltip": "(alpha) ABSOLUTE gate, 0 = off (shipped behaviour). "
                                   "q is a quantile, so the oracle always dilates the top "
@@ -762,14 +796,41 @@ class H3JerkOracle:
     CATEGORY = "latent/minimax/motion"
 
     def read(self, samples, length, q, d_max, ramp, preset="custom", bridge=8,
-             profile_mode="value |d3| (default)", abstain_below=0.0,
+             profile_mode="value |d3| (default)", abstain_below=0.0, model_profile="minimax-h3",
              fps=24, s_per_step=0.0, est_steps=18, overhead_s=OVERHEAD_S):
         if preset in self.PRESETS:
             p = self.PRESETS[preset]
             q, d_max, ramp = p["q"], p["d_max"], p["ramp"]
-        z = _video_component(samples)
-        t_lat = z.shape[2]
-        prof = _jerk_profile(z, profile_mode)
+        clock = None
+        if model_profile != "minimax-h3":
+            # another model's latent: same planner, that model's token clock,
+            # no H3 phase normalisation. The checks are loud because a wrong
+            # length here silently misaligns every hold downstream.
+            row = _load_profiles().get(model_profile)
+            if row is None or not row.get("latent"):
+                raise ValueError(f"model_profile {model_profile!r} has no latent clock; "
+                                 f"add a 'latent' entry (channels, first, block) to its profile")
+            clock = _LatentClock(row)
+            z = samples["samples"]
+            if hasattr(z, "is_nested") and z.is_nested:
+                z = z.tensors[0]
+            if z.ndim != 5:
+                raise ValueError(f"expected a 5D video latent [B, C, T, H, W] for {model_profile}, "
+                                 f"got shape {tuple(z.shape)}")
+            if clock.channels and z.shape[1] != clock.channels:
+                raise ValueError(f"{model_profile} video latents carry {clock.channels} channels, this "
+                                 f"one has {z.shape[1]}: is the right model's latent wired in?")
+            t_lat = z.shape[2]
+            want = clock.token_count(length)
+            if t_lat != want:
+                raise ValueError(f"length={length} means {want} latent time positions on {model_profile} "
+                                 f"({clock.first}+{clock.block}k), the wired latent has {t_lat}: "
+                                 f"use the clip's real frame count")
+            prof = _jerk_profile(z, profile_mode, phase_norm=False)
+        else:
+            z = _video_component(samples)
+            t_lat = z.shape[2]
+            prof = _jerk_profile(z, profile_mode)
 
         # Absolute gate. The quantile can rank but cannot abstain, so without
         # this a calm clip still pays for its own fastest quarter.
@@ -784,9 +845,11 @@ class H3JerkOracle:
                                       f"{contrast:.2f} < {abstain_below:g}"))
 
         holds, segs_str, w0, wlen, tok_d = _profile_to_plan(
-            prof, length, q, d_max, ramp, bridge)
+            prof, length, q, d_max, ramp, bridge, clock=clock)
 
-        hold_map = json.dumps({"holds": holds, "world_len": length})
+        hold_map = json.dumps({"holds": holds, "world_len": length}
+                              if clock is None else
+                              {"holds": holds, "world_len": length, "oracle_latent": model_profile})
         profile = " ".join(f"{v:.2f}" for v in prof)
         n_held = sum(1 for h in holds if h > 1)
         report = _cost_report(
@@ -796,13 +859,17 @@ class H3JerkOracle:
         return (hold_map, segs_str, int(w0), int(wlen), profile, report)
 
 
-def _profile_to_plan(prof, length, q, d_max, ramp, bridge):
+def _profile_to_plan(prof, length, q, d_max, ramp, bridge, clock=None):
     """Per-token profile -> (holds, segments string, window_start, window_len,
     per-token hold counts).
 
     Extracted verbatim out of H3JerkOracle.read so a second oracle can compile
     its own profile through EXACTLY the same rules: an A/B between two signals
     has to differ in the signal, not in the compiler that turns it into holds.
+
+    clock=None is H3's (1,4,4,4,4)-per-17 grid, unchanged. A LatentClock
+    (model_profiles) makes the same planner read another model's latent:
+    only the frame<->token mapping and the legal grid change.
     """
     prof = np.asarray(prof, dtype=np.float64)
     t_lat = len(prof)
@@ -822,7 +889,8 @@ def _profile_to_plan(prof, length, q, d_max, ramp, bridge):
             right = np.concatenate([tok_d[1:], [1]])
             tok_d = np.maximum(tok_d, np.maximum(left, right) - 1)
 
-    holds = [int(tok_d[_frame_token(f, t_lat)]) for f in range(length)]
+    ft = _frame_token if clock is None else clock.frame_token
+    holds = [int(tok_d[ft(f, t_lat)]) for f in range(length)]
 
     segs, t0 = [], 0
     for t in range(1, t_lat + 1):
@@ -831,10 +899,15 @@ def _profile_to_plan(prof, length, q, d_max, ramp, bridge):
                 segs.append(f"{t0}:{t}:{int(tok_d[t0])}")
             t0 = t
     hot = np.where(tok_d > 1)[0]
-    if len(hot):
+    if len(hot) and clock is None:
         w0 = (_tok_start_frame(int(hot.min())) // 17) * 17
         w1 = min(length, _tok_start_frame(min(int(hot.max()) + 1, t_lat - 1)) + 4)
         wlen = _legal_ceil(w1 - w0)
+        wlen = min(wlen, length - w0) if w0 + wlen > length else wlen
+    elif len(hot):
+        w0 = clock.tok_start_frame(int(hot.min()))
+        w1 = min(length, clock.tok_start_frame(min(int(hot.max()) + 1, t_lat - 1)) + clock.block)
+        wlen = clock.legal_ceil(w1 - w0)
         wlen = min(wlen, length - w0) if w0 + wlen > length else wlen
     else:
         w0, wlen = 0, length
