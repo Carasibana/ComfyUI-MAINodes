@@ -62,6 +62,15 @@ and the finalize pass are two executions by design.
   or as "how long it costs" (cumulative holds). The compiled hold curve from
   the last run is drawn over the jerk profile in both.
 
+## Paste an API workflow
+
+With the pack installed, Ctrl-V of API-format JSON on the canvas works: the
+stock paste handler only takes UI-format workflows, so `web/api_paste.js`
+catches API JSON first and routes it through the frontend's own `loadApiJson`
+(widgets built from the server schema, never by position). It replaces the
+graph, so a non-empty canvas asks first. The deck's "api" links and every
+`*_api.json` in `examples/` paste directly now.
+
 ## What these replace
 
 Our graphs used VHS_LoadVideoPath and VHS_SelectEveryNthImage; both are
