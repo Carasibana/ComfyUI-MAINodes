@@ -91,6 +91,8 @@ class H3ClockRemap:
         out = {"holds": holds_out, "world_len": m.get("world_len", len(holds_in)),
                "profile": prof["id"], "legal": list(prof["legal"]), "fps": prof["fps"],
                "source_holds": holds_in}
+        if m.get("window"):                  # a cropped clock keeps saying where it sits
+            out["window"] = m["window"]
         print("[MAINodes] H3ClockRemap " + rep.replace("\n", " | "))
         return (json.dumps(out), int(total), rep, json.dumps(prof))
 
