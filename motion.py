@@ -21,6 +21,7 @@ Pipeline (all defaults = measured best values, 2026-08-08):
 """
 import bisect
 import json
+import os
 import math
 
 import numpy as np
@@ -181,7 +182,63 @@ PROFILE_MODES = {
     "value |d3| (default)": ("value", 3),
     "value |d1| (energy baseline)": ("value", 1),
     "trajectory centroid |d3|": ("traj", 3),
+    "value |d3| camera-compensated": ("camvalue", 3),
 }
+
+
+def _load_profiles():
+    """model_profiles.load_profiles, tolerant of how this module was imported
+    (package in ComfyUI, top-level in the test scripts). Never raises."""
+    try:
+        try:
+            from .model_profiles import load_profiles
+        except ImportError:
+            from model_profiles import load_profiles
+        return load_profiles()
+    except Exception as e:                       # a registry typo must not kill the oracle
+        print(f"[MAINodes] model profiles unavailable: {type(e).__name__}: {e}")
+        return {}
+
+
+def _profile_ids():
+    return list(_load_profiles()) or ["minimax-h3"]
+
+
+def _LatentClock(row):
+    try:
+        from .model_profiles import LatentClock
+    except ImportError:
+        from model_profiles import LatentClock
+    return LatentClock(row)
+
+
+def _camera_compensate(v, max_shift=3):
+    """Align each latent frame to its predecessor by the integer (dy, dx) shift
+    that minimises their mean absolute difference, accumulated along the clip,
+    so a steady pan or scroll reads as stillness and only motion AGAINST the
+    camera survives into the differences. Edges wrap (np.roll); at <= 3 latent
+    cells on a 64-cell frame that is a border effect, not a signal.
+
+    ROADMAP section 2 ("camera-compensated jerk"): the documented cause of
+    panrun's over-dilation (124 -> 345 frames) was the pan itself scoring as
+    jerk. Same seam as the other modes: a different profile, the same compiler."""
+    T = v.shape[2]
+    out = np.empty_like(v)
+    out[:, :, 0] = v[:, :, 0]
+    dy = dx = 0
+    for t in range(1, T):
+        prev = out[:, :, t - 1]
+        cur = v[:, :, t]
+        best, bs = None, (dy, dx)
+        for sy in range(dy - max_shift, dy + max_shift + 1):
+            for sx in range(dx - max_shift, dx + max_shift + 1):
+                cand = np.roll(cur, (sy, sx), axis=(-2, -1))
+                err = float(np.abs(cand - prev).mean())
+                if best is None or err < best:
+                    best, bs = err, (sy, sx)
+        dy, dx = bs
+        out[:, :, t] = np.roll(cur, (dy, dx), axis=(-2, -1))
+    return out
 
 
 def _jerk_profile(z, mode="value |d3| (default)", phase_norm=True):
@@ -193,7 +250,10 @@ def _jerk_profile(z, mode="value |d3| (default)", phase_norm=True):
     """
     v = z.detach().float().cpu().numpy()          # (1, 24, T, h, w)
     kind, order = PROFILE_MODES.get(mode, ("value", 3))
-    prof = _value_profile(v, order) if kind == "value" else _trajectory_profile(v, order)
+    if kind == "camvalue":
+        prof = _value_profile(_camera_compensate(v), order)
+    else:
+        prof = _value_profile(v, order) if kind == "value" else _trajectory_profile(v, order)
     return _phase_norm(prof) if phase_norm else prof   # (t_lat,)
 
 
@@ -412,7 +472,7 @@ def _cost_widgets(with_fps=False):
                        "tooltip": "seconds per step from a baseline render of this clip; 0 skips the minutes estimate"})
     w["est_steps"] = ("INT", {"default": 18, "min": 1, "max": 100,
                       "tooltip": "steps the regen pass will actually run (total_steps x inject)"})
-    w["overhead_s"] = ("FLOAT", {"default": OVERHEAD_S, "min": 0.0, "max": 600.0, "step": 1.0,
+    w["overhead_s"] = ("FLOAT", {"default": OVERHEAD_S, "min": 0.0, "max": 600.0, "step": 0.1,
                        "tooltip": "fixed non-sampling seconds per render (setup, VAE encode/decode). "
                                   "40 measured at 1.5 MP on a warm instance; take it from the gap "
                                   "between your own 1-step and 2-step wall times"})
@@ -720,6 +780,14 @@ class H3JerkOracle:
                                   "about 2x higher on a jerky clip than a smooth one, so "
                                   "try 1.5-2.5 and check against a clip you know is calm."}),
             **_cost_widgets(with_fps=True),
+            "model_profile": (["minimax-h3"] + [k for k in _profile_ids() if k != "minimax-h3"],
+                              {"default": "minimax-h3",
+                               "tooltip": "which model's latent is wired in. minimax-h3 is the shipped path, "
+                                          "bit-identical. Any other preset reads THAT model's video latent "
+                                          "(LTX-2.5: 128 channels, 1+8k token clock; Wan 2.2: 16 channels, "
+                                          "1+4k) with the same planner, no phase normalisation, and emits "
+                                          "holds per SOURCE frame as before - wire into H3 Clock Remap or "
+                                          "straight into H3 Time Smear."}),
         }}
 
     RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "STRING", "STRING")
@@ -728,15 +796,53 @@ class H3JerkOracle:
     FUNCTION = "read"
     CATEGORY = "latent/minimax/motion"
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, model_profile=None):
+        # Own the check so a stale or wrong value (0, "", an old name) never
+        # rejects the prompt: read() routes anything unknown to minimax-h3.
+        return True
+
     def read(self, samples, length, q, d_max, ramp, preset="custom", bridge=8,
-             profile_mode="value |d3| (default)", abstain_below=0.0,
+             profile_mode="value |d3| (default)", abstain_below=0.0, model_profile="minimax-h3",
              fps=24, s_per_step=0.0, est_steps=18, overhead_s=OVERHEAD_S):
         if preset in self.PRESETS:
             p = self.PRESETS[preset]
             q, d_max, ramp = p["q"], p["d_max"], p["ramp"]
-        z = _video_component(samples)
-        t_lat = z.shape[2]
-        prof = _jerk_profile(z, profile_mode)
+        clock = None
+        if model_profile not in (None, "", "minimax-h3") and str(model_profile) not in _load_profiles():
+            print(f"[MAINodes] H3JerkOracle: model_profile {model_profile!r} is not a profile; using minimax-h3")
+            model_profile = "minimax-h3"
+        if model_profile in (None, "", 0, "0"):
+            model_profile = "minimax-h3"
+        if model_profile != "minimax-h3":
+            # another model's latent: same planner, that model's token clock,
+            # no H3 phase normalisation. The checks are loud because a wrong
+            # length here silently misaligns every hold downstream.
+            row = _load_profiles().get(model_profile)
+            if row is None or not row.get("latent"):
+                raise ValueError(f"model_profile {model_profile!r} has no latent clock; "
+                                 f"add a 'latent' entry (channels, first, block) to its profile")
+            clock = _LatentClock(row)
+            z = samples["samples"]
+            if hasattr(z, "is_nested") and z.is_nested:
+                z = z.tensors[0]
+            if z.ndim != 5:
+                raise ValueError(f"expected a 5D video latent [B, C, T, H, W] for {model_profile}, "
+                                 f"got shape {tuple(z.shape)}")
+            if clock.channels and z.shape[1] != clock.channels:
+                raise ValueError(f"{model_profile} video latents carry {clock.channels} channels, this "
+                                 f"one has {z.shape[1]}: is the right model's latent wired in?")
+            t_lat = z.shape[2]
+            want = clock.token_count(length)
+            if t_lat != want:
+                raise ValueError(f"length={length} means {want} latent time positions on {model_profile} "
+                                 f"({clock.first}+{clock.block}k), the wired latent has {t_lat}: "
+                                 f"use the clip's real frame count")
+            prof = _jerk_profile(z, profile_mode, phase_norm=False)
+        else:
+            z = _video_component(samples)
+            t_lat = z.shape[2]
+            prof = _jerk_profile(z, profile_mode)
 
         # Absolute gate. The quantile can rank but cannot abstain, so without
         # this a calm clip still pays for its own fastest quarter.
@@ -751,9 +857,11 @@ class H3JerkOracle:
                                       f"{contrast:.2f} < {abstain_below:g}"))
 
         holds, segs_str, w0, wlen, tok_d = _profile_to_plan(
-            prof, length, q, d_max, ramp, bridge)
+            prof, length, q, d_max, ramp, bridge, clock=clock)
 
-        hold_map = json.dumps({"holds": holds, "world_len": length})
+        hold_map = json.dumps({"holds": holds, "world_len": length}
+                              if clock is None else
+                              {"holds": holds, "world_len": length, "oracle_latent": model_profile})
         profile = " ".join(f"{v:.2f}" for v in prof)
         n_held = sum(1 for h in holds if h > 1)
         report = _cost_report(
@@ -763,13 +871,17 @@ class H3JerkOracle:
         return (hold_map, segs_str, int(w0), int(wlen), profile, report)
 
 
-def _profile_to_plan(prof, length, q, d_max, ramp, bridge):
+def _profile_to_plan(prof, length, q, d_max, ramp, bridge, clock=None):
     """Per-token profile -> (holds, segments string, window_start, window_len,
     per-token hold counts).
 
     Extracted verbatim out of H3JerkOracle.read so a second oracle can compile
     its own profile through EXACTLY the same rules: an A/B between two signals
     has to differ in the signal, not in the compiler that turns it into holds.
+
+    clock=None is H3's (1,4,4,4,4)-per-17 grid, unchanged. A LatentClock
+    (model_profiles) makes the same planner read another model's latent:
+    only the frame<->token mapping and the legal grid change.
     """
     prof = np.asarray(prof, dtype=np.float64)
     t_lat = len(prof)
@@ -789,7 +901,8 @@ def _profile_to_plan(prof, length, q, d_max, ramp, bridge):
             right = np.concatenate([tok_d[1:], [1]])
             tok_d = np.maximum(tok_d, np.maximum(left, right) - 1)
 
-    holds = [int(tok_d[_frame_token(f, t_lat)]) for f in range(length)]
+    ft = _frame_token if clock is None else clock.frame_token
+    holds = [int(tok_d[ft(f, t_lat)]) for f in range(length)]
 
     segs, t0 = [], 0
     for t in range(1, t_lat + 1):
@@ -798,10 +911,15 @@ def _profile_to_plan(prof, length, q, d_max, ramp, bridge):
                 segs.append(f"{t0}:{t}:{int(tok_d[t0])}")
             t0 = t
     hot = np.where(tok_d > 1)[0]
-    if len(hot):
+    if len(hot) and clock is None:
         w0 = (_tok_start_frame(int(hot.min())) // 17) * 17
         w1 = min(length, _tok_start_frame(min(int(hot.max()) + 1, t_lat - 1)) + 4)
         wlen = _legal_ceil(w1 - w0)
+        wlen = min(wlen, length - w0) if w0 + wlen > length else wlen
+    elif len(hot):
+        w0 = clock.tok_start_frame(int(hot.min()))
+        w1 = min(length, clock.tok_start_frame(min(int(hot.max()) + 1, t_lat - 1)) + clock.block)
+        wlen = clock.legal_ceil(w1 - w0)
         wlen = min(wlen, length - w0) if w0 + wlen > length else wlen
     else:
         w0, wlen = 0, length
@@ -1500,13 +1618,23 @@ class H3ManualHoldMap:
             a, b = max(0, to_frame(a_s)), min(length - 1, to_frame(b_s))
             assert a <= b, f"empty range '{part}' after clamping to the clip"
             spans.append((a, b, h))
-        assert spans, "give at least one range, e.g. '36-60' or '1.5s-2.4s:4'"
+        wired = bool(oracle_hold_map.strip())
+        assert spans or wired, ("give at least one range, e.g. '36-60' or "
+                                "'1.5s-2.4s:4' (or wire the oracle)")
 
         frame_holds = np.ones(length, int)
-        if oracle_hold_map.strip():
+        passthrough = False
+        if wired:
             oracle = json.loads(oracle_hold_map)["holds"]
             assert len(oracle) == length, (
                 f"oracle map covers {len(oracle)} frames, length is {length}")
+            if not spans:
+                # wired oracle, nothing typed yet: pass its plan straight through,
+                # so the first run needs no typing and shows the spans to edit
+                # (operator 2026-08-21: "populated with what the oracle is thinking")
+                frame_holds[:] = oracle
+                passthrough = True
+                print("[MAINodes] H3ManualHoldMap: no ranges typed, passing the oracle's map through")
             for a, b, _ in spans:                 # gate: oracle inside, 1 outside
                 frame_holds[a:b + 1] = oracle[a:b + 1]
         else:
@@ -1517,6 +1645,9 @@ class H3ManualHoldMap:
                                                    ramp, bridge)
         report = _cost_report(length, _legal_ceil(sum(holds)), fps,
                               s_per_step, est_steps, overhead_s)
+        if passthrough:
+            report += ("\noracle passed through (no ranges typed); copy the spans "
+                       "above into ranges to edit them")
         hold_map = json.dumps({"holds": holds, "world_len": length})
         return (hold_map, segments, report)
 
@@ -1546,8 +1677,9 @@ class H3TimeSmear:
         "than 17 world frames are left alone. The console and the report "
         "say so whenever a map is rewritten.\n\n"
         "Output length is snapped up to the H3-legal 17k+5 grid by extending "
-        "the final hold. ALWAYS pass hold_map_used to H3 Exact Recover — it "
-        "records exactly what happened so recovery is lossless.\n\n"
+        "the final hold - or to the TARGET model's grid when the map comes from "
+        "H3 Clock Remap (LTX-2.5: 8k+1). ALWAYS pass hold_map_used to H3 Exact "
+        "Recover — it records exactly what happened so recovery is lossless.\n\n"
         "EFFECTIVE SIZE: the report output is the price tag for everything "
         "downstream of here — a 5 s action clip regenerates as 11 to 13 s of "
         "frame data, and that dilated length, not the runtime, is what sets "
@@ -1579,20 +1711,31 @@ class H3TimeSmear:
               s_per_step=0.0, est_steps=18, overhead_s=OVERHEAD_S):
         images = images.detach().cpu()  # keep the (possibly huge) held batch off VRAM
         n = images.shape[0]
-        holds = (json.loads(hold_map)["holds"] if hold_map.strip()
-                 else [dilation] * n)
+        hm = json.loads(hold_map) if hold_map.strip() else {}
+        holds = hm["holds"] if hm else [dilation] * n
         assert len(holds) == n, f"hold map covers {len(holds)} frames, batch has {n}"
+        # A map from H3 Clock Remap carries the TARGET model's legal grid; an
+        # oracle / manual map carries none and gets H3's 17k+5 as before.
+        legal = tuple(hm["legal"]) if hm.get("legal") else None
         note = None
-        if expand_to_end:
+        if expand_to_end and not legal:
             holds, note = expand_hold_map_to_end(holds)
             if note:
                 print("[MAINodes] H3TimeSmear " + note)
-        target = _legal_ceil(sum(holds))
+        if legal:
+            try:
+                from .model_profiles import legal_ceil as _gen_legal
+            except ImportError:                  # tests import motion top-level
+                from model_profiles import legal_ceil as _gen_legal
+            target = _gen_legal(sum(holds), legal)
+        else:
+            target = _legal_ceil(sum(holds))
         n_held = sum(1 for h in holds if h > 1)   # count before the tail pad
         holds = list(holds)
         holds[-1] += target - sum(holds)          # tail pad lives in the last hold
         idx = torch.tensor([i for i, h in enumerate(holds) for _ in range(h)])
-        used = json.dumps({"holds": holds, "world_len": n})
+        used = dict(hm, holds=holds, world_len=n) if hm else {"holds": holds, "world_len": n}
+        used = json.dumps(used)
         mode = ("uniform x{}".format(dilation) if not hold_map.strip()
                 else "adaptive, {} of {} frames held".format(n_held, n))
         report = _cost_report(n, target, fps, s_per_step, est_steps,
@@ -3159,7 +3302,11 @@ class H3MotionEditor:
                                "tooltip": "what the composite shows on frames no block covers"}),
             "paint_res": ("INT", {"default": 512, "min": 128, "max": 1024, "step": 64,
                           "tooltip": "mask compile width; the composite rescales to full res"}),
-        }}
+            "hold_until_edited": ("BOOLEAN", {"default": True,
+                                  "tooltip": "with no blocks laid out yet, stop the graph here after the "
+                                             "filmstrip is written (nothing downstream runs); lay out blocks "
+                                             "and run again. Off = an empty editor passes the oracle's map through"}),
+        }, "hidden": {"unique_id": "UNIQUE_ID"}}
 
     RETURN_TYPES = ("STRING", "MASK", "STRING", "STRING")
     RETURN_NAMES = ("hold_map", "mask", "envelopes", "report")
@@ -3198,9 +3345,47 @@ class H3MotionEditor:
             strip.append({"filename": name_s, "subfolder": sub, "type": "temp"})
         return paint, strip
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, fps=None, ramp=None, bridge=None, invert_mask=None,
+                        outside_blocks=None, paint_res=None, hold_until_edited=None):
+        # The frontend has been seen to submit this node's widget values shifted
+        # by a slot after interactive edits (2026-08-21). The editor_state JSON
+        # is the real input and is self-describing; the chrome values are
+        # coerced in compile() with a warning rather than failing the prompt.
+        return True
+
+    @staticmethod
+    def _coerce(name, value, default, kind, choices=None, lo=None, hi=None):
+        try:
+            if kind is bool:
+                v = value if isinstance(value, bool) else str(value).lower() in ("true", "1", "yes")
+            elif kind is int:
+                v = int(float(value))
+                if lo is not None and (v < lo or v > hi):
+                    raise ValueError
+            elif kind is str:
+                v = str(value)
+                if choices and v not in choices:
+                    raise ValueError
+            else:
+                v = value
+            return v
+        except (TypeError, ValueError):
+            print(f"[MAINodes] H3MotionEditor: {name}={value!r} is not usable (widget values shifted?); using {default!r}")
+            return default
+
     def compile(self, images, editor_state, samples=None, oracle_hold_map="",
                 fps=24, ramp=True, bridge=8, invert_mask=False,
-                outside_blocks="baseline", paint_res=512):
+                outside_blocks="baseline", paint_res=512, hold_until_edited=True,
+                unique_id=None):
+        fps = self._coerce("fps", fps, 24, int, lo=1, hi=120)
+        ramp = self._coerce("ramp", ramp, True, bool)
+        bridge = self._coerce("bridge", bridge, 8, int, lo=0, hi=20)
+        invert_mask = self._coerce("invert_mask", invert_mask, False, bool)
+        outside_blocks = self._coerce("outside_blocks", outside_blocks, "baseline", str,
+                                      choices=("baseline", "regenerated"))
+        paint_res = self._coerce("paint_res", paint_res, 512, int, lo=128, hi=1024)
+        hold_until_edited = self._coerce("hold_until_edited", hold_until_edited, True, bool)
         import torch.nn.functional as F
 
         images = images.detach().float().cpu()
@@ -3211,7 +3396,7 @@ class H3MotionEditor:
         state = {}
         if editor_state.strip():
             state = json.loads(editor_state)
-        blocks = state.get("blocks") or []
+        blocks = [b for b in (state.get("blocks") or []) if not b.get("mute")]   # muted rows are kept, not compiled
 
         oracle = None
         if oracle_hold_map.strip():
@@ -3315,9 +3500,68 @@ class H3MotionEditor:
                     for v in _jerk_profile(_video_component(samples))]
         ui = {"h3_paint": paint, "h3_strip": strip,
               "h3_profile": prof, "h3_length": [n], "h3_fps": [fps],
-              "h3_report": [report]}
+              "h3_report": [report],
+              "h3_holds": [int(h) for h in holds]}     # the compiled clock, for the playhead views
+        held = bool(hold_until_edited) and not blocks
+        ui["h3_held"] = [held]
+        _editor_stash(unique_id, ui)
+        if held:
+            # Nothing laid out yet: the filmstrip is what this run was for. Block
+            # every consumer silently (no error, no pass 2); a run after blocks
+            # exist goes through, and the base pass is cached by then.
+            from comfy_execution.graph_utils import ExecutionBlocker
+            report += "\nHELD: no blocks yet, nothing downstream ran. Lay out blocks and run again."
+            print("[MAINodes] H3MotionEditor held the graph: no blocks yet (hold_until_edited)")
+            return {"ui": ui, "result": (ExecutionBlocker(None), ExecutionBlocker(None),
+                                         ExecutionBlocker(None), report)}
         return {"ui": ui,
                 "result": (hold_map, mask, envelopes, report)}
+
+
+# ---- the editor's last payload per node, for a fresh page load ----------
+# Lives in the temp directory, so it has exactly ComfyUI's own cache lifetime:
+# survives a page reload, dies with a server restart.
+def _editor_stash_dir():
+    import folder_paths
+    d = os.path.join(folder_paths.get_temp_directory(), "h3_editor")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _editor_stash(unique_id, ui):
+    if unique_id is None:
+        return
+    try:
+        with open(os.path.join(_editor_stash_dir(), f"last_{unique_id}.json"), "w") as f:
+            json.dump(ui, f)
+    except Exception as e:                       # never let bookkeeping fail a run
+        print(f"[MAINodes] editor stash skipped: {type(e).__name__}: {e}")
+
+
+def _install_editor_route():
+    try:
+        from server import PromptServer
+        from aiohttp import web
+    except Exception:
+        return
+    srv = getattr(PromptServer, "instance", None)
+    if srv is None or getattr(srv, "_h3_editor_route", False):
+        return
+
+    @srv.routes.get("/mainodes/editor/{nid}")
+    async def _last(request):
+        nid = "".join(ch for ch in request.match_info["nid"] if ch.isalnum() or ch in "-_")
+        path = os.path.join(_editor_stash_dir(), f"last_{nid}.json")
+        if not os.path.exists(path):
+            return web.json_response({}, status=404)
+        try:
+            return web.json_response(json.load(open(path)))
+        except Exception:
+            return web.json_response({}, status=404)
+    srv._h3_editor_route = True
+
+
+_install_editor_route()
 
 
 class H3SegmentCrop:

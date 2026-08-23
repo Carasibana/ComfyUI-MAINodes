@@ -63,6 +63,9 @@ class MotionEditor {
     this.undoStack = [];
     this.imgCache = new Map();
     this.report = "";
+    this.holds = [];            // compiled hold map (1 per world frame), from the last run
+    this.clock = "world";       // "world" | "dilated": how the timeline's x-axis reads time
+    this.playTimer = null;
     this.drag = null;
 
     this.sw = node.widgets.find((w) => w.name === "editor_state");
@@ -74,27 +77,93 @@ class MotionEditor {
     }
     this.buildDOM();
     this.redrawAll();
+    // the node's id is final only after the loader has placed it; ask then
+    setTimeout(() => this.restoreLast(), 300);
+    setTimeout(() => { if (!this.frames.strip.length) this.restoreLast(); }, 2000);
+  }
+  // A fresh page load asks the server for this node's last payload (filmstrip,
+  // profile, hold curve). Same lifetime as ComfyUI's cache: gone after a restart.
+  async restoreLast() {
+    try {
+      const r = await api.fetchApi(`/mainodes/editor/${encodeURIComponent(String(this.node.id))}`);
+      if (!r.ok) return;
+      const msg = await r.json();
+      if (msg && (msg.h3_strip || msg.h3_profile)) { this.onExecuted(msg); this.status("restored the last run's filmstrip from the server"); }
+    } catch (e) { /* no stash, fine */ }
   }
 
   // ---------- state ----------
   pushUndo() {
     this.undoStack.push(JSON.stringify(this.state));
-    if (this.undoStack.length > 40) this.undoStack.shift();
+    if (this.undoStack.length > 60) this.undoStack.shift();
+    this.redoStack = [];
   }
   undo() {
     const s = this.undoStack.pop();
-    if (!s) return;
+    if (!s) { this.status("nothing to undo"); return; }
+    (this.redoStack = this.redoStack || []).push(JSON.stringify(this.state));
     this.state = JSON.parse(s);
     if (this.sel && !this.block(this.sel)) this.sel = null;
     this.commit(false);
     this.redrawAll();
+    this.status(`undo (${this.undoStack.length} left)`);
+  }
+  redo() {
+    const s = (this.redoStack || []).pop();
+    if (!s) { this.status("nothing to redo"); return; }
+    this.undoStack.push(JSON.stringify(this.state));
+    this.state = JSON.parse(s);
+    this.commit(false);
+    this.redrawAll();
+    this.status("redo");
   }
   commit(push = true) {
     if (push === "undo") this.pushUndo();
-    if (this.sw) this.sw.value = JSON.stringify(this.state);
+    this.lastCommitted = JSON.stringify(this.state);
+    if (this.sw) this.sw.value = this.lastCommitted;
     this.node.graph?.setDirtyCanvas(true, true);
     this.updatePrice();
   }
+  // The hidden editor_state widget IS the state: a graph-level undo (ComfyUI's
+  // ctrl+z) rolls the widget back without telling us, so we watch it and
+  // re-render from it instead of going blank.
+  watchWidget() {
+    if (!this.sw || this._watch) return;
+    this.lastCommitted = this.sw.value;
+    this._watch = setInterval(() => {
+      const v = this.sw.value;
+      if (v === this.lastCommitted) return;
+      try {
+        const st = JSON.parse(v || "{}");
+        if (st && st.blocks) {
+          this.undoStack.push(JSON.stringify(this.state));
+          this.state = st; this.lastCommitted = v;
+          if (this.sel && !this.block(this.sel)) this.sel = null;
+          this.redrawAll(); this.status("state restored from the workflow (graph undo/redo)");
+        }
+      } catch (e) { /* mid-edit text, ignore */ }
+    }, 400);
+  }
+  idx(b) { return this.state.blocks.indexOf(b); }
+  // The hold map the CURRENT blocks would compile to, client-side: explicit
+  // holds from the rows (with their automation), oracle blocks (hold 0) from the
+  // last run's compiled map where we have it (estimated x4 where we do not),
+  // everything outside blocks at 1. This drives the dilated clock, the play
+  // loop and the price, so an edit is seen before it is rendered.
+  previewHolds() {
+    const n = this.length, last = this.holds.length === n ? this.holds : null;
+    const out = new Array(n).fill(1);
+    for (const b of this.state.blocks) {
+      if (b.mute) continue;
+      for (let f = Math.max(0, b.start); f <= Math.min(b.end, n - 1); f++) {
+        let h = Math.round(envValue(b.auto, "hold", f, b.hold || 0));
+        if (h <= 0) h = last ? last[f] : 4;
+        out[f] = Math.max(out[f], h);
+      }
+    }
+    return this.state.blocks.some((b) => !b.mute) ? out : (last || out);
+  }
+  status(t) { if (this.statusEl) this.statusEl.textContent = t; }
   block(id) { return this.state.blocks.find((b) => b.id === id); }
 
   defaultBlock(a, z) {
@@ -141,6 +210,8 @@ class MotionEditor {
     if (msg?.h3_length?.length) this.length = msg.h3_length[0];
     if (msg?.h3_fps?.length) this.fps = msg.h3_fps[0];
     if (msg?.h3_report?.length) this.report = msg.h3_report[0];
+    if (msg?.h3_holds) this.holds = msg.h3_holds;
+    if (msg?.h3_held?.[0]) this.status("held: no blocks yet, nothing downstream ran. Lay out blocks (drag on the block lane) and run again");
     this.imgCache.clear();
     this.cur = clamp(this.cur, 0, this.length - 1);
     this.redrawAll();
@@ -186,20 +257,38 @@ class MotionEditor {
       display: "flex", flexDirection: "column", gap: "4px",
       background: "#1b1b1b", padding: "6px", borderRadius: "6px",
       fontFamily: "sans-serif", fontSize: "11px", color: "#ccc",
-      width: "100%", boxSizing: "border-box" });
+      width: "100%", height: "100%", boxSizing: "border-box", overflowY: "auto", overflowX: "hidden" });
+    root.dataset.h3 = "editor-root";
+    // A DEFINITE width. The DOM widget's container shrink-wraps to content and
+    // the canvases size themselves from their client width, so without this
+    // the rows panel and the timeline collapse each other (seen headless
+    // 2026-08-22: 558 -> 268 px, and drags overshooting to the last frame).
+    root.style.width = Math.max(600, (this.node.size?.[0] || 640) - 24) + "px";
+    root.style.minWidth = "0";
     root.addEventListener("pointerdown", (e) => e.stopPropagation());
     root.addEventListener("keydown", (e) => e.stopPropagation());
     root.tabIndex = 0;
+    root.addEventListener("pointerdown", () => root.focus({ preventScroll: true }));
     root.addEventListener("keydown", (e) => {
-      if (e.key === "ArrowLeft") { this.setFrame(this.cur - 1); e.preventDefault(); }
-      if (e.key === "ArrowRight") { this.setFrame(this.cur + 1); e.preventDefault(); }
-      if ((e.ctrlKey || e.metaKey) && e.key === "z") { this.undo(); e.preventDefault(); }
-      if (e.key === "Delete" && this.sel) this.deleteBlock(this.sel);
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
+      const k = e.key.toLowerCase();
+      if (e.key === " ") { this.setPlay(!this.playTimer); e.preventDefault(); }
+      else if (e.key === "ArrowLeft") { this.setFrame(this.cur - (e.shiftKey ? 12 : 1)); e.preventDefault(); }
+      else if (e.key === "ArrowRight") { this.setFrame(this.cur + (e.shiftKey ? 12 : 1)); e.preventDefault(); }
+      else if ((e.ctrlKey || e.metaKey) && k === "z" && e.shiftKey) { this.redo(); e.preventDefault(); }
+      else if ((e.ctrlKey || e.metaKey) && k === "z") { this.undo(); e.preventDefault(); }
+      else if ((e.ctrlKey || e.metaKey) && k === "y") { this.redo(); e.preventDefault(); }
+      else if (e.key === "Delete" && this.sel) this.deleteBlock(this.sel);
+      else if (k === "i" && this.sel) { const b = this.block(this.sel); this.pushUndo(); b.start = clamp(this.cur, 0, b.end); this.commit(); this.redrawAll(); }
+      else if (k === "o" && this.sel) { const b = this.block(this.sel); this.pushUndo(); b.end = clamp(this.cur, b.start, this.length - 1); this.commit(); this.redrawAll(); }
+      else if (k === "e" && this.sel) this.openModal(this.sel);
+      else if (/^[1-9]$/.test(e.key)) { const b = this.state.blocks[parseInt(e.key) - 1]; if (b) { this.sel = b.id; this.redrawAll(); } }
     });
 
     // toolbar
     const tb = this.el("div", { display: "flex", gap: "5px", flexWrap: "wrap",
-                                alignItems: "center" }, root);
+                                alignItems: "center", flex: "0 0 auto" }, root);
     this.btn(tb, "+ block", () => {
       this.pushUndo();
       const a = clamp(this.cur, 0, this.length - 9);
@@ -241,18 +330,39 @@ class MotionEditor {
       b.textContent = `onion: ${this.onion ? "on" : "off"}`;
       this.drawPaint();
     });
-    this.btn(tb, "undo", () => this.undo(), "ctrl+z");
+    this.btn(tb, "undo", () => this.undo(), "ctrl+z inside the editor; a graph-level ctrl+z is picked up too");
+    this.btn(tb, "redo", () => this.redo(), "ctrl+shift+z / ctrl+y");
+    this.el("span", { width: "8px" }, tb);
+    this.playBtn = this.btn(tb, "Play", () => this.setPlay(!this.playTimer),
+      "play the clip from the filmstrip at fps (space); in the dilated clock each frame lingers for its hold");
+    this.el("span", { width: "8px" }, tb);
+    this.btn(tb, "run to here", () => this.run(true),
+      "queue only up to this node: base pass + oracle + filmstrip, nothing downstream (partial execution)");
+    this.btn(tb, "run from here", () => this.run(false),
+      "queue the graph; unchanged upstream nodes come from ComfyUI's cache, so it resumes at this node");
+    this.clockBtn = this.btn(tb, "clock: world", (b) => {
+      this.clock = this.clock === "world" ? "dilated" : "world";
+      b.textContent = `clock: ${this.clock}`;
+      this.redrawAll();
+    }, "world: x = when (frame). dilated: x = how long it costs (cumulative holds), the slowdown seen");
     this.setTool("brush");
+
+    // edit rows: one line per block, above the timeline (DAW-style clip list)
+    this.rowsWrap = this.el("div", { display: "flex", flexDirection: "column", gap: "2px", flex: "0 0 auto" }, root);
+    this.rowsWrap.dataset.h3 = "rows";
+    this.statusEl = this.el("div", { color: "#9ab", minHeight: "14px", fontSize: "11px", flex: "0 0 auto" }, root,
+      "drag on the block lane to create a block; rows above list every edit");
 
     // timeline
     this.tl = this.el("canvas", { width: "100%", cursor: "crosshair",
-                                  borderRadius: "4px" }, root);
+                                  borderRadius: "4px", flex: "0 0 auto" }, root);
+    this.tl.dataset.h3 = "timeline";
     this.tl.height = 130;
     this.bindTimeline();
 
     // automation lane
     this.laneWrap = this.el("div", { display: "none", flexDirection: "column",
-                                     gap: "2px" }, root);
+                                     gap: "2px", flex: "0 0 auto" }, root);
     this.laneLabel = this.el("div", {}, this.laneWrap, "automation");
     this.lane = this.el("canvas", { width: "100%", borderRadius: "4px",
                                     cursor: "crosshair" }, this.laneWrap);
@@ -260,8 +370,9 @@ class MotionEditor {
     this.bindLane();
 
     // paint area
-    this.paintWrap = this.el("div", { position: "relative", width: "100%" }, root);
-    this.paint = this.el("canvas", { width: "100%", borderRadius: "4px",
+    this.paintWrap = this.el("div", { position: "relative", width: "100%", flex: "0 0 auto",
+                                      display: "flex", justifyContent: "center", background: "#000", borderRadius: "4px" }, root);
+    this.paint = this.el("canvas", { height: "340px", width: "auto", maxWidth: "100%", borderRadius: "4px",
                                      cursor: "none", display: "block" },
                          this.paintWrap);
     this.paint.height = 300;
@@ -275,14 +386,184 @@ class MotionEditor {
     // dials
     this.dials = this.el("div", { display: "flex", gap: "10px",
                                   flexWrap: "wrap", alignItems: "center",
-                                  minHeight: "22px" }, root);
-    this.priceEl = this.el("div", { color: "#9c9", minHeight: "14px" }, root);
+                                  minHeight: "22px", flex: "0 0 auto" }, root);
+    this.priceEl = this.el("div", { color: "#9c9", minHeight: "14px", flex: "0 0 auto" }, root);
+    this.priceEl.dataset.h3 = "price"; this.statusEl.dataset.h3 = "status";
 
     this.node.addDOMWidget("h3_editor_ui", "div", root, { serialize: false });
     const sz = this.node.size;
-    this.node.setSize([Math.max(sz[0], 640), Math.max(sz[1], 700)]);
+    this.node.setSize([Math.max(sz[0], 640), Math.max(sz[1], 980)]);
     this.root = root;
     new ResizeObserver(() => this.redrawAll()).observe(root);
+    this.watchWidget();
+  }
+
+  // ---------- rows: every edit as a line item ----------
+  buildRows() {
+    const wrap = this.rowsWrap; if (!wrap) return;
+    wrap.innerHTML = "";
+    const blocks = this.state.blocks;
+    if (!blocks.length) return;
+    wrap.style.minWidth = "0"; wrap.style.overflowX = "auto";
+    const head = this.el("div", { display: "grid", gridTemplateColumns: "22px minmax(120px,1fr) 64px 64px 56px 56px 56px 36px 40px 46px",
+      gap: "4px", color: "#777", fontSize: "10px", padding: "0 2px" }, wrap);
+    for (const h of ["#", "range", "in", "out", "hold", "feather", "strength", "mute", "", ""]) this.el("span", {}, head, h);
+    const t = (f) => (f / this.fps).toFixed(2) + "s";
+    blocks.forEach((b, i) => {
+      const col = BLOCK_COLORS[i % BLOCK_COLORS.length];
+      const row = this.el("div", { display: "grid", gridTemplateColumns: "22px minmax(120px,1fr) 64px 64px 56px 56px 56px 36px 40px 46px",
+        gap: "4px", alignItems: "center", padding: "2px", borderRadius: "3px",
+        background: b.id === this.sel ? "#2a3a2a" : "#222", opacity: b.mute ? "0.55" : "1" }, wrap);
+      row.onclick = () => { this.sel = b.id; this.redrawAll(); };
+      const sw = this.el("span", { display: "inline-block", width: "14px", height: "14px", borderRadius: "3px", background: col }, row);
+      sw.textContent = ""; this.el("span", { color: "#bbb" }, row, `${i + 1}: ${b.start}-${b.end} (${t(b.start)} to ${t(b.end + 1)}, ${b.end - b.start + 1} f)`);
+      const num = (get, set, min, max, step, width) => {
+        const inp = this.el("input", { width: width || "56px", background: "#1a1a1a", color: "#ddd", border: "1px solid #444", fontSize: "11px" }, row);
+        inp.type = "number"; inp.min = min; inp.max = max; inp.step = step; inp.value = String(get());
+        inp.onclick = (e) => e.stopPropagation();
+        inp.onchange = (e) => { e.stopPropagation(); this.pushUndo(); set(parseFloat(inp.value)); this.commit(); this.redrawAll(); };
+        return inp;
+      };
+      num(() => b.start, (v) => { b.start = clamp(Math.round(v), 0, b.end); }, 0, this.length - 1, 1);
+      num(() => b.end, (v) => { b.end = clamp(Math.round(v), b.start, this.length - 1); }, 0, this.length - 1, 1);
+      const hold = this.el("select", { background: "#1a1a1a", color: "#ddd", border: "1px solid #444", fontSize: "11px" }, row);
+      for (const [v, l] of [[0, "oracle"], [1, "x1"], [2, "x2"], [3, "x3"], [4, "x4"], [6, "x6"], [8, "x8"]]) {
+        const o = this.el("option", {}, hold, l); o.value = String(v); if ((b.hold || 0) === v) o.selected = true;
+      }
+      hold.onclick = (e) => e.stopPropagation();
+      hold.onchange = (e) => { e.stopPropagation(); this.pushUndo(); b.hold = parseInt(hold.value); this.commit(); this.redrawAll(); };
+      b.dials = b.dials || {};
+      num(() => b.dials.feather ?? 48, (v) => { b.dials.feather = clamp(Math.round(v), 0, 256); }, 0, 256, 1);
+      num(() => b.dials.strength ?? 1, (v) => { b.dials.strength = clamp(v, 0, 1); }, 0, 1, 0.05);
+      const mute = this.el("input", {}, row); mute.type = "checkbox"; mute.checked = !!b.mute;
+      mute.title = "keep the row, leave it out of the next run";
+      mute.onclick = (e) => e.stopPropagation();
+      mute.onchange = () => { this.pushUndo(); b.mute = mute.checked; this.commit(); this.redrawAll(); };
+      this.btn(row, "edit", () => this.openModal(b.id), "open this block in the editor (E)");
+      this.btn(row, "delete", () => this.deleteBlock(b.id), "remove this block (Delete)");
+    });
+    // rows scroll past four; resizing the node from inside a redraw collapsed
+    // the widget to a third of its width (seen headless 2026-08-22), so the
+    // node's size is left to the user and to the one setSize at build time.
+    wrap.style.maxHeight = "120px"; wrap.style.overflowY = "auto";
+  }
+
+  // ---------- modal: one block, zoomed, apply or cancel ----------
+  openModal(id) {
+    const src = this.block(id); if (!src) return;
+    this.closeModal();
+    const b = JSON.parse(JSON.stringify(src));           // edit a copy; apply writes it back
+    const i = this.idx(src), col = BLOCK_COLORS[i % BLOCK_COLORS.length];
+    const ov = this.el("div", { position: "fixed", inset: "0", background: "rgba(0,0,0,.6)", zIndex: "10000",
+      display: "flex", alignItems: "center", justifyContent: "center" }, document.body);
+    const box = this.el("div", { background: "#1b1b1b", color: "#ddd", border: "1px solid #555", borderRadius: "8px",
+      padding: "12px", width: "min(900px, 92vw)", fontFamily: "sans-serif", fontSize: "12px",
+      display: "flex", flexDirection: "column", gap: "8px" }, ov);
+    ov.addEventListener("pointerdown", (e) => { if (e.target === ov) this.closeModal(); });
+    ov.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Escape") this.closeModal(); if (e.key === "Enter" && e.ctrlKey) apply(); });
+    box.tabIndex = 0;
+    this.el("div", { fontSize: "14px", color: col }, box, `block ${i + 1}: ${b.start}-${b.end}`);
+    const cv = this.el("canvas", { width: "100%", borderRadius: "4px", cursor: "ew-resize" }, box);
+    cv.height = 150;
+    const pad = 12;                                       // frames of context either side
+    let v0 = Math.max(0, b.start - pad), v1 = Math.min(this.length - 1, b.end + pad);
+    const fx = (f) => (f - v0) / Math.max(1, v1 - v0 + 1) * cv.width;
+    const xf = (x) => clamp(Math.round(v0 + x / cv.width * (v1 - v0 + 1)), 0, this.length - 1);
+    const price = this.el("div", { color: "#9c9" }, box);
+    const dialsRow = this.el("div", { display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" }, box);
+    const draw = () => {
+      cv.width = cv.clientWidth || 800;
+      const g = cv.getContext("2d"), W = cv.width, H = cv.height;
+      g.fillStyle = "#111"; g.fillRect(0, 0, W, H);
+      const SH = 80, tw = SH;
+      if (this.frames.strip.length) {
+        const per = Math.max(1, Math.ceil((v1 - v0 + 1) / Math.floor(W / tw)));
+        for (let f = v0; f <= v1; f += per) {
+          const im = this.img(this.frames.strip, f, draw);
+          if (im?.complete) g.drawImage(im, fx(f), 0, Math.max(fx(f + per) - fx(f), tw), SH);
+        }
+      }
+      // hold curve of THIS block as it would compile (ramps drawn by the server; here the plateau)
+      g.fillStyle = col + "33"; g.fillRect(fx(b.start), SH + 4, fx(b.end + 1) - fx(b.start), 40);
+      g.fillStyle = col; g.fillRect(fx(b.start), SH + 4, 3, 40); g.fillRect(fx(b.end + 1) - 3, SH + 4, 3, 40);
+      g.fillStyle = "#ccc"; g.font = "11px sans-serif";
+      g.fillText(`in ${b.start} (${(b.start / this.fps).toFixed(2)}s)`, fx(b.start) + 6, SH + 18);
+      g.fillText(`out ${b.end} (${((b.end + 1) / this.fps).toFixed(2)}s)`, Math.max(6, fx(b.end + 1) - 110), SH + 36);
+      // ruler
+      g.fillStyle = "#888"; g.font = "9px sans-serif";
+      for (let f = v0; f <= v1; f++) if (f % Math.round(this.fps / 2) === 0) { g.fillRect(fx(f), SH + 48, 1, 5); g.fillText(String(f), fx(f) + 2, SH + 62); }
+      g.fillStyle = "#fff"; g.fillRect(fx(this.cur), 0, 1.5, H);
+      const n = b.end - b.start + 1, h = b.hold || 4;
+      price.textContent = `this block: ${n} frames x ~${h} = ~${n * h} dilated frames (${(n * h / this.fps).toFixed(1)} s of regeneration)` +
+        (b.hold ? "" : " (hold = oracle; estimated at x4)");
+    };
+    let drag = null;
+    cv.onpointerdown = (e) => {
+      e.stopPropagation(); cv.setPointerCapture(e.pointerId);
+      const x = (e.clientX - cv.getBoundingClientRect().left) * (cv.width / cv.getBoundingClientRect().width);
+      const f = xf(x);
+      if (Math.abs(x - fx(b.start)) < 10) drag = "in";
+      else if (Math.abs(x - fx(b.end + 1)) < 10) drag = "out";
+      else if (f > b.start && f < b.end) drag = { grab: f - b.start, span: b.end - b.start };
+      else { this.setFrame(f); drag = "scrub"; }
+    };
+    cv.onpointermove = (e) => {
+      if (!drag) return;
+      const x = (e.clientX - cv.getBoundingClientRect().left) * (cv.width / cv.getBoundingClientRect().width);
+      const f = xf(x);
+      if (drag === "in") b.start = clamp(f, 0, b.end);
+      else if (drag === "out") b.end = clamp(f - 1, b.start, this.length - 1);
+      else if (drag === "scrub") this.setFrame(f);
+      else { b.start = clamp(f - drag.grab, 0, this.length - 1 - drag.span); b.end = b.start + drag.span; }
+      draw();
+    };
+    cv.onpointerup = () => { if (drag && drag !== "scrub" && this.snap) [b.start, b.end] = this.snapRange(b.start, b.end); drag = null; draw(); };
+    const num = (label, get, set, min, max, step) => {
+      const wrap = this.el("span", { display: "inline-flex", gap: "4px", alignItems: "center" }, dialsRow);
+      this.el("span", { color: "#999" }, wrap, label);
+      const inp = this.el("input", { width: "64px", background: "#222", color: "#ddd", border: "1px solid #444" }, wrap);
+      inp.type = "number"; inp.min = min; inp.max = max; inp.step = step; inp.value = String(get());
+      inp.onchange = () => { set(parseFloat(inp.value)); draw(); };
+    };
+    num("in", () => b.start, (v) => { b.start = clamp(Math.round(v), 0, b.end); }, 0, this.length - 1, 1);
+    num("out", () => b.end, (v) => { b.end = clamp(Math.round(v), b.start, this.length - 1); }, 0, this.length - 1, 1);
+    num("hold (0 = oracle)", () => b.hold || 0, (v) => { b.hold = clamp(Math.round(v), 0, 8); }, 0, 8, 1);
+    b.dials = b.dials || {};
+    num("feather", () => b.dials.feather ?? 48, (v) => { b.dials.feather = clamp(Math.round(v), 0, 256); }, 0, 256, 1);
+    num("strength", () => b.dials.strength ?? 1, (v) => { b.dials.strength = clamp(v, 0, 1); }, 0, 1, 0.05);
+    num("fade", () => b.dials.fade ?? 6, (v) => { b.dials.fade = clamp(Math.round(v), 0, 48); }, 0, 48, 1);
+    this.el("div", { color: "#777" }, box, "drag the edges for in/out, the middle to move, click elsewhere to scrub. Painted masks and automation lanes stay on the main view of this block. Ctrl+Enter applies, Esc cancels.");
+    const btns = this.el("div", { display: "flex", gap: "8px", justifyContent: "flex-end" }, box);
+    const apply = () => {
+      this.pushUndo();
+      Object.assign(src, b);
+      this.commit(); this.closeModal(); this.redrawAll();
+      this.status(`block ${i + 1} applied: ${src.start}-${src.end}`);
+    };
+    this.btn(btns, "cancel", () => this.closeModal(), "esc");
+    const ab = this.btn(btns, "apply", apply, "ctrl+enter"); ab.style.background = "#3a6";
+    this.modal = ov; box.focus(); draw();
+  }
+  closeModal() { if (this.modal) { this.modal.remove(); this.modal = null; } }
+  // "run from here" means the same seeds: pin every seed widget whose
+  // control-after-generate would bump it (the frontend's default for nodes it
+  // builds is randomize, which re-renders the base pass on every queue).
+  pinSeeds() {
+    let n = 0;
+    for (const node of this.node.graph?._nodes || [])
+      for (const w of node.widgets || [])
+        if (w.name === "control_after_generate" && w.value !== "fixed") { w.value = "fixed"; n++; }
+    return n;
+  }
+  async run(toHere) {
+    try {
+      this.commit(false);
+      const pinned = this.pinSeeds();
+      if (pinned) this.status(`pinned ${pinned} seed control(s) to fixed so the base pass stays cached`);
+      const opts = toHere ? { partialExecutionTargets: [this.node.id] } : undefined;
+      this.status(toHere ? "queued: run to here (filmstrip + oracle)" : "queued: run from here (upstream from cache if unchanged)");
+      await app.queuePrompt(0, 1, opts);
+    } catch (e) { this.status("queue failed: " + e); console.error(e); }
   }
 
   setTool(t) {
@@ -302,8 +583,42 @@ class MotionEditor {
   }
 
   // ---------- timeline ----------
-  fx(f, w) { return f / Math.max(1, this.length) * w; }
-  xf(x, w) { return clamp(Math.floor(x / w * this.length), 0, this.length - 1); }
+  // x-axis: world clock (frame / length) or dilated clock (cumulative holds /
+  // dilated length), so the same block reads as "when" or as "how long it costs".
+  cum() {
+    const key = JSON.stringify(this.state.blocks) + "|" + this.holds.length;
+    if (this._cumKey === key && this._cum) return this._cum;
+    const ph = this.previewHolds();
+    const c = [0]; for (const h of ph) c.push(c[c.length - 1] + (h || 1));
+    this._cumKey = key; this._cum = c; this._ph = ph; return c;
+  }
+  fx(f, w) {
+    if (this.clock === "dilated" && this.length) {
+      const c = this.cum(); return c[clamp(Math.round(f), 0, this.length)] / Math.max(1, c[this.length]) * w;
+    }
+    return f / Math.max(1, this.length) * w;
+  }
+  xf(x, w) {
+    if (this.clock === "dilated" && this.length) {
+      const c = this.cum(), t = x / w * c[this.length];
+      let f = 0; while (f < this.length - 1 && c[f + 1] <= t) f++;
+      return clamp(f, 0, this.length - 1);
+    }
+    return clamp(Math.floor(x / w * this.length), 0, this.length - 1);
+  }
+  setPlay(on) {
+    if (this.playTimer) { clearInterval(this.playTimer); this.playTimer = null; }
+    if (this.playBtn) this.playBtn.textContent = on ? "Pause" : "Play";
+    if (!on) return;
+    // the strip/paint frames ARE the clip: stepping the playhead at fps plays it,
+    // and in the dilated clock each frame lingers for its hold (the slowdown, seen)
+    const tick = () => {
+      const h = this.clock === "dilated" ? (this.previewHolds()[this.cur] || 1) : 1;
+      this._playAcc = (this._playAcc || 0) + 1;
+      if (this._playAcc >= h) { this._playAcc = 0; this.setFrame(this.cur + 1 >= this.length ? 0 : this.cur + 1); }
+    };
+    this.playTimer = setInterval(tick, 1000 / Math.max(1, this.fps));
+  }
 
   bindTimeline() {
     const c = this.tl;
@@ -317,7 +632,8 @@ class MotionEditor {
       const [x, y] = pos(e);
       const w = c.width;
       c.setPointerCapture(e.pointerId);
-      if (y < 56 || y > 108) {              // strip or ruler: scrub
+      const G = this.geo();
+      if (y < G.B0 || y > G.B1) {           // strip or ruler: scrub
         this.drag = { kind: "scrub" };
         this.setFrame(this.xf(x, w));
         return;
@@ -343,14 +659,26 @@ class MotionEditor {
       this.drag = { kind: "create", a: f, z: f };
     };
     c.onpointermove = (e) => {
-      if (!this.drag) return;
+      if (!this.drag) {                                   // hover: say what a press would do
+        const [hx, hy] = pos(e), G = this.geo(), w = c.width;
+        let cur = "crosshair", what = "drag to create a block";
+        if (hy < G.B0 || hy > G.B1) { cur = "col-resize"; what = "scrub"; }
+        else for (const b of this.state.blocks) {
+          const x0 = this.fx(b.start, w), x1 = this.fx(b.end + 1, w);
+          if (Math.abs(hx - x0) <= 4 || Math.abs(hx - x1) <= 4) { cur = "ew-resize"; what = `resize block ${this.idx(b) + 1}`; break; }
+          if (hx > x0 && hx < x1) { cur = "grab"; what = `move block ${this.idx(b) + 1} (click to select)`; break; }
+        }
+        c.style.cursor = cur; this.status(what);
+        return;
+      }
       const [x] = pos(e);
       const f = this.xf(x, c.width);
       const d = this.drag;
       if (d.kind === "scrub") { this.setFrame(f); return; }
-      if (d.kind === "create") { d.z = f; this.drawTimeline(); return; }
+      if (d.kind === "create") { d.z = f; this.drawTimeline(); this.status(`drag: new block ${Math.min(d.a, d.z)}-${Math.max(d.a, d.z)} (release to create)`); return; }
       const b = this.block(d.id);
       if (!b) return;
+      this.status(`${d.kind === "move" ? "moving" : "resizing"} block ${this.idx(b) + 1}: ${b.start}-${b.end}`);
       if (d.kind === "move") {
         const span = b.end - b.start;
         b.start = clamp(f - d.grab, 0, this.length - 1 - span);
@@ -380,74 +708,104 @@ class MotionEditor {
     };
   }
 
+  // timeline geometry: the filmstrip scales with the node; everything below
+  // is laid out from SH (strip height), so nothing is a magic number.
+  geo() {
+    const W = this.tl?.clientWidth || 600;
+    const SH = clamp(Math.round(W / 9), 54, 140);
+    return { SH, P0: SH + 2, P1: SH + 48, B0: SH + 2, B1: SH + 54, R0: SH + 56, H: SH + 78 };
+  }
   drawTimeline() {
     const c = this.tl, g = c.getContext("2d");
-    const w = c.width = c.clientWidth * (window.devicePixelRatio || 1) / (window.devicePixelRatio || 1) || c.width;
     c.width = c.clientWidth || 600;
-    const W = c.width, H = c.height;
+    const G = this.geo(); if (c.height !== G.H) c.height = G.H;
+    const W = c.width, H = c.height, SH = G.SH;
     g.fillStyle = "#111"; g.fillRect(0, 0, W, H);
 
-    // filmstrip 0..54
+    // filmstrip 0..SH
     if (this.frames.strip.length) {
-      const per = Math.max(1, Math.ceil(this.length / Math.floor(W / 34)));
+      const tw = SH;
+      const per = Math.max(1, Math.ceil(this.length / Math.floor(W / tw)));
       for (let f = 0; f < this.length; f += per) {
         const im = this.img(this.frames.strip, f, () => this.drawTimeline());
         const x = this.fx(f, W);
         if (im?.complete)
-          g.drawImage(im, x, 0, Math.max(this.fx(per, W), 34), 54);
+          g.drawImage(im, x, 0, Math.max(this.fx(f + per, W) - x, tw), SH);
       }
     } else {
       g.fillStyle = "#666";
-      g.fillText("filmstrip loads after the first queue", 8, 30);
+      g.fillText("filmstrip loads after the first queue", 8, SH / 2);
     }
 
-    // jerk profile 56..102
-    g.fillStyle = "#182018"; g.fillRect(0, 56, W, 46);
+    // jerk profile P0..P1
+    g.fillStyle = "#182018"; g.fillRect(0, G.P0, W, G.P1 - G.P0);
     if (this.profile.length) {
       const mx = Math.max(...this.profile, 0.001);
       g.strokeStyle = "#7fce7f"; g.beginPath();
       this.profile.forEach((v, t) => {
         const x = this.fx(tokStartFrame(t), W);
-        const y = 100 - v / mx * 40;
+        const y = G.P1 - 2 - v / mx * 40;
         t ? g.lineTo(x, y) : g.moveTo(x, y);
       });
       g.stroke();
+    }
+    // hold curves: the LIVE envelope from the rows (solid) and the last run's
+    // compiled map (ghost), so an edit is visible before it is rendered
+    const curves = [];
+    if (this.holds.length === this.length) curves.push([this.holds, "#e0b05066", 1, "last run"]);
+    if (this.length) curves.push([this.previewHolds(), "#ffd060", 1.8, "live envelope"]);
+    if (curves.length) {
+      const hmax = Math.max(4, ...curves.flatMap((c) => c[0]));
+      for (const [holds, col, lw] of curves) {
+        g.strokeStyle = col; g.lineWidth = lw; g.beginPath();
+        for (let f = 0; f < this.length; f++) {
+          const y = G.P1 - 2 - ((holds[f] || 1) - 1) / (hmax - 1) * 40;
+          const x0 = this.fx(f, W), x1 = this.fx(f + 1, W);
+          f ? g.lineTo(x0, y) : g.moveTo(x0, y); g.lineTo(x1, y);
+        }
+        g.stroke();
+      }
+      g.lineWidth = 1; g.fillStyle = "#ffd060"; g.font = "9px sans-serif";
+      g.fillText((this.clock === "dilated" ? "dilated clock (width = cost): " : "world clock: ") +
+        "live envelope" + (this.holds.length === this.length ? " / ghost = last run" : ""), 4, G.P0 + 9);
     }
     // token grid ticks
     g.strokeStyle = "#2c2c2c";
     for (const t of tokenStarts(this.length)) {
       const x = this.fx(t, W);
-      g.beginPath(); g.moveTo(x, 56); g.lineTo(x, 102); g.stroke();
+      g.beginPath(); g.moveTo(x, G.P0); g.lineTo(x, G.P1); g.stroke();
     }
 
     // blocks overlay on 56..108
     this.state.blocks.forEach((b, i) => {
       const col = BLOCK_COLORS[i % BLOCK_COLORS.length];
       const x0 = this.fx(b.start, W), x1 = this.fx(b.end + 1, W);
-      g.fillStyle = col + (b.id === this.sel ? "66" : "33");
-      g.fillRect(x0, 56, x1 - x0, 52);
+      g.fillStyle = col + (b.id === this.sel ? "66" : b.mute ? "14" : "33");
+      g.fillRect(x0, G.B0, x1 - x0, G.B1 - G.B0);
       g.fillStyle = col;
-      g.fillRect(x0, 56, 3, 52); g.fillRect(x1 - 3, 56, 3, 52);
+      g.fillRect(x0, G.B0, 3, G.B1 - G.B0); g.fillRect(x1 - 3, G.B0, 3, G.B1 - G.B0);
       g.font = "10px sans-serif";
       const painted = Object.keys(b.strokes || {}).length ||
                       (b.static_strokes || []).length;
-      g.fillText(`${b.hold ? "h" + b.hold : "oracle"}${painted ? " *" : ""}`,
-                 x0 + 6, 68);
+      g.fillText(`${i + 1} ${b.hold ? "h" + b.hold : "oracle"}${painted ? " *" : ""}${b.mute ? " (muted)" : ""}`,
+                 x0 + 6, G.B0 + 12);
     });
 
     // create preview
     if (this.drag?.kind === "create") {
       const x0 = this.fx(Math.min(this.drag.a, this.drag.z), W);
       const x1 = this.fx(Math.max(this.drag.a, this.drag.z) + 1, W);
-      g.fillStyle = "#ffffff22"; g.fillRect(x0, 56, x1 - x0, 52);
+      g.fillStyle = "#ffffff22"; g.fillRect(x0, G.B0, x1 - x0, G.B1 - G.B0);
+      g.fillStyle = "#fff"; g.font = "10px sans-serif";
+      g.fillText(`new block ${Math.min(this.drag.a, this.drag.z)}-${Math.max(this.drag.a, this.drag.z)}`, x0 + 4, G.B0 + 12);
     }
 
     // ruler + playhead
-    g.fillStyle = "#222"; g.fillRect(0, 110, W, 20);
+    g.fillStyle = "#222"; g.fillRect(0, G.R0, W, 20);
     g.fillStyle = "#888"; g.font = "9px sans-serif";
     for (let s = 0; s <= this.length / this.fps; s++) {
       const x = this.fx(s * this.fps, W);
-      g.fillRect(x, 110, 1, 6); g.fillText(`${s}s`, x + 2, 126);
+      g.fillRect(x, G.R0, 1, 6); g.fillText(`${s}s`, x + 2, G.R0 + 16);
     }
     g.fillStyle = "#fff";
     g.fillRect(this.fx(this.cur, W), 0, 1.5, H);
@@ -740,6 +1098,11 @@ class MotionEditor {
   }
 
   redrawAll() {
+    if (this.root) {
+      const want = Math.max(600, (this.node.size?.[0] || 640) - 24) + "px";
+      if (this.root.style.width !== want) this.root.style.width = want;
+    }
+    this.buildRows();
     this.drawTimeline();
     this.drawLane();
     this.drawPaint();
@@ -755,7 +1118,7 @@ app.registerExtension({
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       const r = onNodeCreated?.apply(this, arguments);
-      try { this.h3 = new MotionEditor(this); }
+      try { this.h3 = new MotionEditor(this); (window.__h3editors = window.__h3editors || []).push(this.h3); }
       catch (e) { console.error("H3MotionEditor widget failed:", e); }
       return r;
     };
