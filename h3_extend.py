@@ -32,10 +32,16 @@ join was playback-clean as a hard cut, overlap MAE 2.18/255 vs 16.47
 unanchored, one neutral cell at 0.4 MP, base 12-step. 5 and 22 are
 unmeasured cells.
 
-v0 anchors with MiniMaxH3AddGuide (core): the handle is the guide clip at
-frame 0, full H3 VAE, never noised, never TAE. Per-token mask pinning
-(#15375) is the better mechanism once a graph shape for it is validated;
-the plan resolves `auto` to `guide` and says why.
+Two ways to anchor the handle, both full H3 VAE, never noised, never TAE:
+MASKED (default when the core has #15375): the tail is written into the
+target latent of pass 1, the rest of the latent is the last tail frame
+repeated, and a time-varying per-token mask keeps the prefix; the audio
+handle rides an audio-only MiniMaxH3AddGuide at frame 0. GUIDE (fallback):
+the tail as an image+audio guide clip at frame 0. Measured 2026-08-23 on
+one cell (pass 1, 141/39, 1 MP): masked join jerk 0.84x the clip's median
+vs 5 to 12x for the guide, camera decelerates through zero instead of
+reversing, prefix MAE 2.2 vs 3.0, and 22% less wall (no guide rows in
+every block).
 """
 from __future__ import annotations
 
@@ -132,12 +138,15 @@ class H3ExtensionPlan:
         # anchors
         v = visual_anchor
         if v == "auto":
-            v = "guide" if handle > 0 else "none"
-            reasons["visual_anchor"] = ("guide: v0 anchors the handle with MiniMaxH3AddGuide at frame 0; "
-                                        "per-token masks are present on this core" if caps.get("per_token_masks") else
-                                        "guide: per-token masks not found on this core")
             if handle == 0:
-                reasons["visual_anchor"] = "none: scene cut carries no handle"
+                v = "none"; reasons["visual_anchor"] = "none: scene cut carries no handle"
+            elif caps.get("per_token_masks"):
+                v = "per_token_mask"
+                reasons["visual_anchor"] = ("per_token_mask: the tail written into the target latent under the per-token "
+                                            "freeze (#15375); measured 2026-08-23 it made the join an ordinary frame transition "
+                                            "where the image guide flipped the camera")
+            else:
+                v = "guide"; reasons["visual_anchor"] = "guide: per-token masks not found on this core, falling back to MiniMaxH3AddGuide"
         elif v == "per_token_mask" and not caps.get("per_token_masks"):
             v = "guide"
             reasons["visual_anchor"] = "per_token_mask requested but the running core lacks #15375; fell back to guide"
