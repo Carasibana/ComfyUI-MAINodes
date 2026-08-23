@@ -23,7 +23,9 @@ The folder has three tiers:
 | to try prompts and seeds fast | [`motion_pipeline_fast_iterate.json`](motion_pipeline_fast_iterate.json) | 0.2 MP pass 1, 0.4 MP de-rope, ~95 s. A scouting loop, not a final |
 
 If you only read one more line: **pass 1 decides the choreography, pass 2
-repairs the bursts.** Spend steps on pass 1; pass 2 tolerates turbo.
+repairs the bursts.** Spend steps on pass 1; pass 2 is where the turbo
+LoRA belongs. The base model on pass 2 is better still, if you have
+forever to spend.
 
 ## The essential graph
 
