@@ -6,6 +6,21 @@ one subject from one reference image).
 
 Like it? A star helps. Want to feed the GPU? [Sponsor the experiments](#support-mainodes).
 
+## Start here
+
+- **Which graph:** [`examples/README.md`](examples/README.md). Four
+  starting points, the essential node chain as a diagram, and what each
+  specialised graph adds to it.
+- **Which settings for your card:** [`HARDWARE.md`](HARDWARE.md). VRAM and
+  system RAM rows, measured.
+- **Which dial for which symptom:** [`TUNING.md`](TUNING.md).
+- **What is still alpha:** [`ALPHA.md`](ALPHA.md).
+
+The short version: start from
+[`examples/motion_pipeline_ref2va_audioinit.json`](examples/motion_pipeline_ref2va_audioinit.json),
+keep pass 1 at 12 steps on the base model, let the turbo LoRA do pass 2,
+and reach for `inject` (0.50 sharper, 0.70 safer) before any other dial.
+
 ## What's new
 
 Cloned before 2026-08-19 and `git pull` errors? Run
@@ -183,7 +198,7 @@ with a preview/final toggle (H3 Mode Switch, lazy: only the chosen path
 executes) is the intended end state.
 
 A fourth graph,
-[`motion_pipeline_probe_expert.json`](examples/archive/motion_pipeline_probe_expert.json),
+[`examples/archive/motion_pipeline_probe_expert.json`](examples/archive/motion_pipeline_probe_expert.json),
 is the fast path: instead of finishing the baseline it runs only the
 first 6 steps (H3 Probe Schedule, configurable) and reads the oracle and
 the init from the early x0 estimate, then regenerates with a base-model
@@ -191,12 +206,12 @@ head and a turbo tail (H3 Expert Schedule). Cheapest of the set; no
 full-speed audio track to blend, and the saved preview is intentionally
 rough.
 
-There is also [`motion_pipeline_i50.json`](examples/archive/motion_pipeline_i50.json),
+There is also [`examples/archive/motion_pipeline_i50.json`](examples/archive/motion_pipeline_i50.json),
 the same finals graph with the inject 0.50 preset selected, for people who
 prefer the sharper flavor without touching a dropdown.
 
 For 24 to 32 GB cards there is
-[`motion_pipeline_featherweight.json`](examples/archive/motion_pipeline_featherweight.json):
+[`examples/archive/motion_pipeline_featherweight.json`](examples/archive/motion_pipeline_featherweight.json):
 the same finals graph pointed at the smallest community-published models
 (w4a8 DiT, int8_convrot VAE, nvfp4 text encoder). Needs ComfyUI 0.31+.
 Measured numbers and the honest caveats live in
@@ -262,7 +277,7 @@ seam poses.
 
 Four shorter paths, each measured on one prompt and seed:
 
-[`motion_pipeline_split_lora.json`](examples/archive/motion_pipeline_split_lora.json)
+[`examples/archive/motion_pipeline_split_lora.json`](examples/archive/motion_pipeline_split_lora.json)
 splits pass 1 mid-trajectory. The bare model runs the early, high-sigma
 steps -- where the motion is actually decided -- and a turbo LoRA takes
 over for the low-sigma steps, off one schedule with no re-noising
@@ -527,13 +542,17 @@ scale to your card and clip:
 
 | path | time | what you get |
 |---|---|---|
-| pipeline, inject 0.70 (`motion_pipeline.json`) | ~19 min incl. its own baseline | the default finals: safest playback feel |
-| pipeline, inject 0.50 (`motion_pipeline_i50.json`) | ~15 min incl. baseline | sharper, tracks the source motion closer; try both |
-| probe + expert turbo (`motion_pipeline_probe_expert.json`) | ~8.5 min, no full baseline | the fast full de-rope; preview output is intentionally rough |
-| featherweight (`motion_pipeline_featherweight.json`, ComfyUI 0.31+) | 4-6 min for 3 s clips; ~29 min for 5 s at 1.0 MP | the 24-32 GB card path; fits where int8 thrashes. See TUNING for measured peaks |
-| split LoRA pass 1 (`motion_pipeline_split_lora.json`) | ~7.5 min at 1.5 MP | most motion retained of the pass-1 recipes we measured |
-| upscale de-rope (`motion_pipeline_upscale_derope.json`) | ~6.75 min at 0.4 -> 1.5 MP | 89% of native detail, 83% of the time |
-| fast iterate (`motion_pipeline_fast_iterate.json`) | ~95 s at 0.2 -> 0.4 MP | prompt and choreography loop, not a final |
+| starting point, turbo pass 2 (`examples/motion_pipeline_ref2va_audioinit.json`) | ~12 min for 192 frames at 1 MP; the same graph at 25 steps both passes without turbo is ~36 | the normal finals since 2026-08-19 |
+| pipeline, inject 0.70 (`examples/motion_pipeline.json`) | ~19 min incl. its own baseline | the slow finals: 25 steps both passes, base model throughout |
+| pipeline, inject 0.50 (`examples/archive/motion_pipeline_i50.json`) | ~15 min incl. baseline | sharper, tracks the source motion closer; try both |
+| probe + expert turbo (`examples/archive/motion_pipeline_probe_expert.json`) | ~8.5 min, no full baseline | the fast full de-rope; preview output is intentionally rough |
+| featherweight (`examples/archive/motion_pipeline_featherweight.json`, ComfyUI 0.31+) | 4-6 min for 3 s clips; ~29 min for 5 s at 1.0 MP | the 24-32 GB card path; fits where int8 thrashes. See TUNING for measured peaks |
+| split LoRA pass 1 (`examples/archive/motion_pipeline_split_lora.json`) | ~7.5 min at 1.5 MP | most motion retained of the pass-1 recipes we measured |
+| upscale de-rope (`examples/motion_pipeline_upscale_derope.json`) | ~6.75 min at 0.4 -> 1.5 MP | 89% of native detail, 83% of the time |
+| fast iterate (`examples/motion_pipeline_fast_iterate.json`) | ~95 s at 0.2 -> 0.4 MP | prompt and choreography loop, not a final |
+
+The rows pointing into `examples/archive/` are earlier recipes, kept so
+these numbers still resolve; start from the live graphs.
 
 Start with a short clip, 2 to 3 seconds, and scale up once you like what
 you see. Durations snap to the model's legal frame counts automatically
@@ -680,10 +699,10 @@ the burst back in. Applied to the de-rope pass only, it teaches the base
 model to spend the stretched clock on smoothness instead of invention.
 Weights and the measurement write-up:
 [huggingface.co/matlowai/MiniMax-H3-Motion-Adapter](https://huggingface.co/matlowai/MiniMax-H3-Motion-Adapter).
-Graphs: [`examples/motion_pipeline_adapter_api.json`](examples/motion_pipeline_adapter_api.json)
+Graphs: [`examples/experimental/motion_pipeline_adapter_api.json`](examples/experimental/motion_pipeline_adapter_api.json)
 (text to video, then the standard de-rope with one `LoraLoaderModelOnly`
 on the pass-2 model) and
-[`examples/motion_window_pinned_adapter_api.json`](examples/motion_window_pinned_adapter_api.json)
+[`examples/experimental/motion_window_pinned_adapter_api.json`](examples/experimental/motion_window_pinned_adapter_api.json)
 (a clip you already have: the window is regenerated at denoise 0.70 with
 its first and last frames pinned, adapter on the pass-2 model; this is the
 graph behind the demo page's headline quad). Clips on the

@@ -7,28 +7,37 @@ test clips; expect your content to move the numbers a little.
 
 ## First: pick the graph
 
+The start-here index with diagrams is `examples/README.md`; the hardware
+rows are `HARDWARE.md`. The short table:
+
 | priority | graph | cost (vs one baseline render) |
 |---|---|---|
-| best quality, audio dial available (recommended for finals) | `examples/motion_pipeline.json` | ~3.5x |
-| turbo inside the pipeline (not recommended: see below) | `examples/archive/motion_pipeline_turbo.json` | ~1.6x |
-| fastest, no full baseline (scouting only: the probe init is not good enough to feed a base-model finals pass, we tried) | `examples/archive/motion_pipeline_probe_expert.json` | ~1x or less |
+| the normal starting point (since 2026-08-19): 12-step base pass 1, turbo 6-step pass 2, audio seeded | `examples/motion_pipeline_ref2va_audioinit.json` | ~1.3x; 192 frames at 1 MP in ~12 min on our card |
+| best quality, base model throughout, audio dial available | `examples/motion_pipeline.json` | ~3.5x; the same clip at 25 steps both passes is ~3x the row above |
+| a 16 to 24 GB card | `examples/motion_pipeline_lowvram.json` | as the first row; see `LOWVRAM.md` for the fenced measurements |
+| prompt and seed scouting, not a final | `examples/motion_pipeline_fast_iterate.json` | ~1x or less (0.2 -> 0.4 MP, ~95 s) |
 | user knows where the problem is (two-pass: review the oraclemap, type ranges, requeue) | `examples/motion_pipeline_targeted.json` | baseline + regen cost of YOUR spans only |
 | GUI editing on the node (blocks, painting, automation) | `examples/motion_pipeline_editor.json` | as targeted |
 | maximum speed for one burst in a longer clip (segment crop + splice) | `examples/motion_pipeline_editor_segment.json` | baseline + regen of window+handles only; the crop report states the ratio |
+| cheap pass 1, de-rope at the delivery size | `examples/motion_pipeline_upscale_derope.json` | 89% of native detail in 83% of the time (0.4 -> 1.5 MP) |
 | de-roping footage that already exists (no baseline render) | `examples/archive/motion_pipeline_v2v_source.json` [alpha] | regen only, ~2.5x one baseline-equivalent render; there is no baseline pass |
 | the dilated pass does not fit your card (OOM, or steps balloon while weights stream) | `examples/motion_pipeline_rolling_window.json` [alpha] | peak memory scales with the biggest WINDOW, not the clip. At the budget that forces a split: ~1.4x the generated frames, and on a card at the offload cliff wall time comes back to parity because the DiT stays resident instead of streaming. Measured on a fenced 32 GB budget: 30.7 GB peak + layer streaming one-pass vs 24.6 GB resident windowed, 460 s vs 440 s |
+| earlier recipes (turbo-in-the-old-graph, probe + expert, featherweight, i50, split LoRA) | `examples/archive/` | kept so old write-ups resolve; do not start from these |
 
-The working rhythm we recommend: iterate prompts and seeds with plain
-turbo generations to learn what a prompt gives you globally, then run
-the keeper through the base pipeline. Do not pair the turbo LoRA with
-the pipeline's regeneration pass for finals: if a clip earned the
-pipeline, it earned the base model, and turbo-in-pipeline trades away
-quality exactly where you decided quality matters. The faster graphs
-exist for different budgets, not as the default.
+On turbo, the rule moved on 2026-08-19 and it is worth stating exactly.
+Pass 1 decides the choreography and wants the base model at 12 steps or
+more. Pass 2 repairs bursts from a known init and tolerates the turbo LoRA,
+**provided the whole pass-2 recipe comes with it**: `gradient_estimation`
+and `linear_quadratic` on pass 1, a 6-step `beta` schedule on pass 2, the
+audio seeded through `H3 Audio Smear`. The turbo LoRA dropped into the
+25-step `res_multistep` graph with nothing else changed renders jerky and
+pixelated (measured 2026-08-22, seven arms, all scrapped). That is what the
+old "no turbo in the pipeline" rule was actually measuring.
 
-The probe graph never finishes the baseline, so there is no full-speed
-audio track to blend and the preview output is intentionally blurry. If
-the user cares about the audio dial, use the first two.
+The working rhythm: iterate prompts and seeds on the fast-iterate graph to
+learn what a prompt gives you globally, then run the keeper through the
+starting-point graph; reach for the 25-step graph when a final has earned
+the time.
 
 ## Second: ask the user what they actually care about
 
