@@ -20,7 +20,8 @@ assert str(tb.ticks(22)) == "110/3" and not tb.clock_aligned(22) and tb.clock_al
 
 # the atom
 P = ex.H3ExtensionPlan()
-plan, length, handle, new, report = P.plan(141, "seamless (39-frame handle)", 39, 0, "auto", "auto", 24, 1, 141)
+plan, length, handle, new, report, e2e = P.plan(141, "seamless (39-frame handle)", 39, 0, "auto", "auto", 24, 1, 141)
+assert e2e is False
 p = json.loads(plan)
 assert (length, handle, new) == (141, 39, 102), (length, handle, new)
 assert p["resolved"]["length_ticks"] == "235" and p["resolved"]["handle_ticks"] == "65" and p["resolved"]["new_ticks"] == "170"
@@ -32,13 +33,13 @@ assert "NOT INTEGER" not in report
 assert ct.digest({"a": 1, "b": [1, 2]}) == ct.digest({"b": [1, 2], "a": 1})
 
 # 22 is legal on the grid, not on the clock: the plan says so
-plan22, l22, h22, n22, rep22 = P.plan(141, "custom (use handle_frames)", 22, 0, "guide", "guide", 24, 1, 141)
+plan22, l22, h22, n22, rep22, _ = P.plan(141, "custom (use handle_frames)", 22, 0, "guide", "guide", 24, 1, 141)
 assert h22 == 22 and "not an integer" in rep22, rep22
 # new_frames raises the generation length and rounds UP
-plan3, l3, h3, n3, rep3 = P.plan(141, "seamless (39-frame handle)", 39, 120, "guide", "guide", 24, 1, 141)
+plan3, l3, h3, n3, rep3, _ = P.plan(141, "seamless (39-frame handle)", 39, 120, "guide", "guide", 24, 1, 141)
 assert l3 == ct.align_up(159) == 175 and n3 == 120 and json.loads(plan3)["resolved"]["surplus_frames"] == 16, (l3, n3)
 # scene cut: no handle, audio regenerates
-plan0, l0, h0, n0, rep0 = P.plan(141, "scene cut (no handle, global refs only)", 39, 0, "auto", "auto", 24, 1, 141)
+plan0, l0, h0, n0, rep0, _ = P.plan(141, "scene cut (no handle, global refs only)", 39, 0, "auto", "auto", 24, 1, 141)
 assert h0 == 0 and json.loads(plan0)["handle"]["audio_anchor"] == "regenerated" and json.loads(plan0)["handle"]["visual_anchor"] == "none"
 
 # tail + trim round trip on synthetic frames/audio at 32 kHz
