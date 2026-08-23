@@ -788,6 +788,8 @@ class H3JerkOracle:
                                           "1+4k) with the same planner, no phase normalisation, and emits "
                                           "holds per SOURCE frame as before - wire into H3 Clock Remap or "
                                           "straight into H3 Time Smear."}),
+            "protect_tail": ("INT", {"default": 0, "min": 0, "max": 96,
+                             "tooltip": "(alpha) hold the LAST n frames at 1 whatever the profile says. A burst that runs into the end of the clip has no 'after' for the model to slow into: measured 2026-08-23 on a chained segment, hold 4 on the closing gesture played it 1.55x fast after recovery; 17 (one token group) brought it to 1.06x. Untested on a single clip; 0 = off"}),
         }}
 
     RETURN_TYPES = ("STRING", "STRING", "INT", "INT", "STRING", "STRING")
@@ -804,7 +806,7 @@ class H3JerkOracle:
 
     def read(self, samples, length, q, d_max, ramp, preset="custom", bridge=8,
              profile_mode="value |d3| (default)", abstain_below=0.0, model_profile="minimax-h3",
-             fps=24, s_per_step=0.0, est_steps=18, overhead_s=OVERHEAD_S):
+             fps=24, s_per_step=0.0, est_steps=18, overhead_s=OVERHEAD_S, protect_tail=0):
         if preset in self.PRESETS:
             p = self.PRESETS[preset]
             q, d_max, ramp = p["q"], p["d_max"], p["ramp"]
@@ -858,6 +860,10 @@ class H3JerkOracle:
 
         holds, segs_str, w0, wlen, tok_d = _profile_to_plan(
             prof, length, q, d_max, ramp, bridge, clock=clock)
+        if protect_tail:
+            holds = list(holds)
+            for i in range(max(0, len(holds) - int(protect_tail)), len(holds)):
+                holds[i] = 1
 
         hold_map = json.dumps({"holds": holds, "world_len": length}
                               if clock is None else
@@ -3929,6 +3935,8 @@ class H3WindowPlan:
                                       "window's last frame. Interior seams multiply that freeze "
                                       "by N-1, so it is on by default here"}),
             **_cost_widgets(with_fps=True),
+            "edge_protect": ("INT", {"default": 0, "min": 0, "max": 48,
+                             "tooltip": "(alpha) frames held at 1 on EACH side of every hot cut, re-planning until every cut reads cold. A burst that ends at a window edge has no 'after' to slow into and comes back fast after recovery (measured 2026-08-23 on a chained segment: 1.55x -> 1.06x with one token group protected). 0 = off, the shipped hot-cut behaviour"}),
         }}
 
     RETURN_TYPES = ("IMAGE", "STRING", "STRING", "IMAGE", "IMAGE", "INT",
@@ -3941,7 +3949,7 @@ class H3WindowPlan:
     def plan(self, images, hold_map, max_dilated_frames=209, window=0,
              handle_frames=12, coverage="full clip", snap_search=24,
              grid_align=True, fps=24, s_per_step=0.0, est_steps=18,
-             overhead_s=OVERHEAD_S):
+             overhead_s=OVERHEAD_S, edge_protect=0):
         images = images.detach().cpu()
         holds = [int(h) for h in json.loads(hold_map)["holds"]]
         n = images.shape[0]
@@ -3950,6 +3958,21 @@ class H3WindowPlan:
         cover = coverage == "full clip"
         plan, held = _plan_windows(holds, n, max_dilated_frames,
                                    handle_frames, snap_search, cover)
+        protected_cuts = []
+        if edge_protect:
+            # a burst that ends at a window edge comes back fast after recovery
+            # (measured 2026-08-23): hold one band at 1 on each side of every
+            # HOT cut and re-plan ONCE. One round only: iterating moves the
+            # cuts and flattens a long burst entirely (a 90-frame burst went
+            # from 9 windows to 1). Cuts still hot after the round are reported.
+            hot = [x["core"][1] + 1 for x in plan if x["hot_hi"]]
+            for c in hot:
+                for f in range(max(0, c - int(edge_protect)), min(n, c + int(edge_protect))):
+                    holds[f] = 1
+                protected_cuts.append(c)
+            if hot:
+                plan, held = _plan_windows(holds, n, max_dilated_frames,
+                                           handle_frames, snap_search, cover)
         if grid_align:
             # grow EVERY window, not just the emitted one, so the plan the
             # report states does not depend on which k you happen to be on
@@ -3985,6 +4008,9 @@ class H3WindowPlan:
         lines = [f"plan: {len(plan)} window(s) over {span_txt} "
                  f"of {n}f, budget {max_dilated_frames} dilated frames, "
                  f"handles {handle_frames}"]
+        if protected_cuts:
+            rep.append(f"edge_protect {int(edge_protect)}: {len(protected_cuts)} hot cut(s) at {protected_cuts} held at 1 on both sides "
+                       f"({sum(1 for h in holds if h > 1)} frames still held of {n}); on a long burst cut often this removes most of the dilation, the budget is the real constraint then")
         hot_handle = 0
         for x in plan:
             sa, sb = x["span"]

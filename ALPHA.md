@@ -46,22 +46,35 @@ design decisions and their reasoning are in `concept_lab/DECISIONS.md`.
 ## Extension (long clips from short renders)
 
 `h3_extend.py`: `H3 Extension Plan`, `H3 Tail Context`, `H3 Protect Prefix`,
-`H3 Prefix Freeze Mask`, `H3 Trim`; the shared types in `capsule_types.py`;
-the graph `examples/motion_pipeline_extend_api.json`.
+`H3 Prefix Freeze Mask`, `H3 Trim`, `H3 Seam Normalize`; the shared types
+in `capsule_types.py`; the graph `examples/motion_pipeline_extend_api.json`;
+edge-protection dials on `H3 Jerk Oracle` (`protect_tail`) and
+`H3 Window Plan` (`edge_protect`).
 
-Short segments generated and de-roped one at a time, a 39-frame video+audio
-handle carried into the next segment through core's `MiniMaxH3AddGuide`,
-the handle protected from retiming and frozen in pass 2, the prefix trimmed
-at assembly. Integer time throughout: the 141/39 atom adds exactly 102
-frames and 170 audio ticks per segment.
+Short segments generated and de-roped one at a time, the last 39 frames
+carried into the next segment, the overlap trimmed at assembly. Integer
+time throughout: the 141/39 atom adds exactly 102 frames and 170 audio
+ticks per segment. On a core with per-token masks (#15375) the handle is
+WRITTEN INTO the next segment's own pass-1 latent under a time-varying
+mask, with the audio handle on an audio-only `MiniMaxH3AddGuide`; on older
+cores the whole handle rides the guide. The de-rope holds the prefix at 1
+AND freezes it in pass 2; a non-final segment's last 17 frames are also
+held at 1, because a gesture that runs into the cut has no "after" to slow
+into and comes back fast otherwise. `H3 Seam Normalize` fits per-channel
+linear-light gains on the hidden prefix (each VAE round trip darkens it
+~2.4%) and applies them to the new material; its audio rms gain measured
+NEGATIVE and defaults off.
 
-**State: one cell measured, on one machine, not yet judged in playback.**
-Two segments at 1 MP: handle within 3.3/255 of the carried tail after pass
-2, join at 0.67x the median frame delta. Unmeasured: more than two
-segments (drift curve), the 192/90 atom, a lower inject on continuation
-segments, per-token mask pinning instead of the guide (the plan reports
-which the core supports; v0 always uses the guide), dialogue across a
-join. The API graph is the only form shipped so far.
+**State: measured on two content sets, one machine, two segments.** The
+masked path beats the image guide everywhere we measured: join jerk 0.86x
+to 1.1x the clip's ordinary frame-to-frame motion vs 5x to 6.5x for the
+guide, camera velocity continuous through the join instead of reversing,
+handle within 2.2 to 3.3/255 of the carried tail, ~20% less wall (no
+guide rows in every block). The closing-gesture fix measured 1.55x -> 1.06x.
+Unmeasured: more than two segments (the drift curve), the 192/90 atom,
+lower inject on continuation segments, dialogue across a join, and the
+audio ambience bed, which still steps at the cut (a per-tick audio mask
+is the planned fix). The API graph is the only form shipped so far.
 
 ## The timeline surface
 
