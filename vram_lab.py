@@ -907,6 +907,12 @@ class H3StreamedBlocks:
         if cfg["kv_sage"] and not _SAGE_OK:
             log.warning("H3StreamedBlocks: kv_store kvi8s needs the sageattention package; falling back to bf16 (exact)")
             cfg["kv_sage"] = False
+        try:  # collision report: who already has a hand on this model (never blocks)
+            from . import h3_capabilities as _caps
+            for w in _caps.collision_warnings(_caps.block_patch_report(model)):
+                log.warning("H3StreamedBlocks: %s", w)
+        except Exception as _e:  # noqa: BLE001
+            log.info("H3StreamedBlocks: collision report skipped (%s)", _e)
         m = model.clone()
         for i, block in enumerate(blocks):
             m.set_model_patch_replace(_make_replacement(block, cfg, i), "dit", "double_block", i)
