@@ -729,6 +729,12 @@ class H3SolAttention:
                    "comfy-kitchen PR #117 CUDA kernel built out-of-tree for sm120.")
 
     def patch(self, model, tau, exact_av_rows=False):
+        try:  # collision report (never blocks)
+            from . import h3_capabilities as _caps
+            for w in _caps.collision_warnings(_caps.block_patch_report(model)):
+                log.warning("H3SolAttention: %s", w)
+        except Exception as _e:  # noqa: BLE001
+            log.info("H3SolAttention: collision report skipped (%s)", _e)
         global _SOL_FALLBACK, _SOL_TAU, _SOL_EXACT_AV, _SOL_FWD_ORIG, _SOL_AV_SLICES, _SOL_AV_LOGGED
         if _sol_ext() is None:
             log.warning("H3SolAttention: PR #117 extension not available; model unchanged")
@@ -1549,6 +1555,12 @@ class H3StreamedBlocks:
         if cfg["kv_fp4"] and _sage3_api() is None:
             log.warning("H3StreamedBlocks: kv_store kvfp4s needs SageAttention3's fp4 extension (fp4attn_cuda, tried %s); falling back to bf16 (exact)", _SAGE3_DIR)
             cfg["kv_fp4"] = False
+        try:  # collision report: who already has a hand on this model (never blocks)
+            from . import h3_capabilities as _caps
+            for w in _caps.collision_warnings(_caps.block_patch_report(model)):
+                log.warning("H3StreamedBlocks: %s", w)
+        except Exception as _e:  # noqa: BLE001
+            log.info("H3StreamedBlocks: collision report skipped (%s)", _e)
         m = model.clone()
         for i, block in enumerate(blocks):
             m.set_model_patch_replace(_make_replacement(block, cfg, i), "dit", "double_block", i)
