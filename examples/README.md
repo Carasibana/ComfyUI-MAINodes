@@ -117,6 +117,18 @@ flowchart LR
     WC --> R["H3 Exact Recover"]
 ```
 
+**Two different long-video jobs, easy to confuse.** Already have one long
+clip and want it repaired? That is the rolling window above: one world,
+the expensive pass chunked. Want to MAKE a long clip but can only afford
+short generations? That is extension: short segments generated and
+de-roped one at a time, a short video+audio tail carried into the next
+segment as its opening context, the overlap trimmed at assembly. The two
+trade differently: the window keeps one semantic world at bounded memory;
+extension accepts some drift between separately generated worlds in
+exchange for bounded compute. An extension start-here graph is planned;
+until it lands, the pieces are `MiniMaxH3AddGuide` (core) for the carried
+tail, with the grid rules in [`../TUNING.md`](../TUNING.md#chained-clips-and-the-audio-clock).
+
 **No audio init.**
 [`motion_pipeline_ref2va.json`](motion_pipeline_ref2va.json) is the
 starting-point graph without `H3 Audio Smear`; use it to hear what the
