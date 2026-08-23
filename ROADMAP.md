@@ -186,28 +186,27 @@ and it has a clear line of attack.
   Sampling sparse pose anchors from it and pinning them at their retimed
   positions gives the regeneration a ladder to climb instead of room to
   improvise. Success: beat count stops scaling with dilation factor.
-- **Dependency, and related work worth reading.** Stock ComfyUI restricts H3
-  keyframe anchors to first and last (`comfy/ldm/minimax/model.py` raises on
-  anything else). Two community packs already work around this by handing
-  stock a legal index and rewriting only the temporal column after the packed
-  layout is built:
-  [ComfyUI-H3-Motion-Context-MultiRef](https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef),
-  whose `patch_layout.py` also compensates for reference blocks advancing the
-  packing cursor, and
-  [ComfyUI-H3-Multishot](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot),
-  which additionally exposes a condition-strength node. Both are worth a look
-  if you are working this area. Upstream
-  [PR #15439](https://github.com/Comfy-Org/ComfyUI/pull/15439) would make
-  arbitrary guides native, which is the outcome we would prefer.
-- **Two upstream bugs we found while verifying that, worth reporting.**
-  (1) Keyframe condition rows are positioned relative to `text_len`, but
-  reference blocks advance the packing cursor and the target is placed at the
-  final cursor, so with any reference present a first/last keyframe sits at
-  the wrong temporal coordinate by exactly the reference advance. (2) The
-  refs branch in `model_base.py` unconditionally overwrites the keyframe
-  `cond_video_latents` list, so the two features cannot currently coexist and
-  most likely error on a shape mismatch before the mis-timing is visible.
-  Anyone combining Ref2VA references with keyframes should be aware.
+- **Dependency: resolved upstream (checked against core 2026-08-20).**
+  When this item was written, stock ComfyUI restricted H3 keyframe anchors
+  to first and last, and two community packs rewrote the temporal column
+  after packing to get around it. Upstream
+  [PR #15439](https://github.com/Comfy-Org/ComfyUI/pull/15439) (merged
+  commit `e01fb4c5`) made arbitrary guide positions native:
+  `MiniMaxH3AddGuide` takes a still or a clip at any frame index
+  (negative counts from the end), a clip guide snaps DOWN the 17k+5 grid
+  (5, 22, 39, ...; fewer than five frames becomes a single-frame guide),
+  and an audio guide rides along. The two bugs we had recorded here (a
+  keyframe mis-timed by the reference advance; the refs branch overwriting
+  the keyframe `cond_video_latents` list) are both fixed: references now
+  APPEND to the keyframe list in `model_base.py`, and `PackedLayout` places
+  each keyframe at its resolved frame index. On v0.33.1 and earlier the
+  slide still happens, so a graph that combines references with anchors
+  should probe the running core rather than trust a version string. Since
+  2026-08-18, [PR #15375](https://github.com/Comfy-Org/ComfyUI/pull/15375)
+  also offers per-token video and audio latent masks (snapped to the 2x2
+  latent patch grid and to whole audio latent frames, rounded to binary by
+  the generic mask path), which is the better tool for PINNING existing
+  content; guides remain the tool for creative anchors.
 - **Audio onsets as beat anchors.** Align the retimed audio's impacts to the
   baseline's impact times and let video recovery inherit those anchor points.
   Attacks the same problem from the other modality.
