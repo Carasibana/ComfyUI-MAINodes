@@ -162,6 +162,14 @@ say so and rename the thing.
   `d_max` or raising `q`, and `H3 Segment Crop` as it stands. Rolling windows
   only win for someone insisting on full `d_max` on a burst larger than their
   card, and nobody has produced that clip yet.
+- **Extension: make a long clip from short renders (shipped alpha 2026-08-23).**
+  The other long-video job: not one long world chunked, but a chain of
+  short worlds with a carried handle. `examples/motion_pipeline_extend_api.json`
+  and `ALPHA.md`. What it taught on the first cell: protecting the handle
+  from RETIMING is not enough, pass 2 still re-denoises it (20/255 drift);
+  freezing it in pass 2 through the time-varying V2V Init mask brings it to
+  3.3. Open: the drift curve over many segments, 192/90 vs 141/39, inject
+  on continuation segments, mask pinning vs the guide.
 - **A ceiling on dilated frames** (field request, 2026-08-12). A max-length
   option that drops lower-priority frames to keep people off the OOM rail
   while the highest-priority ones still reach pass 2. In our terms a hard

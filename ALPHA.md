@@ -43,6 +43,26 @@ Full status table, the layering rules, and a Contributing section naming
 the four things most worth receiving: **`concept_lab/README.md`**. The
 design decisions and their reasoning are in `concept_lab/DECISIONS.md`.
 
+## Extension (long clips from short renders)
+
+`h3_extend.py`: `H3 Extension Plan`, `H3 Tail Context`, `H3 Protect Prefix`,
+`H3 Prefix Freeze Mask`, `H3 Trim`; the shared types in `capsule_types.py`;
+the graph `examples/motion_pipeline_extend_api.json`.
+
+Short segments generated and de-roped one at a time, a 39-frame video+audio
+handle carried into the next segment through core's `MiniMaxH3AddGuide`,
+the handle protected from retiming and frozen in pass 2, the prefix trimmed
+at assembly. Integer time throughout: the 141/39 atom adds exactly 102
+frames and 170 audio ticks per segment.
+
+**State: one cell measured, on one machine, not yet judged in playback.**
+Two segments at 1 MP: handle within 3.3/255 of the carried tail after pass
+2, join at 0.67x the median frame delta. Unmeasured: more than two
+segments (drift curve), the 192/90 atom, a lower inject on continuation
+segments, per-token mask pinning instead of the guide (the plan reports
+which the core supports; v0 always uses the guide), dialogue across a
+join. The API graph is the only form shipped so far.
+
 ## The timeline surface
 
 Nodes: `H3 Drawn Plan`, `H3 Plan Settings`, `H3 Plan Estimate`,
