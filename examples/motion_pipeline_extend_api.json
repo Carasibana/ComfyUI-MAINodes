@@ -869,7 +869,13 @@
         0
       ],
       "audio_mode": "follow the original performance (0.5)",
-      "audio_strength": 0.5
+      "audio_strength": 0.5,
+      "mask": [
+        "1401",
+        0
+      ],
+      "time_varying": true,
+      "freeze_grow": 0
     },
     "_meta": {
       "title": "seg2 H3V2VInit"
@@ -1136,6 +1142,52 @@
         "400",
         0
       ]
+    }
+  },
+  "1401": {
+    "class_type": "H3PrefixFreezeMask",
+    "_meta": {
+      "title": "seg2 H3 Prefix Freeze Mask"
+    },
+    "inputs": {
+      "plan": [
+        "400",
+        0
+      ],
+      "dilated_length": [
+        "1201",
+        2
+      ]
+    }
+  },
+  "1130": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "1122",
+        0
+      ],
+      "audio": [
+        "1121",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": 8
+    }
+  },
+  "1092": {
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "seg2 pass-1 baseline (guide adherence is measured here)"
+    },
+    "inputs": {
+      "video": [
+        "1130",
+        0
+      ],
+      "format": "auto",
+      "codec": "auto",
+      "filename_prefix": "video/mainodes_extend_seg2_baseline"
     }
   },
   "402": {
