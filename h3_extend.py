@@ -94,10 +94,12 @@ class H3ExtensionPlan:
             "fps_den": ("INT", {"default": 1, "min": 1, "max": 1001}),
             "previous_length": ("INT", {"default": 141, "min": 0, "max": 3600,
                                         "tooltip": "frames in the FINISHED previous segment (after its own trim, or the first segment's full length); places the handle's source span"}),
+            "final_segment": ("BOOLEAN", {"default": False,
+                                          "tooltip": "off for every segment another one will continue: the end of this segment is not the end of the shot, so H3 Time Smear's expand_to_end (end-jump protection, which lifts the LAST frames to the highest hold) must be off there or a gesture ending the segment comes back accelerated after recovery. Wire `expand_to_end` to H3 Time Smear"}),
         }}
 
-    RETURN_TYPES = ("STRING", "INT", "INT", "INT", "STRING")
-    RETURN_NAMES = ("plan", "length", "handle_frames", "new_frames", "report")
+    RETURN_TYPES = ("STRING", "INT", "INT", "INT", "STRING", "BOOLEAN")
+    RETURN_NAMES = ("plan", "length", "handle_frames", "new_frames", "report", "expand_to_end")
     FUNCTION = "plan"
     CATEGORY = "MAINodes/alpha"
     DESCRIPTION = (
@@ -109,7 +111,7 @@ class H3ExtensionPlan:
         "H3 Protect Prefix and H3 Trim.")
 
     def plan(self, segment_frames, transition, handle_frames, new_frames, visual_anchor, audio_anchor,
-             fps_num, fps_den, previous_length):
+             fps_num, fps_den, previous_length, final_segment=False):
         tb = Timebase(fps_num=int(fps_num), fps_den=int(fps_den))
         caps = _probe()
         requested = {"segment_frames": int(segment_frames), "transition": transition,
@@ -179,6 +181,7 @@ class H3ExtensionPlan:
         hd = Handle(role="extension_prefix", source=source, destination=dest, protected=True,
                     retime_allowed=False, ownership="source", visual_anchor=v, audio_anchor=a, notes=notes)
         resolved = {"length": length, "handle_frames": handle, "new_frames": new, "surplus_frames": surplus,
+                    "expand_to_end": bool(final_segment),
                     "visual_anchor": v, "audio_anchor": a,
                     "length_ticks": str(tb.ticks(length)), "handle_ticks": str(tb.ticks(handle)),
                     "new_ticks": str(tb.ticks(new))}
@@ -199,7 +202,8 @@ class H3ExtensionPlan:
                f"  surplus         {surplus:4d} frames  (trimmed)",
                f"  visual anchor   {v.upper()}",
                f"  audio anchor    {a.upper()}",
-               f"  handle          protected, retime not allowed, full H3 VAE, never noised"]
+               f"  handle          protected, retime not allowed, full H3 VAE, never noised",
+               f"  expand_to_end   {'ON (final segment)' if final_segment else 'OFF (another segment continues this one)'}"]
         for k, why in reasons.items():
             rep.append(f"  resolved {k}: {why}")
         for n in notes:
@@ -208,7 +212,7 @@ class H3ExtensionPlan:
             rep.append("  WARNING this core predates #15808: dialogue tags tokenize wrong; update before judging audio")
         text = "\n".join(rep)
         log.info("\n" + text)
-        return (json.dumps(plan), int(length), int(handle), int(new), text)
+        return (json.dumps(plan), int(length), int(handle), int(new), text, bool(final_segment))
 
 
 def _audio_slice(audio, start_frames, n_frames, tb: Timebase):
