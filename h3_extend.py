@@ -401,7 +401,8 @@ class H3SeamNormalize:
             "max_gain": ("FLOAT", {"default": 1.25, "min": 1.0, "max": 2.0, "step": 0.01}),
         }, "optional": {
             "source_tail_audio": ("AUDIO",), "generated_prefix_audio": ("AUDIO",), "audio": ("AUDIO",),
-            "audio_mode": (["gain (match the handle's rms)", "off"], {"default": "gain (match the handle's rms)"}),
+            "audio_mode": (["off", "gain (match the handle's rms)"], {"default": "off",
+                           "tooltip": "off by default: measured 2026-08-23 the handle-fitted rms gain made the seam step WORSE (-8 -> -11 dB); the rendered prefix was louder than its source while the new material was quieter, so audio level is not a uniform offset like the VAE darkening"}),
             "audio_fade_ms": ("INT", {"default": 10, "min": 0, "max": 200}),
         }}
 
@@ -415,8 +416,9 @@ class H3SeamNormalize:
         "that map the rendered prefix onto the source tail, apply them to the NEW material so the new "
         "segment conforms to the accepted world (never the other way round), and do the same with an rms "
         "gain on the audio plus a short fade-in. Measured 2026-08-23: each VAE round-trip on the masked "
-        "path darkens the prefix ~2.4% and the new material lands warmer (G -7%, B -11%); audio stepped "
-        "-8 dB at the cut. No network, no render.")
+        "path darkens the prefix ~2.4% and the new material lands warmer (G -7%, B -11%): the colour gains "
+        "removed the luma step (-4.2% -> -0.1%) and half the chroma shift. The audio rms gain did NOT help "
+        "(seam step -8 -> -11 dB) and defaults to off. No network, no render.")
 
     def normalize(self, source_tail, generated_prefix, images, mode, max_gain,
                   source_tail_audio=None, generated_prefix_audio=None, audio=None,

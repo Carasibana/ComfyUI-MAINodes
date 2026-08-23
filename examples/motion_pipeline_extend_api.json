@@ -1214,7 +1214,7 @@
         0
       ],
       "image2": [
-        "402",
+        "430",
         0
       ]
     }
@@ -1230,7 +1230,7 @@
         0
       ],
       "audio2": [
-        "402",
+        "430",
         1
       ],
       "direction": "after"
@@ -1389,6 +1389,42 @@
       "invert_mask": false,
       "audio_mode": "custom (use audio_strength)",
       "audio_strength": 1.0
+    }
+  },
+  "430": {
+    "class_type": "H3SeamNormalize",
+    "_meta": {
+      "title": "H3 Seam Normalize (gains from the hidden prefix)"
+    },
+    "inputs": {
+      "source_tail": [
+        "401",
+        0
+      ],
+      "generated_prefix": [
+        "402",
+        5
+      ],
+      "images": [
+        "402",
+        0
+      ],
+      "mode": "channels (linear-light RGB gains)",
+      "max_gain": 1.25,
+      "source_tail_audio": [
+        "401",
+        1
+      ],
+      "generated_prefix_audio": [
+        "402",
+        6
+      ],
+      "audio": [
+        "402",
+        1
+      ],
+      "audio_mode": "off",
+      "audio_fade_ms": 10
     }
   }
 }
