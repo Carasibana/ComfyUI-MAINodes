@@ -165,11 +165,20 @@ say so and rename the thing.
 - **Extension: make a long clip from short renders (shipped alpha 2026-08-23).**
   The other long-video job: not one long world chunked, but a chain of
   short worlds with a carried handle. `examples/motion_pipeline_extend_api.json`
-  and `ALPHA.md`. What it taught on the first cell: protecting the handle
-  from RETIMING is not enough, pass 2 still re-denoises it (20/255 drift);
-  freezing it in pass 2 through the time-varying V2V Init mask brings it to
-  3.3. Open: the drift curve over many segments, 192/90 vs 141/39, inject
-  on continuation segments, mask pinning vs the guide.
+  and `ALPHA.md`. What the first cells taught, in order: protecting the
+  handle from RETIMING is not enough, pass 2 still re-denoises it (20/255
+  drift) until it is also frozen (3.3); the REPRESENTATION beats the
+  prompt - the tail written into the next segment's own latent under a
+  per-token mask makes the join an ordinary frame transition (0.86x to
+  1.1x vs 5x to 6.5x for the image guide) and keeps the camera's velocity
+  continuous, while an explicit camera-transition sentence changed nothing;
+  each VAE round trip darkens the frozen prefix ~2.4% (per-channel gains
+  fitted on the hidden overlap fix it, an audio rms gain measured
+  negative); and a burst that runs into the cut comes back fast unless the
+  last token group of a non-final segment is protected (1.55x -> 1.06x).
+  Open: the drift curve over many segments, 192/90 vs 141/39, inject on
+  continuation segments, dialogue across a join, the audio ambience bed
+  (wants a per-tick audio mask).
 - **A ceiling on dilated frames** (field request, 2026-08-12). A max-length
   option that drops lower-priority frames to keep people off the OOM rail
   while the highest-priority ones still reach pass 2. In our terms a hard
