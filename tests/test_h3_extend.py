@@ -58,7 +58,7 @@ assert ka["waveform"].shape[-1] == 102 * sr // 24 and float(ka["waveform"][0, 0,
 hm = json.dumps({"holds": [4] * 141, "world_len": 141})
 hm2, prep = ex.H3ProtectPrefix().protect(hm, plan)
 holds = json.loads(hm2)["holds"]
-assert holds[:39] == [1] * 39 and holds[39:] == [4] * 102
+assert holds[:39] == [1] * 39 and holds[39:124] == [4] * 85 and holds[124:] == [1] * 17  # non-final: suffix protected too
 print(report); print(trep); print(rrep); print(prep); print("PASS")
 # seam normalize: a prefix rendered 10% darker and 5% bluer gets mapped back, and the new material gets the same gains
 src = torch.rand(39, 8, 8, 3) * 0.6 + 0.2

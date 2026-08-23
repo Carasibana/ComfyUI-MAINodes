@@ -14,7 +14,10 @@ Four nodes, no model patch, no new de-rope:
   H3 Tail Context     the last HANDLE frames + sample-exact audio of a
                       finished segment, ready for MiniMaxH3AddGuide @ 0
   H3 Protect Prefix   hold_map[:HANDLE] = 1 so the de-rope sees the incoming
-                      velocity but may not retime the anchor
+                      velocity but may not retime the anchor; on a non-final
+                      segment also hold_map[-17:] = 1, because a burst that
+                      runs into the cut has no "after" for the model to slow
+                      into and comes back fast after recovery
   H3 Prefix Freeze    a time-varying V2V Init mask: the prefix keeps its init
                       in pass 2 instead of being re-textured
   H3 Trim             drop the hidden prefix and the surplus, audio
@@ -182,6 +185,7 @@ class H3ExtensionPlan:
                     retime_allowed=False, ownership="source", visual_anchor=v, audio_anchor=a, notes=notes)
         resolved = {"length": length, "handle_frames": handle, "new_frames": new, "surplus_frames": surplus,
                     "expand_to_end": bool(final_segment),
+                    "protect_suffix": 0 if final_segment else 17,
                     "visual_anchor": v, "audio_anchor": a,
                     "length_ticks": str(tb.ticks(length)), "handle_ticks": str(tb.ticks(handle)),
                     "new_ticks": str(tb.ticks(new))}
@@ -203,7 +207,8 @@ class H3ExtensionPlan:
                f"  visual anchor   {v.upper()}",
                f"  audio anchor    {a.upper()}",
                f"  handle          protected, retime not allowed, full H3 VAE, never noised",
-               f"  expand_to_end   {'ON (final segment)' if final_segment else 'OFF (another segment continues this one)'}"]
+               f"  expand_to_end   {'ON (final segment)' if final_segment else 'OFF (another segment continues this one)'}",
+               f"  protect suffix  {'none (final segment)' if final_segment else '17 frames held at 1: a burst that runs into the cut must not be dilated (measured 2026-08-23: hold 4 on the last 9 frames played the closing gesture 1.55x fast after recovery)'}"]
         for k, why in reasons.items():
             rep.append(f"  resolved {k}: {why}")
         for n in notes:
@@ -298,15 +303,22 @@ class H3ProtectPrefix:
 
     def protect(self, hold_map, plan):
         hm = json.loads(hold_map)
-        h = Handle.from_dict(json.loads(plan)["handle"]).destination.frames
+        p = json.loads(plan)
+        h = Handle.from_dict(p["handle"]).destination.frames
+        suf = int(p.get("resolved", {}).get("protect_suffix", 0))
         holds = list(hm["holds"])
         before = sum(int(x) for x in holds[:h])
         for i in range(min(h, len(holds))):
             holds[i] = 1
+        before_suf = sum(int(x) for x in holds[len(holds) - suf:]) if suf else 0
+        for i in range(max(0, len(holds) - suf), len(holds)):
+            holds[i] = 1
         hm["holds"] = holds
         hm.setdefault("protected_prefix", h)
-        text = (f"H3 Protect Prefix: holds[:{h}] = 1 ({before - min(h, len(holds))} dilated frames removed from the prefix; "
-                f"{sum(int(x) for x in holds)} dilated frames remain of {len(holds)})")
+        hm.setdefault("protected_suffix", suf)
+        text = (f"H3 Protect Prefix: holds[:{h}] = 1 ({before - min(h, len(holds))} dilated frames removed from the prefix"
+                + (f"), holds[-{suf}:] = 1 ({before_suf - suf} removed from the suffix" if suf else "")
+                + f"; {sum(int(x) for x in holds)} dilated frames remain of {len(holds)})")
         log.info(text)
         return (json.dumps(hm), text)
 

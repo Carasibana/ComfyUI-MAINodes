@@ -642,7 +642,8 @@
       "audio_anchor": "guide",
       "fps_num": 24,
       "fps_den": 1,
-      "previous_length": 141
+      "previous_length": 141,
+      "final_segment": false
     }
   },
   "401": {
@@ -835,6 +836,10 @@
       "hold_map": [
         "1400",
         0
+      ],
+      "expand_to_end": [
+        "400",
+        5
       ]
     },
     "_meta": {
@@ -1389,6 +1394,42 @@
       "invert_mask": false,
       "audio_mode": "custom (use audio_strength)",
       "audio_strength": 1.0
+    }
+  },
+  "1290": {
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "seg2 oracle report"
+    },
+    "inputs": {
+      "source": [
+        "1200",
+        5
+      ]
+    }
+  },
+  "1291": {
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "seg2 time smear report"
+    },
+    "inputs": {
+      "source": [
+        "1201",
+        3
+      ]
+    }
+  },
+  "1292": {
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "seg2 hold map (protected)"
+    },
+    "inputs": {
+      "source": [
+        "1400",
+        0
+      ]
     }
   },
   "430": {
