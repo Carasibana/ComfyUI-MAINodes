@@ -1,0 +1,1255 @@
+{
+  "300": {
+    "class_type": "PathchSageAttentionKJ",
+    "inputs": {
+      "model": [
+        "127",
+        0
+      ],
+      "sage_attention": "auto",
+      "allow_compile": false
+    },
+    "_meta": {
+      "title": "PathchSageAttentionKJ"
+    }
+  },
+  "301": {
+    "class_type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
+    "inputs": {
+      "model": [
+        "300",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "MiniMaxH3MemoryEfficientSageAttentionPatch"
+    }
+  },
+  "302": {
+    "class_type": "MiniMaxChunkFeedForward",
+    "inputs": {
+      "model": [
+        "301",
+        0
+      ],
+      "chunks": 2,
+      "seq_threshold": 65536
+    },
+    "_meta": {
+      "title": "MiniMaxChunkFeedForward"
+    }
+  },
+  "303": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "302",
+        0
+      ],
+      "lora_name": "minimax_h3-lightx2v/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
+      "strength_model": 1.0
+    },
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    }
+  },
+  "115": {
+    "class_type": "ResolutionSelector",
+    "inputs": {
+      "aspect_ratio": "1:1 (Square)",
+      "megapixels": 1.0,
+      "multiple": 32
+    },
+    "_meta": {
+      "title": "ResolutionSelector"
+    }
+  },
+  "119": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3/minimax_h3_video_vae_fp16.safetensors"
+    },
+    "_meta": {
+      "title": "VAELoader"
+    }
+  },
+  "120": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3/minimax_h3_audio_vae_fp32.safetensors"
+    },
+    "_meta": {
+      "title": "VAELoader"
+    }
+  },
+  "127": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "minimax_h3/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "_meta": {
+      "title": "UNETLoader"
+    }
+  },
+  "128": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "minimax_h3/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "_meta": {
+      "title": "CLIPLoader"
+    }
+  },
+  "133": {
+    "class_type": "PrimitiveFloat",
+    "inputs": {
+      "value": 5.875
+    },
+    "_meta": {
+      "title": "PrimitiveFloat"
+    }
+  },
+  "132": {
+    "class_type": "ComfyMathExpression",
+    "inputs": {
+      "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17",
+      "values.a": [
+        "133",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "ComfyMathExpression"
+    }
+  },
+  "234": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "example.png"
+    },
+    "_meta": {
+      "title": "LoadImage"
+    }
+  },
+  "129": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 20260901
+    },
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "131": {
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "inputs": {
+      "clip": [
+        "128",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ],
+      "audio_vae": [
+        "120",
+        0
+      ],
+      "prompt": "subject_definitions:\n<Subject 1> is the person shown in <Picture 1>; their face, hair and clothing are carried into the target video unchanged.\n\nsummary:\n[reference generation] The target video is a single continuous shot of <Subject 1> performing a fast turning movement, with their appearance taken from <Picture 1>.\n\nretention_analysis:\n<Subject 1> is fully preserved from <Picture 1> -- facial features, hair and clothing stay consistent in every frame. The pose in <Picture 1> is used only as the starting pose and is not held.\n\ndetailed_description:\n[Shot 1] Live-action, cinematic, a medium-wide shot frames <Subject 1> standing on open ground in even daylight. They step forward onto the left foot, swing both arms across the body and spin a full fast turn, their hair and clothing flaring outward with the rotation, then plant both feet and stop square to the camera, breathing quickly. The camera arcs left at fast speed around them through the turn, then settles.\n\noverall_soundscape: Footsteps scuffing and thudding on dry ground; the rush and snap of clothing turning through air; a light wind; a sharp exhale at the stop and quick breathing after it.\n\nnon_diegetic_music: N/A",
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "132",
+        1
+      ],
+      "ref_image_size": "match",
+      "ref_images.ref_image_0": [
+        "234",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "MiniMaxH3ReferenceToVideo"
+    }
+  },
+  "124": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "model": [
+        "302",
+        0
+      ],
+      "scheduler": "linear_quadratic",
+      "steps": 12,
+      "denoise": 1.0
+    },
+    "_meta": {
+      "title": "BasicScheduler"
+    }
+  },
+  "126": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "302",
+        0
+      ],
+      "conditioning": [
+        "131",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "BasicGuider"
+    }
+  },
+  "135": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "gradient_estimation"
+    },
+    "_meta": {
+      "title": "KSamplerSelect"
+    }
+  },
+  "125": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "129",
+        0
+      ],
+      "guider": [
+        "126",
+        0
+      ],
+      "sampler": [
+        "135",
+        0
+      ],
+      "sigmas": [
+        "124",
+        0
+      ],
+      "latent_image": [
+        "131",
+        1
+      ]
+    },
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "122": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "125",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "VAEDecode"
+    }
+  },
+  "121": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": {
+      "samples": [
+        "125",
+        0
+      ],
+      "vae": [
+        "120",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "VAEDecodeAudio"
+    }
+  },
+  "200": {
+    "class_type": "H3JerkOracle",
+    "inputs": {
+      "samples": [
+        "125",
+        0
+      ],
+      "length": [
+        "132",
+        1
+      ],
+      "q": 0.75,
+      "d_max": 4,
+      "ramp": true,
+      "preset": "balanced (default)",
+      "bridge": 8
+    },
+    "_meta": {
+      "title": "H3JerkOracle"
+    }
+  },
+  "201": {
+    "class_type": "H3TimeSmear",
+    "inputs": {
+      "images": [
+        "122",
+        0
+      ],
+      "dilation": 4,
+      "hold_map": [
+        "200",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "H3TimeSmear"
+    }
+  },
+  "202": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "201",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "VAEEncode"
+    }
+  },
+  "203": {
+    "class_type": "H3V2VInit",
+    "inputs": {
+      "samples": [
+        "202",
+        0
+      ],
+      "audio_latent": [
+        "9102",
+        0
+      ],
+      "audio_mode": "follow the original performance (0.5)",
+      "audio_strength": 0.5
+    },
+    "_meta": {
+      "title": "H3V2VInit"
+    }
+  },
+  "205": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 20260902
+    },
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "206": {
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "inputs": {
+      "clip": [
+        "128",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ],
+      "audio_vae": [
+        "120",
+        0
+      ],
+      "prompt": "subject_definitions:\n<Subject 1> is the person shown in <Picture 1>; their face, hair and clothing are carried into the target video unchanged.\n\nsummary:\n[reference generation] The target video is a single continuous shot of <Subject 1> performing a fast turning movement, with their appearance taken from <Picture 1>.\n\nretention_analysis:\n<Subject 1> is fully preserved from <Picture 1> -- facial features, hair and clothing stay consistent in every frame. The pose in <Picture 1> is used only as the starting pose and is not held.\n\ndetailed_description:\n[Shot 1] Live-action, cinematic, a medium-wide shot frames <Subject 1> standing on open ground in even daylight. They step forward onto the left foot, swing both arms across the body and spin a full fast turn, their hair and clothing flaring outward with the rotation, then plant both feet and stop square to the camera, breathing quickly. The camera arcs left at fast speed around them through the turn, then settles.\n\noverall_soundscape: Footsteps scuffing and thudding on dry ground; the rush and snap of clothing turning through air; a light wind; a sharp exhale at the stop and quick breathing after it.\n\nnon_diegetic_music: N/A",
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "132",
+        1
+      ],
+      "ref_image_size": "match",
+      "ref_images.ref_image_0": [
+        "234",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "MiniMaxH3ReferenceToVideo"
+    }
+  },
+  "204": {
+    "class_type": "H3InjectSchedule",
+    "inputs": {
+      "model": [
+        "303",
+        0
+      ],
+      "scheduler": "beta",
+      "total_steps": 6,
+      "inject": 0.7,
+      "preset": "faithful detail 0.50 (metric best)"
+    },
+    "_meta": {
+      "title": "H3InjectSchedule"
+    }
+  },
+  "207": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "303",
+        0
+      ],
+      "conditioning": [
+        "206",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "BasicGuider"
+    }
+  },
+  "136": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "gradient_estimation"
+    },
+    "_meta": {
+      "title": "KSamplerSelect"
+    }
+  },
+  "208": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "205",
+        0
+      ],
+      "guider": [
+        "207",
+        0
+      ],
+      "sampler": [
+        "136",
+        0
+      ],
+      "sigmas": [
+        "204",
+        0
+      ],
+      "latent_image": [
+        "203",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "209": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "208",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "VAEDecode"
+    }
+  },
+  "210": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": {
+      "samples": [
+        "208",
+        0
+      ],
+      "vae": [
+        "120",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "VAEDecodeAudio"
+    }
+  },
+  "213": {
+    "class_type": "H3ExactRecover",
+    "inputs": {
+      "images": [
+        "209",
+        0
+      ],
+      "hold_map": [
+        "201",
+        1
+      ]
+    },
+    "_meta": {
+      "title": "H3ExactRecover"
+    }
+  },
+  "219": {
+    "class_type": "H3AudioRecover",
+    "inputs": {
+      "audio": [
+        "210",
+        0
+      ],
+      "hold_map": [
+        "201",
+        1
+      ],
+      "fps": 24,
+      "reference": [
+        "121",
+        0
+      ],
+      "reference_mix": 1.0,
+      "audio_source": "keep the original performance (safe default)"
+    },
+    "_meta": {
+      "title": "H3AudioRecover"
+    }
+  },
+  "214": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "213",
+        0
+      ],
+      "audio": [
+        "219",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": 8
+    },
+    "_meta": {
+      "title": "CreateVideo"
+    }
+  },
+  "215": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": [
+        "214",
+        0
+      ],
+      "format": "auto",
+      "codec": "auto",
+      "filename_prefix": "video/mainodes_extend_seg1_recovered"
+    },
+    "_meta": {
+      "title": "SaveVideo"
+    }
+  },
+  "9101": {
+    "inputs": {
+      "audio": [
+        "121",
+        0
+      ],
+      "hold_map": [
+        "201",
+        1
+      ],
+      "fps": 24
+    },
+    "class_type": "H3AudioSmear",
+    "_meta": {
+      "title": "H3 Audio Smear - baseline audio onto the dilated clock"
+    }
+  },
+  "9102": {
+    "inputs": {
+      "audio": [
+        "9101",
+        0
+      ],
+      "vae": [
+        "120",
+        0
+      ]
+    },
+    "class_type": "VAEEncodeAudio",
+    "_meta": {
+      "title": "Encode the smeared audio"
+    }
+  },
+  "9103": {
+    "inputs": {
+      "audio": [
+        "210",
+        0
+      ],
+      "hold_map": [
+        "201",
+        1
+      ],
+      "fps": 24,
+      "reference": [
+        "121",
+        0
+      ],
+      "audio_source": "use pass 2's foley - ONLY IF the audio rows were seeded"
+    },
+    "class_type": "H3AudioRecover",
+    "_meta": {
+      "title": "H3 Audio Recover - seeded foley"
+    }
+  },
+  "400": {
+    "class_type": "H3ExtensionPlan",
+    "_meta": {
+      "title": "H3 Extension Plan: the 141/39 atom"
+    },
+    "inputs": {
+      "segment_frames": 141,
+      "transition": "seamless (39-frame handle)",
+      "handle_frames": 39,
+      "new_frames": 0,
+      "visual_anchor": "auto",
+      "audio_anchor": "auto",
+      "fps_num": 24,
+      "fps_den": 1,
+      "previous_length": 141
+    }
+  },
+  "401": {
+    "class_type": "H3TailContext",
+    "_meta": {
+      "title": "H3 Tail Context: last 39 frames + audio of segment 1"
+    },
+    "inputs": {
+      "images": [
+        "213",
+        0
+      ],
+      "audio": [
+        "219",
+        0
+      ],
+      "plan": [
+        "400",
+        0
+      ]
+    }
+  },
+  "1121": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": {
+      "samples": [
+        "1125",
+        0
+      ],
+      "vae": [
+        "120",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "seg2 VAEDecodeAudio"
+    }
+  },
+  "1122": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "1125",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "seg2 VAEDecode"
+    }
+  },
+  "1124": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "model": [
+        "302",
+        0
+      ],
+      "scheduler": "linear_quadratic",
+      "steps": 12,
+      "denoise": 1.0
+    },
+    "_meta": {
+      "title": "seg2 BasicScheduler"
+    }
+  },
+  "1125": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "1129",
+        0
+      ],
+      "guider": [
+        "1126",
+        0
+      ],
+      "sampler": [
+        "135",
+        0
+      ],
+      "sigmas": [
+        "1124",
+        0
+      ],
+      "latent_image": [
+        "1131",
+        1
+      ]
+    },
+    "_meta": {
+      "title": "seg2 SamplerCustomAdvanced"
+    }
+  },
+  "1126": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "302",
+        0
+      ],
+      "conditioning": [
+        "1140",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "seg2 BasicGuider"
+    }
+  },
+  "1129": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 20260903
+    },
+    "_meta": {
+      "title": "seg2 RandomNoise"
+    }
+  },
+  "1131": {
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "inputs": {
+      "clip": [
+        "128",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ],
+      "audio_vae": [
+        "120",
+        0
+      ],
+      "prompt": "subject_definitions:\n<Subject 1> is the person shown in <Picture 1>; their face, hair and clothing are carried into the target video unchanged.\n\nsummary:\n[reference generation, continuation] The target video continues an already-running single continuous shot of <Subject 1>: the turn they just finished hands its momentum forward, and they walk toward the camera.\n\nretention_analysis:\n<Subject 1> is fully preserved from <Picture 1> -- facial features, hair and clothing stay consistent in every frame. The opening pose, the camera position and the daylight are inherited from the shot already in progress, not restarted.\n\ndetailed_description:\n[Shot 1] Live-action, cinematic, a medium-wide shot. The existing subject motion, camera trajectory, physical momentum and ongoing action continue uninterrupted: <Subject 1> is still square to the camera, breathing quickly after the turn, hair and clothing settling. They take three quick steps straight toward the camera, arms swinging, clothing swaying with each stride, then slow and raise one hand as if to wave, the hand still rising as the shot ends. The camera pulls back slowly with small amplitude, keeping them framed from the knees up.\n\noverall_soundscape: Ambience continues without a fresh start: a light wind, quick breathing settling toward normal; three firm footsteps on dry ground, cloth moving with the strides; a small exhale as the hand comes up.\n\nnon_diegetic_music: N/A",
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "400",
+        1
+      ],
+      "ref_image_size": "match",
+      "ref_images.ref_image_0": [
+        "234",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "seg2 MiniMaxH3ReferenceToVideo"
+    }
+  },
+  "1200": {
+    "class_type": "H3JerkOracle",
+    "inputs": {
+      "samples": [
+        "1125",
+        0
+      ],
+      "length": [
+        "400",
+        1
+      ],
+      "q": 0.75,
+      "d_max": 4,
+      "ramp": true,
+      "preset": "balanced (default)",
+      "bridge": 8
+    },
+    "_meta": {
+      "title": "seg2 H3JerkOracle"
+    }
+  },
+  "1201": {
+    "class_type": "H3TimeSmear",
+    "inputs": {
+      "images": [
+        "1122",
+        0
+      ],
+      "dilation": 4,
+      "hold_map": [
+        "1400",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "seg2 H3TimeSmear"
+    }
+  },
+  "1202": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "1201",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "seg2 VAEEncode"
+    }
+  },
+  "1203": {
+    "class_type": "H3V2VInit",
+    "inputs": {
+      "samples": [
+        "1202",
+        0
+      ],
+      "audio_latent": [
+        "10102",
+        0
+      ],
+      "audio_mode": "follow the original performance (0.5)",
+      "audio_strength": 0.5
+    },
+    "_meta": {
+      "title": "seg2 H3V2VInit"
+    }
+  },
+  "1204": {
+    "class_type": "H3InjectSchedule",
+    "inputs": {
+      "model": [
+        "303",
+        0
+      ],
+      "scheduler": "beta",
+      "total_steps": 6,
+      "inject": 0.7,
+      "preset": "faithful detail 0.50 (metric best)"
+    },
+    "_meta": {
+      "title": "seg2 H3InjectSchedule"
+    }
+  },
+  "1205": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 20260904
+    },
+    "_meta": {
+      "title": "seg2 RandomNoise"
+    }
+  },
+  "1206": {
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "inputs": {
+      "clip": [
+        "128",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ],
+      "audio_vae": [
+        "120",
+        0
+      ],
+      "prompt": "subject_definitions:\n<Subject 1> is the person shown in <Picture 1>; their face, hair and clothing are carried into the target video unchanged.\n\nsummary:\n[reference generation, continuation] The target video continues an already-running single continuous shot of <Subject 1>: the turn they just finished hands its momentum forward, and they walk toward the camera.\n\nretention_analysis:\n<Subject 1> is fully preserved from <Picture 1> -- facial features, hair and clothing stay consistent in every frame. The opening pose, the camera position and the daylight are inherited from the shot already in progress, not restarted.\n\ndetailed_description:\n[Shot 1] Live-action, cinematic, a medium-wide shot. The existing subject motion, camera trajectory, physical momentum and ongoing action continue uninterrupted: <Subject 1> is still square to the camera, breathing quickly after the turn, hair and clothing settling. They take three quick steps straight toward the camera, arms swinging, clothing swaying with each stride, then slow and raise one hand as if to wave, the hand still rising as the shot ends. The camera pulls back slowly with small amplitude, keeping them framed from the knees up.\n\noverall_soundscape: Ambience continues without a fresh start: a light wind, quick breathing settling toward normal; three firm footsteps on dry ground, cloth moving with the strides; a small exhale as the hand comes up.\n\nnon_diegetic_music: N/A",
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "400",
+        1
+      ],
+      "ref_image_size": "match",
+      "ref_images.ref_image_0": [
+        "234",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "seg2 MiniMaxH3ReferenceToVideo"
+    }
+  },
+  "1207": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "303",
+        0
+      ],
+      "conditioning": [
+        "1206",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "seg2 BasicGuider"
+    }
+  },
+  "1208": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "1205",
+        0
+      ],
+      "guider": [
+        "1207",
+        0
+      ],
+      "sampler": [
+        "136",
+        0
+      ],
+      "sigmas": [
+        "1204",
+        0
+      ],
+      "latent_image": [
+        "1203",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "seg2 SamplerCustomAdvanced"
+    }
+  },
+  "1209": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "1208",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "seg2 VAEDecode"
+    }
+  },
+  "1210": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": {
+      "samples": [
+        "1208",
+        0
+      ],
+      "vae": [
+        "120",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "seg2 VAEDecodeAudio"
+    }
+  },
+  "1213": {
+    "class_type": "H3ExactRecover",
+    "inputs": {
+      "images": [
+        "1209",
+        0
+      ],
+      "hold_map": [
+        "1201",
+        1
+      ]
+    },
+    "_meta": {
+      "title": "seg2 H3ExactRecover"
+    }
+  },
+  "1219": {
+    "class_type": "H3AudioRecover",
+    "inputs": {
+      "audio": [
+        "1210",
+        0
+      ],
+      "hold_map": [
+        "1201",
+        1
+      ],
+      "fps": 24,
+      "reference": [
+        "1121",
+        0
+      ],
+      "reference_mix": 1.0,
+      "audio_source": "keep the original performance (safe default)"
+    },
+    "_meta": {
+      "title": "seg2 H3AudioRecover"
+    }
+  },
+  "10101": {
+    "inputs": {
+      "audio": [
+        "1121",
+        0
+      ],
+      "hold_map": [
+        "1201",
+        1
+      ],
+      "fps": 24
+    },
+    "class_type": "H3AudioSmear",
+    "_meta": {
+      "title": "seg2 H3 Audio Smear - baseline audio onto the dilated clock"
+    }
+  },
+  "10102": {
+    "inputs": {
+      "audio": [
+        "10101",
+        0
+      ],
+      "vae": [
+        "120",
+        0
+      ]
+    },
+    "class_type": "VAEEncodeAudio",
+    "_meta": {
+      "title": "seg2 Encode the smeared audio"
+    }
+  },
+  "1140": {
+    "class_type": "MiniMaxH3AddGuide",
+    "_meta": {
+      "title": "seg2 AddGuide: the carried handle at frame 0"
+    },
+    "inputs": {
+      "positive": [
+        "1131",
+        0
+      ],
+      "latent": [
+        "1131",
+        1
+      ],
+      "vae": [
+        "119",
+        0
+      ],
+      "audio_vae": [
+        "120",
+        0
+      ],
+      "image": [
+        "401",
+        0
+      ],
+      "audio": [
+        "401",
+        1
+      ],
+      "frame_idx": [
+        "401",
+        2
+      ]
+    }
+  },
+  "1400": {
+    "class_type": "H3ProtectPrefix",
+    "_meta": {
+      "title": "seg2 H3 Protect Prefix"
+    },
+    "inputs": {
+      "hold_map": [
+        "1200",
+        0
+      ],
+      "plan": [
+        "400",
+        0
+      ]
+    }
+  },
+  "402": {
+    "class_type": "H3Trim",
+    "_meta": {
+      "title": "H3 Trim: drop the hidden prefix"
+    },
+    "inputs": {
+      "images": [
+        "1213",
+        0
+      ],
+      "audio": [
+        "1219",
+        0
+      ],
+      "plan": [
+        "400",
+        0
+      ],
+      "global_start": 141
+    }
+  },
+  "403": {
+    "class_type": "ImageBatch",
+    "_meta": {
+      "title": "assemble frames"
+    },
+    "inputs": {
+      "image1": [
+        "213",
+        0
+      ],
+      "image2": [
+        "402",
+        0
+      ]
+    }
+  },
+  "404": {
+    "class_type": "AudioConcat",
+    "_meta": {
+      "title": "assemble audio"
+    },
+    "inputs": {
+      "audio1": [
+        "219",
+        0
+      ],
+      "audio2": [
+        "402",
+        1
+      ],
+      "direction": "after"
+    }
+  },
+  "405": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "403",
+        0
+      ],
+      "audio": [
+        "404",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": 8
+    }
+  },
+  "406": {
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "the assembled clip: 141 + 102 frames"
+    },
+    "inputs": {
+      "video": [
+        "405",
+        0
+      ],
+      "format": "auto",
+      "codec": "auto",
+      "filename_prefix": "video/mainodes_extend_assembled"
+    }
+  },
+  "1214": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "1213",
+        0
+      ],
+      "audio": [
+        "1219",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": 8
+    }
+  },
+  "1215": {
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "seg2 recovered, prefix still attached"
+    },
+    "inputs": {
+      "video": [
+        "1214",
+        0
+      ],
+      "format": "auto",
+      "codec": "auto",
+      "filename_prefix": "video/mainodes_extend_seg2_untrimmed"
+    }
+  }
+}
