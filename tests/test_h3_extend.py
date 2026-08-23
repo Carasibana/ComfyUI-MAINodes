@@ -49,7 +49,8 @@ tail, ta, idx, hjson, trep = ex.H3TailContext().tail(frames, plan, audio)
 assert tail.shape[0] == 39 and idx == 0 and float(tail[0, 0, 0, 0]) == 102
 assert ta["waveform"].shape[-1] == 39 * sr // 24 == 52000 and float(ta["waveform"][0, 0, 0]) == 102 * sr // 24
 assert "WARNING" not in trep, trep
-kept, ka, gend, gspan, rrep = ex.H3Trim().trim(frames, plan, 141, audio)
+kept, ka, gend, gspan, rrep, pimg, paud = ex.H3Trim().trim(frames, plan, 141, audio)
+assert pimg.shape[0] == 39 and paud["waveform"].shape[-1] == 39 * sr // 24
 assert kept.shape[0] == 102 and float(kept[0, 0, 0, 0]) == 39 and gend == 243 and json.loads(gspan)["ticks"] == "170"
 assert ka["waveform"].shape[-1] == 102 * sr // 24 and float(ka["waveform"][0, 0, 0]) == 39 * sr // 24
 # protect prefix on a hold map
@@ -58,3 +59,15 @@ hm2, prep = ex.H3ProtectPrefix().protect(hm, plan)
 holds = json.loads(hm2)["holds"]
 assert holds[:39] == [1] * 39 and holds[39:] == [4] * 102
 print(report); print(trep); print(rrep); print(prep); print("PASS")
+# seam normalize: a prefix rendered 10% darker and 5% bluer gets mapped back, and the new material gets the same gains
+src = torch.rand(39, 8, 8, 3) * 0.6 + 0.2
+gen = (src.clamp(0, 1) ** 2.2 * torch.tensor([0.9, 0.9, 0.95])) ** (1 / 2.2)
+new = torch.rand(12, 8, 8, 3) * 0.5 + 0.2
+sa = {"waveform": torch.randn(1, 1, 52000) * 0.05, "sample_rate": 32000}
+ga = {"waveform": torch.randn(1, 1, 52000) * 0.02, "sample_rate": 32000}
+na = {"waveform": torch.randn(1, 1, 136000) * 0.02, "sample_rate": 32000}
+out, oa, srep = ex.H3SeamNormalize().normalize(src, gen, new, "channels (linear-light RGB gains)", 1.25, sa, ga, na)
+assert out.shape == new.shape and (out.mean() > new.mean())
+assert abs(oa["waveform"].pow(2).mean().sqrt().item() / na["waveform"].pow(2).mean().sqrt().item() - 2.5) < 0.2
+assert "gains R" in srep and "audio gain" in srep
+print(srep)

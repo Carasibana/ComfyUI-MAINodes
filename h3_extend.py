@@ -19,6 +19,9 @@ Four nodes, no model patch, no new de-rope:
                       in pass 2 instead of being re-textured
   H3 Trim             drop the hidden prefix and the surplus, audio
                       sample-exact, and advance the global timeline
+  H3 Seam Normalize   the hidden prefix is calibration data: fit gains that
+                      map it onto the source tail, apply them to the new
+                      material (colour in linear light, audio rms + fade)
 
 The default atom is 141/39: 141 frames = 235 ticks, handle 39 = 65 ticks,
 new material 102 = 170 ticks, the handle starts at 102 = 6x17 in the
@@ -47,6 +50,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from fractions import Fraction
 
 import torch
@@ -311,8 +315,8 @@ class H3Trim:
                                                       "tooltip": "frames already on the assembled timeline before this segment's new material"})},
                 "optional": {"audio": ("AUDIO",)}}
 
-    RETURN_TYPES = ("IMAGE", "AUDIO", "INT", "STRING", "STRING")
-    RETURN_NAMES = ("images", "audio", "global_end", "global_span", "report")
+    RETURN_TYPES = ("IMAGE", "AUDIO", "INT", "STRING", "STRING", "IMAGE", "AUDIO")
+    RETURN_NAMES = ("images", "audio", "global_end", "global_span", "report", "prefix_images", "prefix_audio")
     FUNCTION = "trim"
     CATEGORY = "MAINodes/alpha"
     DESCRIPTION = (
@@ -330,18 +334,21 @@ class H3Trim:
         if n < h + new:
             warn.append(f"recovered segment has {n} frames, plan expected {h + new}; keeping what exists after the prefix")
         keep = images[h:h + new]
+        prefix = images[:h]
         if audio is not None:
             ta, w = _audio_slice(audio, h, keep.shape[0], tb)
             warn += w
+            pa, _ = _audio_slice(audio, 0, h, tb)
         else:
             ta = None
+            pa = None
         gs = Span.make(int(global_start), int(global_start) + keep.shape[0], tb)
         text = (f"H3 Trim: dropped {h} prefix + {max(0, n - h - keep.shape[0])} surplus, kept {keep.shape[0]} frames "
                 f"({tb.ticks(keep.shape[0])} ticks) -> global [{gs.start},{gs.end})")
         if warn:
             text += "\n" + "\n".join("  WARNING " + w for w in warn)
         log.info(text)
-        return (keep, ta, int(gs.end), json.dumps(gs.to_dict()), text)
+        return (keep, ta, int(gs.end), json.dumps(gs.to_dict()), text, prefix, pa)
 
 
 class H3PrefixFreezeMask:
@@ -375,12 +382,88 @@ class H3PrefixFreezeMask:
         return (m, text)
 
 
+def _srgb_to_linear(x):
+    return torch.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
+
+
+def _linear_to_srgb(x):
+    return torch.where(x <= 0.0031308, x * 12.92, 1.055 * x.clamp(min=0) ** (1 / 2.4) - 0.055)
+
+
+class H3SeamNormalize:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "source_tail": ("IMAGE", {"tooltip": "H3 Tail Context's tail_images: the accepted world"}),
+            "generated_prefix": ("IMAGE", {"tooltip": "H3 Trim's prefix_images: the same frames as the continuation rendered them"}),
+            "images": ("IMAGE", {"tooltip": "H3 Trim's images: the new material to conform"}),
+            "mode": (["channels (linear-light RGB gains)", "luma (one gain)", "off (report only)"], {"default": "channels (linear-light RGB gains)"}),
+            "max_gain": ("FLOAT", {"default": 1.25, "min": 1.0, "max": 2.0, "step": 0.01}),
+        }, "optional": {
+            "source_tail_audio": ("AUDIO",), "generated_prefix_audio": ("AUDIO",), "audio": ("AUDIO",),
+            "audio_mode": (["gain (match the handle's rms)", "off"], {"default": "gain (match the handle's rms)"}),
+            "audio_fade_ms": ("INT", {"default": 10, "min": 0, "max": 200}),
+        }}
+
+    RETURN_TYPES = ("IMAGE", "AUDIO", "STRING")
+    RETURN_NAMES = ("images", "audio", "report")
+    FUNCTION = "normalize"
+    CATEGORY = "MAINodes/alpha"
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha). The hidden prefix is calibration data: 39 frames the continuation rendered "
+        "of content whose accepted version exists. Fit per-channel linear-light gains (or one luma gain) "
+        "that map the rendered prefix onto the source tail, apply them to the NEW material so the new "
+        "segment conforms to the accepted world (never the other way round), and do the same with an rms "
+        "gain on the audio plus a short fade-in. Measured 2026-08-23: each VAE round-trip on the masked "
+        "path darkens the prefix ~2.4% and the new material lands warmer (G -7%, B -11%); audio stepped "
+        "-8 dB at the cut. No network, no render.")
+
+    def normalize(self, source_tail, generated_prefix, images, mode, max_gain,
+                  source_tail_audio=None, generated_prefix_audio=None, audio=None,
+                  audio_mode="gain (match the handle's rms)", audio_fade_ms=10):
+        n = min(source_tail.shape[0], generated_prefix.shape[0])
+        src = _srgb_to_linear(source_tail[-n:].float().clamp(0, 1))
+        gen = _srgb_to_linear(generated_prefix[:n].float().clamp(0, 1))
+        w = torch.tensor([0.2126, 0.7152, 0.0722])
+        gains = torch.ones(3)
+        if mode.startswith("channels"):
+            gains = (src.reshape(-1, 3).median(0).values + 1e-4) / (gen.reshape(-1, 3).median(0).values + 1e-4)
+        elif mode.startswith("luma"):
+            g = float(((src * w).sum(-1).mean() + 1e-4) / ((gen * w).sum(-1).mean() + 1e-4))
+            gains = torch.full((3,), g)
+        gains = gains.clamp(1 / max_gain, max_gain)
+        if mode.startswith("off"):
+            out = images
+        else:
+            lin = _srgb_to_linear(images.float().clamp(0, 1)) * gains
+            out = _linear_to_srgb(lin.clamp(0, 1)).to(images.dtype)
+        resid = ((gen * gains).reshape(-1, 3).median(0).values - src.reshape(-1, 3).median(0).values).abs().max().item()
+        rep = [f"H3 Seam Normalize: {mode.split(' ')[0]} gains R {gains[0]:.4f} G {gains[1]:.4f} B {gains[2]:.4f} "
+               f"(fitted on {n} hidden frames; residual median error after correction {resid:.4f})"]
+        ao = audio
+        if audio is not None and source_tail_audio is not None and generated_prefix_audio is not None and audio_mode.startswith("gain"):
+            rs = source_tail_audio["waveform"].float().pow(2).mean().sqrt().item()
+            rg = generated_prefix_audio["waveform"].float().pow(2).mean().sqrt().item()
+            ag = max(0.25, min(4.0, (rs + 1e-6) / (rg + 1e-6)))
+            wf = audio["waveform"].float() * ag
+            sr = int(audio["sample_rate"]); nf = int(sr * audio_fade_ms / 1000)
+            if nf > 0 and wf.shape[-1] > nf:
+                ramp = torch.linspace(0, 1, nf)
+                wf[..., :nf] = wf[..., :nf] * ramp
+            ao = {"waveform": wf.to(audio["waveform"].dtype), "sample_rate": sr}
+            rep.append(f"  audio gain {ag:.3f} ({20 * math.log10(ag):+.1f} dB; handle rms source {rs:.4f} vs rendered {rg:.4f}), fade-in {audio_fade_ms} ms")
+        text = "\n".join(rep)
+        log.info(text)
+        return (out, ao, text)
+
+
 NODE_CLASS_MAPPINGS = {
     "H3ExtensionPlan": H3ExtensionPlan,
     "H3TailContext": H3TailContext,
     "H3ProtectPrefix": H3ProtectPrefix,
     "H3Trim": H3Trim,
     "H3PrefixFreezeMask": H3PrefixFreezeMask,
+    "H3SeamNormalize": H3SeamNormalize,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "H3ExtensionPlan": "H3 Extension Plan (alpha)",
@@ -388,4 +471,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "H3ProtectPrefix": "H3 Protect Prefix (alpha)",
     "H3Trim": "H3 Trim (alpha)",
     "H3PrefixFreezeMask": "H3 Prefix Freeze Mask (alpha)",
+    "H3SeamNormalize": "H3 Seam Normalize (alpha)",
 }
