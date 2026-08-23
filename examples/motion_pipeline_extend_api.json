@@ -638,8 +638,8 @@
       "transition": "seamless (39-frame handle)",
       "handle_frames": 39,
       "new_frames": 0,
-      "visual_anchor": "auto",
-      "audio_anchor": "auto",
+      "visual_anchor": "per_token_mask",
+      "audio_anchor": "guide",
       "fps_num": 24,
       "fps_den": 1,
       "previous_length": 141
@@ -732,8 +732,8 @@
         0
       ],
       "latent_image": [
-        "1131",
-        1
+        "425",
+        0
       ]
     },
     "_meta": {
@@ -1095,7 +1095,7 @@
   "1140": {
     "class_type": "MiniMaxH3AddGuide",
     "_meta": {
-      "title": "seg2 AddGuide: the carried handle at frame 0"
+      "title": "seg2 AddGuide: audio handle only, frame 0"
     },
     "inputs": {
       "positive": [
@@ -1106,16 +1106,8 @@
         "1131",
         1
       ],
-      "vae": [
-        "119",
-        0
-      ],
       "audio_vae": [
         "120",
-        0
-      ],
-      "image": [
-        "401",
         0
       ],
       "audio": [
@@ -1302,6 +1294,101 @@
       "format": "auto",
       "codec": "auto",
       "filename_prefix": "video/mainodes_extend_seg2_untrimmed"
+    }
+  },
+  "420": {
+    "class_type": "ImageFromBatch",
+    "_meta": {
+      "title": "last tail frame"
+    },
+    "inputs": {
+      "image": [
+        "401",
+        0
+      ],
+      "batch_index": 38,
+      "length": 1
+    }
+  },
+  "421": {
+    "class_type": "RepeatImageBatch",
+    "inputs": {
+      "image": [
+        "420",
+        0
+      ],
+      "amount": 102
+    }
+  },
+  "422": {
+    "class_type": "ImageBatch",
+    "_meta": {
+      "title": "tail + 102 held frames = 141"
+    },
+    "inputs": {
+      "image1": [
+        "401",
+        0
+      ],
+      "image2": [
+        "421",
+        0
+      ]
+    }
+  },
+  "423": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "422",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    }
+  },
+  "424": {
+    "class_type": "H3PrefixFreezeMask",
+    "_meta": {
+      "title": "pass-1 prefix freeze (per-token mask)"
+    },
+    "inputs": {
+      "plan": [
+        "400",
+        0
+      ],
+      "dilated_length": [
+        "400",
+        1
+      ]
+    }
+  },
+  "425": {
+    "class_type": "H3V2VInit",
+    "_meta": {
+      "title": "seg2 pass-1 target latent: prefix preserved"
+    },
+    "inputs": {
+      "samples": [
+        "423",
+        0
+      ],
+      "length": [
+        "400",
+        1
+      ],
+      "mask": [
+        "424",
+        0
+      ],
+      "time_varying": true,
+      "freeze_grow": 0,
+      "mask_feather": 0,
+      "invert_mask": false,
+      "audio_mode": "custom (use audio_strength)",
+      "audio_strength": 1.0
     }
   }
 }
