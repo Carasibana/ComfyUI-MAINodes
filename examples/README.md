@@ -17,6 +17,7 @@ The folder has three tiers:
 
 | you want | graph | needs |
 |---|---|---|
+| **a long clip, short renders** | [`motion_pipeline_extend_api.json`](motion_pipeline_extend_api.json) | alpha, API form; segments of 141 frames chained with a 39-frame carried handle. Below |
 | **the normal starting point** | [`motion_pipeline_ref2va_audioinit.json`](motion_pipeline_ref2va_audioinit.json) | Ref2VA checkpoint, a reference image, the lightx2v turbo LoRA. 12 steps on the base model for pass 1, turbo at 6 steps for the de-rope, audio seeded. 192 frames at 1 MP in ~12 min on our card |
 | best quality, time is no object | [`motion_pipeline.json`](motion_pipeline.json) | FL2VA checkpoint, first-frame image. 25 steps both passes, no turbo, the audio fixes included. The starting-point graph run this way measured 36 min against 12 |
 | a 16 to 24 GB card | [`motion_pipeline_lowvram.json`](motion_pipeline_lowvram.json) | W4A8 checkpoint, NVFP4 text encoder, ~32 GB of system RAM. Measured on fenced 16/24/32 GB budgets, see [`../LOWVRAM.md`](../LOWVRAM.md) |
@@ -125,9 +126,32 @@ de-roped one at a time, a short video+audio tail carried into the next
 segment as its opening context, the overlap trimmed at assembly. The two
 trade differently: the window keeps one semantic world at bounded memory;
 extension accepts some drift between separately generated worlds in
-exchange for bounded compute. An extension start-here graph is planned;
-until it lands, the pieces are `MiniMaxH3AddGuide` (core) for the carried
-tail, with the grid rules in [`../TUNING.md`](../TUNING.md#chained-clips-and-the-audio-clock).
+exchange for bounded compute.
+
+**Make a long clip on a smaller card.**
+[`motion_pipeline_extend_api.json`](motion_pipeline_extend_api.json) (alpha,
+API form only for now) renders two 141-frame segments and assembles 243
+frames: segment 1 is the starting-point graph; segment 2 carries segment
+1's last 39 frames and their audio into `MiniMaxH3AddGuide` at frame 0,
+de-ropes with that prefix held at 1 and frozen in pass 2, trims the hidden
+prefix, and appends. Add segments by repeating the block. The plan node
+prints the arithmetic (141 = 235 audio ticks, handle 39 = 65, new 102 =
+170: nothing fractional accumulates) and which anchor the running core can
+use. Measured on one 1 MP cell: the carried frames stay within 3.3/255 of
+the tail after pass 2 (20 without the freeze), and the join is 0.67x the
+clip's median frame-to-frame change. 720 s for both segments on our card.
+
+```mermaid
+flowchart LR
+    R1["segment 1<br/>recovered"] --> TC["H3 Tail Context<br/>(last 39 frames + audio)"]
+    P["H3 Extension Plan<br/>(141/39 atom)"] --> TC
+    TC --> AG["MiniMaxH3AddGuide @ 0"] --> S2["segment 2 pass 1"]
+    S2 --> O["H3 Jerk Oracle"] --> PP["H3 Protect Prefix<br/>(hold 1 on the handle)"] --> TS["H3 Time Smear"]
+    TS -- "length" --> FM["H3 Prefix Freeze Mask"] --> V["H3 V2V Init<br/>(time_varying)"]
+    V --> D2["pass 2 + recover"] --> T["H3 Trim<br/>(drop the prefix)"] --> A["ImageBatch + AudioConcat"]
+```
+
+The grid rules behind it are in [`../TUNING.md`](../TUNING.md#chained-clips-and-the-audio-clock).
 
 **No audio init.**
 [`motion_pipeline_ref2va.json`](motion_pipeline_ref2va.json) is the
