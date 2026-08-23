@@ -26,8 +26,8 @@ rows are `HARDWARE.md`. The short table:
 
 On turbo, the rule moved on 2026-08-19 and it is worth stating exactly.
 Pass 1 decides the choreography and wants the base model at 12 steps or
-more. Pass 2 repairs bursts from a known init and tolerates the turbo LoRA,
-**provided the whole pass-2 recipe comes with it**: `gradient_estimation`
+more. Pass 2 repairs bursts from a known init and is where the turbo LoRA
+belongs, **provided the whole pass-2 recipe comes with it**: `gradient_estimation`
 and `linear_quadratic` on pass 1, a 6-step `beta` schedule on pass 2, the
 audio seeded through `H3 Audio Smear`. The turbo LoRA dropped into the
 25-step `res_multistep` graph with nothing else changed renders jerky and
@@ -36,8 +36,9 @@ old "no turbo in the pipeline" rule was actually measuring.
 
 The working rhythm: iterate prompts and seeds on the fast-iterate graph to
 learn what a prompt gives you globally, then run the keeper through the
-starting-point graph; reach for the 25-step graph when a final has earned
-the time.
+starting-point graph. The base model on pass 2 (the 25-step graph) is
+better quality still, at three times the wall; reach for it when a final
+has earned the time.
 
 ## Second: ask the user what they actually care about
 
