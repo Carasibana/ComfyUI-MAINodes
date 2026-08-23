@@ -97,6 +97,7 @@ class H3ExtensionPlan:
             "fps_den": ("INT", {"default": 1, "min": 1, "max": 1001}),
             "previous_length": ("INT", {"default": 141, "min": 0, "max": 3600,
                                         "tooltip": "frames in the FINISHED previous segment (after its own trim, or the first segment's full length); places the handle's source span"}),
+        }, "optional": {
             "final_segment": ("BOOLEAN", {"default": False,
                                           "tooltip": "off for every segment another one will continue: the end of this segment is not the end of the shot, so H3 Time Smear's expand_to_end (end-jump protection, which lifts the LAST frames to the highest hold) must be off there or a gesture ending the segment comes back accelerated after recovery. Wire `expand_to_end` to H3 Time Smear"}),
         }}
