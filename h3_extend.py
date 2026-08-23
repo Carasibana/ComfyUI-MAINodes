@@ -15,6 +15,8 @@ Four nodes, no model patch, no new de-rope:
                       finished segment, ready for MiniMaxH3AddGuide @ 0
   H3 Protect Prefix   hold_map[:HANDLE] = 1 so the de-rope sees the incoming
                       velocity but may not retime the anchor
+  H3 Prefix Freeze    a time-varying V2V Init mask: the prefix keeps its init
+                      in pass 2 instead of being re-textured
   H3 Trim             drop the hidden prefix and the surplus, audio
                       sample-exact, and advance the global timeline
 
@@ -333,15 +335,48 @@ class H3Trim:
         return (keep, ta, int(gs.end), json.dumps(gs.to_dict()), text)
 
 
+class H3PrefixFreezeMask:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"plan": ("STRING", {"forceInput": True}),
+                             "dilated_length": ("INT", {"default": 0, "min": 0, "max": 36000, "forceInput": True,
+                                                        "tooltip": "H3 Time Smear's length output: the dilated clip the mask rides on"})}}
+
+    RETURN_TYPES = ("MASK", "STRING")
+    RETURN_NAMES = ("mask", "report")
+    FUNCTION = "mask"
+    CATEGORY = "MAINodes/alpha"
+    DESCRIPTION = (
+        "EXPERIMENTAL (alpha). A time-varying freeze mask for H3 V2V Init (wire it to `mask`, set "
+        "`time_varying` on): the carried prefix frames are 0 (keep the init, no re-denoise), everything "
+        "after is 1 (regenerate). With H3 Protect Prefix holding the prefix at 1, the prefix occupies the "
+        "first HANDLE frames of the dilated clip exactly, and 39 frames is token-exact on the 17k+5 grid. "
+        "Without this, pass 2 re-textures the seam it was supposed to preserve (measured 2026-08-23: "
+        "handle MAE 20/255 with hold-1 only).")
+
+    def mask(self, plan, dilated_length):
+        h = Handle.from_dict(json.loads(plan)["handle"]).destination.frames
+        T = int(dilated_length)
+        if T <= 0:
+            T = h + 1
+        m = torch.ones(T, 8, 8)
+        m[:min(h, T)] = 0.0
+        text = f"H3 Prefix Freeze Mask: frames [0,{min(h, T)}) frozen of {T} dilated frames; wire to H3 V2V Init mask with time_varying ON"
+        log.info(text)
+        return (m, text)
+
+
 NODE_CLASS_MAPPINGS = {
     "H3ExtensionPlan": H3ExtensionPlan,
     "H3TailContext": H3TailContext,
     "H3ProtectPrefix": H3ProtectPrefix,
     "H3Trim": H3Trim,
+    "H3PrefixFreezeMask": H3PrefixFreezeMask,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "H3ExtensionPlan": "H3 Extension Plan (alpha)",
     "H3TailContext": "H3 Tail Context (alpha)",
     "H3ProtectPrefix": "H3 Protect Prefix (alpha)",
     "H3Trim": "H3 Trim (alpha)",
+    "H3PrefixFreezeMask": "H3 Prefix Freeze Mask (alpha)",
 }
