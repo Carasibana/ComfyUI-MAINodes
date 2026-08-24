@@ -263,7 +263,7 @@ class H3DeltaColorCarry:
         baseline = vae.encode(decoded)
         corrected_rgb = apply_rgb_color_transform(decoded, brightness, saturation)
         corrected = vae.encode(corrected_rgb)
-        if hasattr(baseline, "is_nested"):
+        if getattr(baseline, "is_nested", False):
             raise ValueError("color carry VAE returned a nested latent")
         delta = corrected.to(prefix) - baseline.to(prefix)
         out_video = correct_prefix_in_place(video, steps, delta, spatial_kernel)
