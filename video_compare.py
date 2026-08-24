@@ -15,6 +15,45 @@ import time
 from fractions import Fraction
 
 
+def _spans_from_hold_map(hold_map):
+    """Regenerated-window frame spans (inclusive, world frames) for a hold map.
+
+    A hold above 1 marks a frame H3 Time Smear dilated, which is exactly the
+    material a window regenerates, so the spans are the planner's bursts. That
+    arithmetic is imported, never restated: one definition of a burst.
+    """
+    from .window_expand import _bursts
+    holds = [int(h) for h in (json.loads(hold_map).get("holds") or [])]
+    return [[int(a), int(b)] for a, b in _bursts(holds)]
+
+
+def _preview_extras(hold_map="", curves=""):
+    """The optional manifest keys the widget draws: `spans` (the regenerated
+    band, and what the enter/exit blips fire on) and `curves` (per-frame lanes
+    under the playhead). Absent inputs add no keys at all, so an old two-video
+    call still emits the manifest it always did, byte for byte. Both are
+    best-effort: a malformed string costs a line on stdout, never the render.
+    """
+    out = {}
+    if str(hold_map).strip():
+        try:
+            spans = _spans_from_hold_map(hold_map)
+            if spans:
+                out["spans"] = spans
+        except Exception as e:
+            print(f"[MAIVideoCompare] hold_map ignored: {type(e).__name__}: {e}")
+    if str(curves).strip():
+        try:
+            parsed = json.loads(curves)
+            lanes = {str(k): [float(x) for x in v] for k, v in parsed.items()
+                     if isinstance(v, (list, tuple)) and len(v) > 1}
+            if lanes:
+                out["curves"] = lanes
+        except Exception as e:
+            print(f"[MAIVideoCompare] curves ignored: {type(e).__name__}: {e}")
+    return out
+
+
 class MAIVideoCompare:
     DESCRIPTION = (
         "Compare 2-6 renders in the browser: flip / wipe / side-by-side for a "
@@ -35,7 +74,22 @@ class MAIVideoCompare:
             opt[f"video_{i}"] = ("VIDEO",)
         for i in range(1, 7):
             opt[f"label_{i}"] = ("STRING", {"default": ""})
+        opt.update(cls._viewer_inputs())
         return {"required": req, "optional": opt, "hidden": {"unique_id": "UNIQUE_ID"}}
+
+    @staticmethod
+    def _viewer_inputs():
+        """Viewer-only extras, and they go LAST wherever they are used: an
+        input inserted anywhere else shifts every older workflow's widget
+        order. MAISeedHunter re-appends them after its seeds for the same
+        reason.
+        """
+        return {
+            "hold_map": ("STRING", {"default": "", "forceInput": True,
+                         "tooltip": "H3 Time Smear's hold_map_used: the viewer draws the regenerated window as a band and fires enter/exit blips on it"}),
+            "curves": ("STRING", {"default": "", "forceInput": True,
+                       "tooltip": "JSON {name: [per-frame floats]}; drawn as lanes under the playhead"}),
+        }
 
     RETURN_TYPES = ("VIDEO", "INT", "STRING")
     RETURN_NAMES = ("winner_video", "winner_index", "manifest")
@@ -43,7 +97,8 @@ class MAIVideoCompare:
     OUTPUT_NODE = True
     CATEGORY = "image/minimax/video"
 
-    def compare(self, winner=1, preview_crf=23, unique_id=None, **kw):
+    def compare(self, winner=1, preview_crf=23, unique_id=None, hold_map="",
+                curves="", **kw):
         import folder_paths
         from comfy_api.latest import Types
         tmp = folder_paths.get_temp_directory()
@@ -69,6 +124,7 @@ class MAIVideoCompare:
             raise ValueError("wire at least two videos to compare")
         win = winner if winner in videos else min(videos)
         manifest = {"items": items, "winner": win}
+        manifest.update(_preview_extras(hold_map, curves))
         return {"ui": {"mai_compare": [manifest]},
                 "result": (videos[win], int(win), json.dumps(manifest))}
 
@@ -90,9 +146,11 @@ class MAISeedHunter(MAIVideoCompare):
     @classmethod
     def INPUT_TYPES(cls):
         t = MAIVideoCompare.INPUT_TYPES()
+        tail = {k: t["optional"].pop(k) for k in MAIVideoCompare._viewer_inputs()}
         for i in range(1, 7):
             t["optional"][f"seed_{i}"] = ("INT", {"default": 0, "min": 0, "max": 2**53 - 1,
                                          "tooltip": f"the seed candidate {i} ran on"})
+        t["optional"].update(tail)      # the viewer extras stay last here too
         return t
 
     RETURN_TYPES = ("VIDEO", "INT", "INT", "STRING")
