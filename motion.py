@@ -2006,6 +2006,11 @@ class H3V2VInit:
                            "audio twin of the video prefix freeze: a 39-frame carried handle is 65 "
                            "ticks exactly. Needs audio_latent wired. 0 = off (scalar behaviour "
                            "unchanged)"}),
+            "audio_prefix_release_ticks": ("INT", {"default": 0, "min": 0, "max": 400,
+                "tooltip": "(alpha) half-cosine release: the LAST n ticks of the frozen prefix ramp "
+                           "0 -> audio_strength instead of cutting hard (8 ticks = 0.2 s, the field's "
+                           "tested recipe). If used, assembly must let the continuation OWN the "
+                           "overlap tail, or the trim discards the release. 0 = hard edge"}),
         }}
 
     RETURN_TYPES = ("LATENT",)
@@ -2015,7 +2020,8 @@ class H3V2VInit:
     def build(self, samples, length=0, oracle_samples=None, freeze_threshold=0.0,
               freeze_grow=2, mask=None, mask_feather=0, invert_mask=False,
               time_varying=False, audio_latent=None, audio_strength=1.0,
-              audio_mode="custom (use audio_strength)", audio_prefix_ticks=0):
+              audio_mode="custom (use audio_strength)", audio_prefix_ticks=0,
+              audio_prefix_release_ticks=0):
         import torch.nn.functional as F
 
         import comfy.nested_tensor
@@ -2038,7 +2044,12 @@ class H3V2VInit:
         def _aud_noise_mask():
             m = torch.full((1, 32, 2, audio_t), float(audio_strength))
             if audio_prefix_ticks:
-                m[..., :min(int(audio_prefix_ticks), audio_t)] = 0.0
+                p = min(int(audio_prefix_ticks), audio_t)
+                m[..., :p] = 0.0
+                r = min(int(audio_prefix_release_ticks), p)
+                if r > 0:
+                    ramp = (0.5 - 0.5*torch.cos(torch.linspace(0, torch.pi, r))) * float(audio_strength)
+                    m[..., p-r:p] = ramp
             return m
 
         video = _video_component(samples)
