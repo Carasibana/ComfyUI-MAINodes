@@ -2000,6 +2000,12 @@ class H3V2VInit:
                            "H3 Inject Schedule makes on the video side; 0.0 pins the track outright. "
                            "H3 runs ONE joint pass, so the sigma schedule cannot set this per "
                            "modality - it rides the audio half of the noise mask"}),
+            "audio_prefix_ticks": ("INT", {"default": 0, "min": 0, "max": 36000,
+                "tooltip": "(alpha) freeze the FIRST n audio-latent ticks to the seeded audio_latent "
+                           "content (noise-mask 0 there; every later tick keeps audio_strength). The "
+                           "audio twin of the video prefix freeze: a 39-frame carried handle is 65 "
+                           "ticks exactly. Needs audio_latent wired. 0 = off (scalar behaviour "
+                           "unchanged)"}),
         }}
 
     RETURN_TYPES = ("LATENT",)
@@ -2009,7 +2015,7 @@ class H3V2VInit:
     def build(self, samples, length=0, oracle_samples=None, freeze_threshold=0.0,
               freeze_grow=2, mask=None, mask_feather=0, invert_mask=False,
               time_varying=False, audio_latent=None, audio_strength=1.0,
-              audio_mode="custom (use audio_strength)"):
+              audio_mode="custom (use audio_strength)", audio_prefix_ticks=0):
         import torch.nn.functional as F
 
         import comfy.nested_tensor
@@ -2021,13 +2027,19 @@ class H3V2VInit:
             print("[H3V2VInit] audio_strength/audio_mode asks pass 2 to follow an audio "
                   "init, but audio_latent is not wired: the rows are still ZEROS, so it "
                   "has nothing to follow. Wire H3 Audio Smear -> VAEEncodeAudio.")
-        if audio_latent is not None and audio_strength == 1.0:
+        if audio_latent is not None and audio_strength == 1.0 and not audio_prefix_ticks:
             # the likelier half of the mistake: the wiring is done and the last
             # step is not, so the seed is written and then fully renoised away
             print("[H3V2VInit] audio_latent is wired but audio_strength is 1.0, which "
                   "re-renders the audio rows completely: the seeded performance is "
                   "discarded and this behaves exactly as if nothing were wired. Set "
                   "audio_mode to 'follow the original performance (0.5)'.")
+
+        def _aud_noise_mask():
+            m = torch.full((1, 32, 2, audio_t), float(audio_strength))
+            if audio_prefix_ticks:
+                m[..., :min(int(audio_prefix_ticks), audio_t)] = 0.0
+            return m
 
         video = _video_component(samples)
         if not length:
@@ -2082,7 +2094,7 @@ class H3V2VInit:
             if m.shape[0] == 1:
                 m = m.expand(t_lat, h, w)
             vid_mask = m[None, None].to(video.device)
-            aud_mask = torch.full((1, 32, 2, audio_t), float(audio_strength))
+            aud_mask = _aud_noise_mask()
             out["noise_mask"] = comfy.nested_tensor.NestedTensor(
                 (vid_mask.contiguous(), aud_mask))
         elif oracle_samples is not None and freeze_threshold > 0:
@@ -2104,15 +2116,15 @@ class H3V2VInit:
             if m.shape[-2:] != (h, w):
                 m = F.interpolate(m, size=(h, w), mode="nearest")
             vid_mask = m[0, 0].expand(t_lat, h, w)[None, None].to(video.device)
-            aud_mask = torch.full((1, 32, 2, audio_t), float(audio_strength))
+            aud_mask = _aud_noise_mask()
             out["noise_mask"] = comfy.nested_tensor.NestedTensor(
                 (vid_mask.contiguous(), aud_mask))
-        if "noise_mask" not in out and audio_strength != 1.0:
+        if "noise_mask" not in out and (audio_strength != 1.0 or audio_prefix_ticks):
             # audio-only injection: no video mask was asked for, so the video
             # half denoises exactly as it did before this input existed
             out["noise_mask"] = comfy.nested_tensor.NestedTensor(
                 (torch.ones(1, 1, t_lat, video.shape[3], video.shape[4]),
-                 torch.full((1, 32, 2, audio_t), float(audio_strength))))
+                 _aud_noise_mask()))
         return (out,)
 
 
