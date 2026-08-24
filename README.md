@@ -750,6 +750,18 @@ do today, and where each has and has not been tested. Alpha nodes carry
 broken one cannot take the pack down, and none of them changes existing
 behaviour or defaults.
 
+## Comparing a batch of renders
+
+[`tools/compare_deck/`](tools/compare_deck/) builds the review page used for
+the sweeps in this pack: a manifest JSON in, one self-contained HTML file
+out, with a card grid, a sortable metric table, a synced A/B (side by side
+or wipe) on a waveform timeline, and a frame-exact export of the current
+view. `make_manifest.py` drafts the manifest from a folder of clips; you
+fill in the groups and descriptions. The clips stay where they are, so
+nothing but HTML is produced. A live deck built with it:
+<https://matlowai.github.io/flipbook/trueclock.html>. Standalone Python, no
+ComfyUI import, see [`tools/compare_deck/README.md`](tools/compare_deck/README.md).
+
 ## Install
 
 ```

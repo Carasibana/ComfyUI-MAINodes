@@ -1,0 +1,13 @@
+Third-party code vendored here, unmodified, and inlined into every built
+deck so a page works offline with no network fetch.
+
+  mp4-muxer.min.js   mp4-muxer 5.2.1    MIT    https://www.npmjs.com/package/mp4-muxer
+  webm-muxer.min.js  webm-muxer 5.1.2   MIT    https://www.npmjs.com/package/webm-muxer
+
+Both files are the jsDelivr Terser builds; the header comment naming the
+original npm path is left intact at the top of each. They provide the
+Mp4Muxer and WebMMuxer globals that the deck's frame-exact WebCodecs export
+writes into. They are MIT licensed, which is not the licence of this
+repository, so they stay in this directory and keep their own terms. To
+refresh one, download the same build from jsDelivr and replace the file
+whole; do not edit it by hand.
