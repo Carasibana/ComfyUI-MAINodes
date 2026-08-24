@@ -1929,11 +1929,12 @@ _DYROPE = {
 
 DYROPE_MODES = ["physical_all", "compact_all", "physical_blocks",
                 "compact_blocks", "fade_physical_to_compact",
-                "fade_compact_to_physical"]
+                "fade_compact_to_physical", "fade_physical_blocks"]
 
 # modes whose incoming position_ids must already carry the physical grid
 _DYROPE_PHYSICAL_ARMED = ("physical_all", "physical_blocks", "compact_blocks",
-                          "fade_physical_to_compact", "fade_compact_to_physical")
+                          "fade_physical_to_compact", "fade_compact_to_physical",
+                          "fade_physical_blocks")
 
 
 def dyrope_stock_spans(n):
@@ -2048,6 +2049,15 @@ def _install_dyrope_rope_patch():
             g_default, g_alt = g_comp, g_phys
         elif mode == "compact_blocks":
             g_default, g_alt = g_phys, g_comp
+        elif mode == "fade_physical_blocks":
+            # combo arm: the named blocks see the per-step faded grid
+            # (physical at sigma_max, compact by fade_end); every other
+            # block sees compact at every step. Both dose axes at once.
+            w = dyrope_fade_weight(st["sigma"], st["sigma_max"], st["fade_end"])
+            st["last_weight"] = w
+            mixed = [w * float(a) + (1.0 - w) * float(b)
+                     for a, b in zip(st["spans_phys"], st["spans_comp"])]
+            g_default, g_alt = g_comp, dyrope_grid(mixed, origin)
         else:  # fade_*
             w = dyrope_fade_weight(st["sigma"], st["sigma_max"], st["fade_end"])
             st["last_weight"] = w
@@ -2220,7 +2230,8 @@ class H3DyRoPE:
         n = len(spans_phys)
         spans_comp = dyrope_stock_spans(n)
         lo, hi = int(min(block_lo, block_hi)), int(max(block_lo, block_hi))
-        uses_blocks = mode in ("physical_blocks", "compact_blocks")
+        uses_blocks = mode in ("physical_blocks", "compact_blocks",
+                               "fade_physical_blocks")
         is_fade = str(mode).startswith("fade")
         blocks = tuple(range(lo, hi + 1)) if uses_blocks else ()
 
@@ -2260,13 +2271,19 @@ class H3DyRoPE:
                 if n_blocks and i >= n_blocks:
                     continue
                 out_model.set_model_patch_replace(_dyrope_block_patch(i), "dit", "double_block", i)
-        elif is_fade:
+        if is_fade:
             import comfy.patcher_extension as _px
-            out_model = model.clone()
+            if out_model is model:
+                out_model = model.clone()
             out_model.add_wrapper(_px.WrappersMP.DIFFUSION_MODEL,
                                   _dyrope_diffusion_wrapper)
 
-        if uses_blocks:
+        if mode == "fade_physical_blocks":
+            who = ("blocks %d-%d -> physical faded to compact by sigma %.3f, "
+                   "all other blocks -> compact%s"
+                   % (lo, hi, float(fade_end),
+                      "" if n_blocks is None else " (of %d)" % n_blocks))
+        elif uses_blocks:
             alt = "physical" if mode == "physical_blocks" else "compact"
             other = "compact" if mode == "physical_blocks" else "physical"
             who = ("blocks %d-%d -> %s, all other blocks -> %s%s"

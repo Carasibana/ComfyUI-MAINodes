@@ -334,6 +334,33 @@ check("fade midpoint interpolates SPANS (monotone grid)",
       "w=%.3f, %d mixed spans all positive, grid strictly increasing"
       % (motion._DYROPE["last_weight"], len(mid)))
 
+# combo: fade_physical_blocks = faded grid to the named blocks, compact default
+motion._DYROPE.update({"mode": "fade_physical_blocks", "alt_angles": None,
+                       "sigma_max": 1.0, "fade_end": 0.5, "sigma": 1.0})
+c_hi = plain(stub, pos, torch.device("cpu"))
+c_hi_alt = motion._DYROPE["alt_angles"]
+check("combo at sigma_max: default COMPACT, alternate == PHYSICAL",
+      torch.equal(c_hi, default) and c_hi_alt is not None
+      and torch.equal(c_hi_alt, un_armed),
+      "default == compact angles: %s; alt == physical angles: %s"
+      % (torch.equal(c_hi, default), torch.equal(c_hi_alt, un_armed)))
+motion._DYROPE["sigma"] = 0.5
+motion._DYROPE["alt_angles"] = None
+c_lo = plain(stub, pos, torch.device("cpu"))
+check("combo at fade_end: alternate collapses to COMPACT (whole model stock)",
+      torch.equal(c_lo, default)
+      and torch.equal(motion._DYROPE["alt_angles"], default),
+      "default and alt both == compact angles at w=0")
+motion._DYROPE["sigma"] = 0.75
+motion._DYROPE["alt_angles"] = None
+plain(stub, pos, torch.device("cpu"))
+c_mid = motion._DYROPE["alt_angles"]
+check("combo midpoint: alternate strictly between the two geometries",
+      c_mid is not None and not torch.equal(c_mid, un_armed)
+      and not torch.equal(c_mid, default)
+      and abs(motion._DYROPE["last_weight"] - 0.5) < 1e-12,
+      "w=%.3f, alt differs from both pure tables" % motion._DYROPE["last_weight"])
+
 # the mis-rotation guard
 bad = pos.clone()
 bad[v0 + 3 * rpf, 0] += 0.25
