@@ -2644,6 +2644,34 @@ def temporal_insert_map(holds):
     return holds, dilated, t_base, t_dil, plan
 
 
+def temporal_insert_fill(video, plan, t_dil):
+    """Expand a video latent onto the dilated token grid, per a plan.
+
+    The grid half of the insert, factored out of H3TemporalInsert so
+    H3MidInsert (the mid-denoise variant) runs the SAME arithmetic instead of
+    a second copy of it: exact hits are bit-copied, every other token-time is
+    the plain lerp of its bracketing base tokens.
+
+    Returns (out_v, copied, inserted, brackets) where copied/inserted are
+    dilated token indices in plan order and brackets is [(n, lo, hi, w_hi)]
+    for the inserted ones (what a variance top-up needs).
+    """
+    out_v = torch.empty(video.shape[0], video.shape[1], t_dil,
+                        video.shape[3], video.shape[4],
+                        device=video.device, dtype=video.dtype)
+    copied, inserted, brackets = [], [], []
+    for n, (_t, lo, hi, w, exact) in enumerate(plan):
+        if exact >= 0:
+            out_v[:, :, n] = video[:, :, exact]            # verbatim, maxabs 0
+            copied.append(n)
+            continue
+        inserted.append(n)
+        brackets.append((n, lo, hi, w))
+        out_v[:, :, n] = ((1.0 - w) * video[:, :, lo].float()
+                          + w * video[:, :, hi].float()).to(video.dtype)
+    return out_v, copied, inserted, brackets
+
+
 class H3TemporalInsert:
     """Temporal super-resolution as temporal INPAINTING: expand a video
     latent onto the dilated token grid, interpolate the inserted
@@ -2742,27 +2770,17 @@ class H3TemporalInsert:
             f"base clip needs {t_base} (is this the SMEARED latent? this node "
             "takes the ORIGINAL clip's latent)")
 
-        out_v = torch.empty(video.shape[0], video.shape[1], t_dil,
-                            video.shape[3], video.shape[4],
-                            device=video.device, dtype=video.dtype)
+        out_v, copied, inserted, _brackets = temporal_insert_fill(
+            video, plan, t_dil)
         mask_v = torch.zeros(1, 1, t_dil, video.shape[3], video.shape[4],
                              device=video.device, dtype=video.dtype)
         gen = torch.Generator(device="cpu").manual_seed(int(noise_seed))
-        copied, inserted = [], []
-        for n, (_t, lo, hi, w, exact) in enumerate(plan):
-            if exact >= 0:
-                out_v[:, :, n] = video[:, :, exact]        # verbatim, maxabs 0
-                copied.append(n)
-                continue
-            inserted.append(n)
+        for n in inserted:
             mask_v[:, :, n] = 1.0
-            if init_mode == "noise":
+            if init_mode == "noise":                       # overwrite the lerp
                 out_v[:, :, n] = torch.randn(
                     video.shape[0], video.shape[1], video.shape[3],
                     video.shape[4], generator=gen).to(video.device, video.dtype)
-            else:
-                out_v[:, :, n] = ((1.0 - w) * video[:, :, lo].float()
-                                  + w * video[:, :, hi].float()).to(video.dtype)
 
         if audio_in is None:
             audio = torch.zeros(video.shape[0], 32, 2, _audio_latent_t(dilated),
@@ -2811,6 +2829,284 @@ class H3TemporalInsert:
             rep.insert(1, note)
         used = json.dumps({"holds": holds, "world_len": len(holds)})
         return (out, {"samples": nm}, used, "\n".join(rep))
+
+
+# ------------------------------------------------- mid-denoise topology change
+# PoC (2026-08-24): today the coarse -> dense grid change happens BETWEEN
+# passes - pass 1 takes the coarse grid all the way to sigma 0, H3TemporalInsert
+# expands it, pass 2 re-noises and denoises again. The idea here is to change
+# topology WHILE the denoise is running: stop the coarse pass at a handoff
+# sigma_s, insert the new token-times into the STILL-NOISY latent, and let the
+# dense grid carry on from sigma_s to 0, so the model finishes deciding the
+# motion with the in-betweens already present.
+#
+# THE ONE PIECE OF MATHS THIS NODE OWNS: an inserted token is
+# init = (1 - w) * x_lo + w * x_hi, and at a mid-schedule sigma its two
+# neighbours are NOISY, so the lerp is variance-DEFICIENT - it averages two
+# imperfectly-correlated noise realisations and lands smoother than a real
+# token at that position. Per element, with neighbour variances v_lo / v_hi
+# and noise correlation rho,
+#
+#     Var(init) = (1-w)^2 v_lo + w^2 v_hi + 2 w (1-w) rho sqrt(v_lo v_hi)
+#
+# while a genuine token there would carry, interpolating its neighbours'
+# dispersion the same way its content is interpolated,
+#
+#     v_tgt = (1-w) v_lo + w v_hi
+#
+# Subtract, and rho and the square root collapse into one thing that is
+# actually ON THE TENSOR - the neighbour RESIDUAL:
+#
+#     deficit = v_tgt - Var(init)
+#             = w (1-w) [v_lo + v_hi - 2 rho sqrt(v_lo v_hi)]
+#             = w (1-w) * Var(x_hi - x_lo)                              (*)
+#
+# (*) is why nothing here has to ASSUME a correlation: the deficit is measured
+# directly, per inserted token and per channel, from the residual between the
+# two bracketing tokens. rho is then RECOVERED for the report,
+#     rho = (v_lo + v_hi - Var(x_hi - x_lo)) / (2 sqrt(v_lo v_hi)),
+# and never used to size anything. Sanity check on (*): put v_lo = v_hi = v
+# and w = 0.5 and it gives Var(init) = v (1 + rho) / 2, deficit = v (1 - rho)/2
+# - the (1+rho)/2 law, as the symmetric special case.
+#
+# noise_topup scales the fresh gaussian's VARIANCE (std = sqrt(topup*deficit)),
+# so 0 is the raw lerp and 1 restores the neighbours' spread exactly.
+#
+# HONEST CAVEAT, and it is not small: Var(x_hi - x_lo) also contains the real
+# SIGNAL change between the two neighbours. On fast content the lerp is
+# legitimately smoother than a real token because the content moved, and a full
+# top-up then pays for real motion with white noise. Give sigma_s and the
+# report prints the noise-only bound the flow parameterisation predicts -
+# a handed-off latent is x/(1-sigma) with x = (1-sigma)x0 + sigma*eps, so an
+# independent unit-white residual alone would explain
+#     deficit_noise = 2 w (1-w) (sigma/(1-sigma))^2
+# (H3's video scale_factor is 1.0, so process_latent_out does not rescale this
+# [SRC comfy/latent_formats.py MiniMaxH3Video]). Measured deficit far above
+# that bound means the excess is content, not noise.
+class H3MidInsert:
+    """Insert token-times into a latent that is still mid-denoise, so the
+    dense grid finishes the schedule instead of starting a new one."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL PoC, off-distribution. The temporal insert done in the "
+        "MIDDLE of a denoise instead of between two passes. Run the coarse "
+        "grid down to a handoff sigma_s only (SplitSigmas' high half), hand "
+        "the STILL-NOISY latent to this node, and sample the dilated grid "
+        "from sigma_s to 0 (the low half) - the model then decides the "
+        "motion with the in-betweens already in the sequence, and the coarse "
+        "pass is partial.\n\n"
+        "The grid arithmetic is H3 Temporal Insert's, shared code, so the two "
+        "routes can never disagree about which token-times exist. What is "
+        "different is the INIT: lerping two NOISY neighbours is variance-"
+        "deficient, and noise_topup adds fresh gaussian noise sized from the "
+        "MEASURED neighbour residual (per token, per channel) so the inserted "
+        "tokens carry the same spread their neighbours do. 0 = raw lerp, "
+        "1 = full top-up. The measured correlation and the deficit are "
+        "printed in the report; wire sigma_s to also print the noise-only "
+        "bound the flow parameterisation predicts, which is how you see how "
+        "much of the deficit was real motion rather than noise.\n\n"
+        "NO NOISE MASK, deliberately. A repaint mask re-noises its frozen "
+        "content from a CLEAN latent every step (comfy/samplers.py "
+        "KSamplerX0Inpaint), and this latent is not clean - it is already at "
+        "sigma_s. Everything continues denoising together, which is the whole "
+        "point. Any noise_mask on the incoming latent is dropped.\n\n"
+        "WIRING: pass A SamplerCustomAdvanced ends on sigma_s and its "
+        "'output' is the noisy latent (already divided by 1-sigma_s by "
+        "inverse_noise_scaling); pass B MUST take DisableNoise, whose zero "
+        "noise makes noise_scaling multiply by 1-sigma_s again and hand the "
+        "sampler back exactly the state pass A left. RandomNoise on pass B "
+        "would add a second full noise draw on top and destroy the handoff.\n\n"
+        "AUDIO IS PASSED THROUGH UNCHANGED - it stays on the BASE clip's "
+        "clock while the video moves onto the dilated one, so pass B sees an "
+        "audio stream that covers only part of the video's span. Take the "
+        "delivered audio from elsewhere. A plain video latent stays plain: "
+        "unlike H3 Temporal Insert this node will NOT fabricate a zero audio "
+        "track, because a clean zero mid-schedule is not a valid state.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "samples": ("LATENT", {"tooltip": "the nested AV latent MID-SCHEDULE: SamplerCustomAdvanced's 'output' from a pass whose sigmas ended at sigma_s"}),
+            "hold_map": ("STRING", {"default": "", "forceInput": True,
+                         "tooltip": "the same map H3 Time Smear / the oracles speak; hold h means h token-times where there was 1"}),
+            "noise_topup": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                            "tooltip": "fraction of the MEASURED variance deficit to restore with fresh gaussian noise. 0 = raw lerp, 1 = the inserted tokens carry their neighbours' spread"}),
+            "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
+                     "tooltip": "the top-up noise draw; fixed so the init is reproducible"}),
+        }, "optional": {
+            "expand_to_end": ("BOOLEAN", {"default": False,
+                              "tooltip": "H3 Temporal Insert's end-jump rewrite. OFF by default here: a mid-denoise arm wants the same grid its between-passes control used"}),
+            "length": ("INT", {"default": 0, "min": 0, "max": 3600,
+                       "tooltip": "0 = derive the base length from the latent; nonzero asserts this exact base length"}),
+            "sigma_s": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001,
+                        "tooltip": "REPORT ONLY, changes nothing: the handoff sigma pass A ended on. Given it, the report prints the noise-only variance deficit the flow parameterisation predicts, to compare against the measured one"}),
+        }}
+
+    RETURN_TYPES = ("LATENT", "STRING", "STRING")
+    RETURN_NAMES = ("samples", "hold_map", "report")
+    FUNCTION = "insert"
+    CATEGORY = "latent/minimax/motion"
+
+    def insert(self, samples, hold_map, noise_topup=1.0, seed=0,
+               expand_to_end=False, length=0, sigma_s=0.0):
+        import comfy.nested_tensor
+
+        parsed = json.loads(hold_map)
+        holds_in = list(parsed["holds"])
+        z = samples["samples"]
+        nested = bool(getattr(z, "is_nested", False) and hasattr(z, "unbind"))
+        parts = list(z.unbind()) if nested else [z]
+        video = parts[0]                                  # (B, 24, t_lat, h, w)
+        audio_in = parts[1] if len(parts) > 1 else None
+        if "world_len" in parsed:
+            assert int(parsed["world_len"]) == len(holds_in), (
+                f"hold map says world_len {parsed['world_len']} but carries "
+                f"{len(holds_in)} holds")
+        if length:
+            assert length == len(holds_in), (
+                f"length {length} but the hold map covers {len(holds_in)} frames")
+
+        note = None
+        if expand_to_end:
+            holds_in, note = expand_hold_map_to_end(holds_in)
+            if note:
+                print("[MAINodes] H3MidInsert " + note)
+
+        holds, dilated, t_base, t_dil, plan = temporal_insert_map(holds_in)
+        assert video.shape[2] == t_base, (
+            f"the latent has {video.shape[2]} tokens; a {len(holds)}-frame "
+            f"base clip needs {t_base} (this node takes the COARSE grid, "
+            "mid-schedule - is it already dilated?)")
+
+        # the grid: H3TemporalInsert's own arithmetic, shared code
+        out_v, copied, inserted, brackets = temporal_insert_fill(
+            video, plan, t_dil)
+
+        # the top-up: measured per inserted token, per channel. See the block
+        # comment above this class for the derivation of deficit = w(1-w)Var(r).
+        vf = video.float()
+        dims = (-2, -1)                       # stats over the spatial cells
+        gen = torch.Generator(device="cpu").manual_seed(int(seed))
+        rho_all, def_all, tgt_all, std_all, ident = [], [], [], [], 0.0
+        for n, lo, hi, w in brackets:
+            a, b = vf[:, :, lo], vf[:, :, hi]              # (B, C, h, w)
+            v_lo = a.var(dim=dims, unbiased=False)
+            v_hi = b.var(dim=dims, unbiased=False)
+            v_res = (b - a).var(dim=dims, unbiased=False)  # THE measurement
+            v_tgt = (1.0 - w) * v_lo + w * v_hi
+            deficit = (w * (1.0 - w)) * v_res
+            rho = ((v_lo + v_hi - v_res)
+                   / (2.0 * (v_lo * v_hi).clamp_min(1e-20).sqrt()))
+            # identity self-check: the lerp we actually built must have the
+            # variance (*) predicts, v_tgt - deficit
+            v_lerp = out_v[:, :, n].float().var(dim=dims, unbiased=False)
+            ident = max(ident, float((v_lerp - (v_tgt - deficit)).abs().max()
+                                     / max(float(v_tgt.abs().max()), 1e-20)))
+            std = (float(noise_topup) * deficit).clamp_min(0.0).sqrt()
+            if noise_topup > 0.0:
+                g = torch.randn(tuple(a.shape), generator=gen).to(
+                    video.device, torch.float32)
+                out_v[:, :, n] = (out_v[:, :, n].float()
+                                  + std[..., None, None] * g).to(video.dtype)
+            rho_all.append(rho)
+            def_all.append(deficit)
+            tgt_all.append(v_tgt)
+            std_all.append(std)
+
+        out = dict(samples)
+        # a repaint mask would re-noise its frozen rows FROM A CLEAN LATENT
+        # every step; this latent is at sigma_s, so any inbound mask is a bug
+        dropped = out.pop("noise_mask", None)
+        if audio_in is None:
+            out["samples"] = out_v
+            audio_note = ("no audio component: the latent stays VIDEO-ONLY "
+                          "(a fabricated zero audio track would be a CLEAN "
+                          "row in a mid-schedule pack)")
+        else:
+            out["samples"] = comfy.nested_tensor.NestedTensor((out_v, audio_in))
+            audio_note = (f"audio passed through untouched, "
+                          f"{tuple(audio_in.shape)} {audio_in.dtype} - still "
+                          f"the BASE clip's clock, "
+                          f"{audio_in.shape[-1]} ticks against "
+                          f"{_audio_latent_t(dilated)} the dilated video wants")
+
+        exact_hits = [p[4] for p in plan if p[4] >= 0]
+        dupes = len(exact_hits) - len(set(exact_hits))
+        starts = [f for f, h in enumerate(holds)
+                  if h > 1 and (f == 0 or holds[f - 1] <= 1)]
+        off = [f for f in starts if f % LEGAL_STEP]
+
+        def _stat(xs):
+            if not xs:
+                return (0.0, 0.0, 0.0)
+            t = torch.stack([x.reshape(-1) for x in xs])
+            return (float(t.mean()), float(t.min()), float(t.max()))
+
+        rho_m, rho_lo, rho_hi = _stat(rho_all)
+        def_m, def_lo, def_hi = _stat(def_all)
+        tgt_m, _tl, _th = _stat(tgt_all)
+        std_m, _sl, std_hi = _stat(std_all)
+        rep = [
+            f"mid-denoise insert: world {len(holds)}f -> dilated {dilated}f, "
+            f"t_lat {t_base} -> {t_dil} tokens (+{t_dil - t_base}); video "
+            f"{video.shape[3]}x{video.shape[4]} cells",
+            f"copied verbatim, STILL NOISY and still denoising (no freeze "
+            f"mask): {len(copied)} token-times [{_index_runs(copied)}]",
+            f"inserted (lerp of noisy neighbours): {len(inserted)} token-times "
+            f"[{_index_runs(inserted)}]",
+            f"measured neighbour correlation rho (per token, per channel, "
+            f"recovered from Var(x_hi - x_lo)): mean {rho_m:.4f}, "
+            f"range [{rho_lo:.4f}, {rho_hi:.4f}]",
+            f"measured variance deficit w(1-w)Var(x_hi - x_lo): mean "
+            f"{def_m:.5f} = {100.0 * def_m / max(tgt_m, 1e-20):.1f}% of the "
+            f"target token variance {tgt_m:.5f}; range "
+            f"[{def_lo:.5f}, {def_hi:.5f}]",
+            f"top-up applied: noise_topup {noise_topup:.2f} -> fresh gaussian "
+            f"std mean {std_m:.5f}, max {std_hi:.5f}, seed {int(seed)}"
+            + ("" if noise_topup > 0.0 else "  (RAW LERP: nothing added)"),
+            f"identity self-check |Var(lerp) - (v_tgt - deficit)| / v_tgt: "
+            f"{ident:.3e} (must be ~0; it is the derivation, verified on this "
+            f"tensor)",
+        ]
+        if sigma_s > 0.0:
+            wsum = sum(w * (1.0 - w) for _n, _lo, _hi, w in brackets)
+            wbar = wsum / max(len(brackets), 1)
+            bound = 2.0 * wbar * (sigma_s / (1.0 - sigma_s)) ** 2
+            ratio = def_m / max(bound, 1e-20)
+            rep.append(
+                f"noise-only bound at sigma_s {sigma_s:.4f}: an independent "
+                f"unit-white residual alone explains a deficit of "
+                f"{bound:.5f} (mean w(1-w) {wbar:.4f}); measured {def_m:.5f} "
+                f"= {ratio:.2f}x that - "
+                + ("above 1x, so the excess is CONTENT change between "
+                   "neighbours and a full top-up pays for real motion with "
+                   "white noise" if ratio > 1.0 else
+                   "at or below 1x, so the residual is noise-like and the "
+                   "neighbours' noise is CORRELATED (a denoised trajectory "
+                   "keeps its draw); the top-up is honest here"))
+        rep += [
+            (f"T2a rule 1 - hold spans start at frames [{_index_runs(starts)}]; "
+             + ("all on 17-multiples"
+                if not off else
+                f"OFF the 17-multiple phase: {off} - worst case for the "
+                "inserted singletons")),
+            f"AUDIO: {audio_note}",
+            "NO NOISE MASK is emitted: the copied tokens are mid-schedule, "
+            "and repaint would re-noise them from a clean latent. "
+            + ("an inbound noise_mask was DROPPED"
+               if dropped is not None else "none was on the input"),
+            "PASS B MUST USE DisableNoise: pass A's output is already "
+            "x/(1-sigma_s) (inverse_noise_scaling), and zero noise makes "
+            "noise_scaling multiply by (1-sigma_s) again - an exact handoff",
+        ]
+        if dupes:
+            rep.insert(3, f"WARNING: {dupes} exact-hit token(s) are DUPLICATES "
+                          "of another dilated token (edge clamping), so the "
+                          "same noise realisation appears twice in the grid")
+        if note:
+            rep.insert(1, note)
+        used = json.dumps({"holds": holds, "world_len": len(holds)})
+        return (out, used, "\n".join(rep))
 
 
 LATENT_CELL = 16   # image pixels per latent spatial cell (H3 video VAE)
@@ -5062,6 +5358,7 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3DyRoPE": H3DyRoPE,
     "H3V2VInit": H3V2VInit,
     "H3TemporalInsert": H3TemporalInsert,
+    "H3MidInsert": H3MidInsert,
     "H3LatentUpscale": H3LatentUpscale,
     "H3InjectSchedule": H3InjectSchedule,
     "H3JerkHeatmap": H3JerkHeatmap,
@@ -5092,6 +5389,7 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3DyRoPE": "H3 DyRoPE (layer-wise / sigma-faded time geometry) [experimental]",
     "H3V2VInit": "H3 V2V Init (nested AV latent)",
     "H3TemporalInsert": "H3 Temporal Insert (insert token-times, freeze originals) [experimental]",
+    "H3MidInsert": "H3 Mid Insert (change the token grid MID-denoise) [experimental]",
     "H3LatentUpscale": "H3 Latent Upscale (video only, audio kept) [experimental]",
     "H3InjectSchedule": "H3 Inject Schedule (v2v sigmas, 0.70)",
     "H3JerkHeatmap": "H3 Jerk Heatmap (oracle overlay tile)",
