@@ -429,3 +429,18 @@ if FAILS:
     print("FAILED: " + ", ".join(FAILS))
     sys.exit(1)
 print("all dyrope checks passed")
+
+# ---- presets ---------------------------------------------------------------
+print("presets: override the knobs; custom leaves them alone")
+import motion as _m
+check("preset table has custom + three measured settings",
+      list(_m.DYROPE_PRESETS)[0] == "custom" and len(_m.DYROPE_PRESETS) == 4,
+      ", ".join(_m.DYROPE_PRESETS))
+opt = _m.H3DyRoPE.INPUT_TYPES().get("optional", {})
+check("preset is an OPTIONAL input appended after every knob (old graphs unaffected)",
+      list(opt) == ["preset"] and opt["preset"][1]["default"] == "custom",
+      str(list(opt)))
+req = list(_m.H3DyRoPE.INPUT_TYPES()["required"])
+check("required knobs unchanged in order",
+      req == ["model", "sampler", "hold_map", "mode", "block_lo", "block_hi", "fade_end"],
+      str(req))

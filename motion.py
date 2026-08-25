@@ -2161,6 +2161,14 @@ class _DyRoPESampler:
             _DYROPE["sigma_max"] = None
 
 
+DYROPE_PRESETS = {
+    "custom": None,  # knobs used as-is; old graphs (no preset widget) resolve here
+    "timing fidelity (blocks 30-49)": ("physical_blocks", 30, 49, 0.7),
+    "minimal shimmer (blocks 40-49)": ("physical_blocks", 40, 49, 0.7),
+    "flash-free fade (sigma 0.7)": ("fade_physical_to_compact", 0, 24, 0.7),
+}
+
+
 class H3DyRoPE:
     """EXPERIMENTAL: give different BLOCKS (or different SIGMAS) different
     time geometries, instead of one grid for all 50.
@@ -2204,12 +2212,17 @@ class H3DyRoPE:
                          "tooltip": "hold_map_used from the H3 Time Smear that made this clip"}),
             "mode": (DYROPE_MODES, {"default": "physical_blocks",
                      "tooltip": "which blocks/steps see the physical grid"}),
-            "block_lo": ("INT", {"default": 0, "min": 0, "max": 49,
+            "block_lo": ("INT", {"default": 30, "min": 0, "max": 49,
                          "tooltip": "first block of the range (inclusive), *_blocks modes only"}),
-            "block_hi": ("INT", {"default": 24, "min": 0, "max": 49,
+            "block_hi": ("INT", {"default": 49, "min": 0, "max": 49,
                          "tooltip": "last block of the range (inclusive), *_blocks modes only"}),
-            "fade_end": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01,
+            "fade_end": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.01,
                          "tooltip": "sigma at which the fade completes; linear in sigma from sigma_max down to here"}),
+        },
+        "optional": {
+            "preset": (list(DYROPE_PRESETS), {"default": "custom",
+                       "tooltip": "a measured setting overrides the mode/block/fade knobs; "
+                                  "custom leaves the knobs in charge (old graphs resolve here)"}),
         }}
 
     RETURN_TYPES = ("MODEL", "SAMPLER", "STRING")
@@ -2224,7 +2237,11 @@ class H3DyRoPE:
         # node-execution time — and a cached hit would leave it disarmed.
         return float("nan")
 
-    def wrap(self, model, sampler, hold_map, mode, block_lo, block_hi, fade_end):
+    def wrap(self, model, sampler, hold_map, mode, block_lo, block_hi, fade_end,
+             preset="custom"):
+        chosen = DYROPE_PRESETS.get(preset)
+        if chosen is not None:
+            mode, block_lo, block_hi, fade_end = chosen
         holds = json.loads(hold_map)["holds"]
         spans_phys = true_clock_spans(holds)
         n = len(spans_phys)
