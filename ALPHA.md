@@ -177,3 +177,57 @@ approximation (60 dB PSNR against the fp16 decoder on the same latent).
 | `TESTING_ALPHA.md` | hands-on checklist for the manual mask and editor batch |
 | `TUNING.md` | dials with measured numbers, for the finished pipeline |
 | `ROADMAP.md` | where the unfinished parts are meant to go |
+
+---
+
+## Repair verb
+
+`h3_repair.py`, nodes `H3 Repair Plan (alpha)` and `H3 Repair Splice (alpha)`.
+
+Type a bad frame range; the plan snaps it outward to whole tokens, runs the
+regeneration through the nearest shot cut, and the splice puts every
+untouched pixel back bit-exact, printing its seam numbers. Validated on one
+cell and one in-graph rerun (entry seam 0.26x the clip's median frame delta,
+exit ON the source's own cut within 1.8%). Alpha because: one scene family
+so far, and AUDIO IS STILL A WORK IN PROGRESS: the splice passes audio
+through untouched, which is only right when the repair changed no performance.
+
+## DyRoPE
+
+`motion.py`, node `H3 DyRoPE (alpha)`.
+
+An instrument that hands the de-rope's two clock geometries (true world time
+vs the trained grid) to different transformer blocks or different denoise
+steps. The dose map is measured and in TUNING.md: two settings keep the
+world-time correction, everything below them loses it, everything above adds
+shimmer. Alpha because: one scene measured deeply, everything else untested.
+
+## Audio prefix freeze
+
+`motion.py`, inputs `audio_prefix_ticks` and `audio_prefix_release_ticks` on
+`H3 V2V Init`.
+
+The audio twin of the video prefix freeze, with a half-cosine release.
+Bench-tested on chained music (overlap correlation ~0.92 in the full
+chain, 0.98 on the pass-1-only control; beat phase 0.0 ms). It carries local continuity (level, timbre, beat),
+not a track's global phrase structure. Alpha because: the caveat list in the
+README section is load-bearing; read it before wiring.
+
+## Drift Control
+
+`h3_drift.py`, node `H3 Drift Control (alpha)`.
+
+Schedule-matched noise on a carried video prefix so a chain's later joins
+stop drifting. Second-join delta 0.680 to 0.860 with the first join
+unchanged; replicated across two chains and new seeds; joins hold 0.85-0.89 through link 4 (previously 0.65-class at link 2 without it). Refuses to stack with
+any other dynamic denoise-mask patch; sigma-split samplers unsupported.
+
+## Color Carry
+
+`h3_color_carry.py`, nodes `H3 Delta Color Carry (alpha)` and
+`H3 Scene Color Stats (alpha)`.
+
+Cancels the VAE round-trip color bias on a carried prefix by adding only
+E(corrected) minus E(original) to the latent, so the encode bias cancels and
+the weak scene-one grade survives. Deadband early-exit; the active path is
+unexercised on real renders as of 2026-08-24.

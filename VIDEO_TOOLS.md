@@ -1,4 +1,4 @@
-# MAI video tools (branch `generic-derope`, alpha)
+# MAI video tools (alpha)
 
 Three nodes and one widget that remove drudgery around renders without taking
 any decision away from you. None of them runs a model.
@@ -29,6 +29,11 @@ alongside), and every n-th frame from an offset. For a smeared clip use H3
 Exact Recover instead; it is exact.
 
 ## MAI Video Compare (2-6, synchronized)
+
+The player has grown since this page was written: a waveform timeline with
+loop brackets, a frame stepper, and a frame-exact export. The README's
+MAI Video Compare section is the current reference; this page keeps the
+original wiring notes.
 
 A media UI, not a processing stage. The node writes each wired VIDEO once as a
 small h264 preview into the temp directory (CPU, no VAE, no tensors kept) and

@@ -32,6 +32,8 @@ median frame delta. Extending the mask through the cut did not fix it
 (2.3x). Handing back to the original AT its own cut did: entry 0.21x,
 exit 130.5 against the original's own 130.9 at that cut, i.e. the seam IS
 the cut and reads as the edit the shot always had.
+The in-graph rerun of the same cell reproduced it: entry 0.26x, exit within
+1.8% of the source's own cut delta, outside-splice diff exactly 0.
 
 Token geometry (motion.py _token_frame_spans): frames group in 17s, each
 group is 5 tokens covering (1, 4, 4, 4, 4) frames, so every 5th token is a
