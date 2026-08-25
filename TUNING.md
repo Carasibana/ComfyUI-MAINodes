@@ -14,7 +14,7 @@ rows are `HARDWARE.md`. The short table:
 |---|---|---|
 | the normal starting point (since 2026-08-19): 12-step base pass 1, turbo 6-step pass 2, audio seeded | `examples/motion_pipeline_ref2va_audioinit.json` | ~1.3x; 192 frames at 1 MP in ~12 min on our card |
 | best quality, base model throughout, audio dial available | `examples/motion_pipeline.json` | ~3.5x; the same clip at 25 steps both passes is ~3x the row above |
-| a 16 to 24 GB card | `examples/motion_pipeline_lowvram.json` | as the first row; see `LOWVRAM.md` for the fenced measurements |
+| a 16 to 24 GB card (12 reported working in the field, just slower) | `examples/motion_pipeline_lowvram.json` | as the first row; see `LOWVRAM.md` for the fenced measurements |
 | prompt and seed scouting, not a final | `examples/motion_pipeline_fast_iterate.json` | ~1x or less (0.2 -> 0.4 MP, ~95 s) |
 | user knows where the problem is (two-pass: review the oraclemap, type ranges, requeue) | `examples/motion_pipeline_targeted.json` | baseline + regen cost of YOUR spans only |
 | GUI editing on the node (blocks, painting, automation) | `examples/motion_pipeline_editor.json` | as targeted |
