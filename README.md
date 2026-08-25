@@ -1067,6 +1067,13 @@ Driving it, once the previews load:
 - The gear panel holds the rest: region edit, the frame counter overlay, and
   which blips fire. Its settings are per node and survive a reload.
 
+Known issues (alpha): in-node playback sync between sources is
+approximate and can drift or stagger, and scrubbing during playback can
+wedge the transport (re-queue or reload recovers). The standalone deck
+pages (`tools/compare_deck/`) are the reliable review surface today; a
+combined-single-stream preview that removes the sync problem by
+construction is the planned next iteration.
+
 ## Install
 
 ```
