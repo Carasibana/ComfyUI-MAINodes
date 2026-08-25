@@ -11,7 +11,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MAIVideoCompare] widget build snap-1");
+console.log("[MAIVideoCompare] widget build snap-2");
 
 const viewURL = (f) => api.apiURL(`/view?filename=${encodeURIComponent(f.filename)}` +
   `&type=${f.type}&subfolder=${encodeURIComponent(f.subfolder)}&t=${Date.now()}`);
@@ -558,15 +558,23 @@ class CompareWidget {
     if (v && v.duration) {
       this.scrub.value = Math.round(v.currentTime / v.duration * 1000);
       this.fnum.textContent = "frame " + Math.round(v.currentTime * this.fps());
-      // continuous drift control: big gaps seek, small gaps glide via
-      // playbackRate, in-sync runs at 1 (the deck player's syncPair rule)
-      for (const x of this.vids) {
-        const sv = x.video;
-        if (sv === v || sv.readyState < 3 || Math.abs(sv.duration - v.duration) > 0.08) continue;
-        const d = v.currentTime - sv.currentTime, ad = Math.abs(d);
-        if (ad > 0.5) { sv.currentTime = v.currentTime; sv.playbackRate = 1; }
-        else if (ad > 0.05) sv.playbackRate = Math.max(0.9, Math.min(1.1, 1 + d * 0.5));
-        else if (sv.playbackRate !== 1) sv.playbackRate = 1;
+      // continuous drift control, THROTTLED: adjusting playbackRate every
+      // animation frame makes Firefox playback shudder, so corrections run
+      // at most 4x a second, rates are quantized, and hard seeks are rare
+      const now = performance.now();
+      if (now - (this.lastGlide || 0) > 250) {
+        this.lastGlide = now;
+        for (const x of this.vids) {
+          const sv = x.video;
+          if (sv === v || sv.readyState < 3 || Math.abs(sv.duration - v.duration) > 0.08) continue;
+          const d = v.currentTime - sv.currentTime, ad = Math.abs(d);
+          if (ad > 0.5 && now - (this.lastSeekFix || 0) > 600) {
+            this.lastSeekFix = now; sv.currentTime = v.currentTime; sv.playbackRate = 1;
+          } else if (ad > 0.06) {
+            const r = Math.round(Math.max(0.9, Math.min(1.1, 1 + d * 0.5)) * 50) / 50;
+            if (sv.playbackRate !== r) sv.playbackRate = r;
+          } else if (sv.playbackRate !== 1) sv.playbackRate = 1;
+        }
       }
       this.lastSync = v.currentTime;
     }
