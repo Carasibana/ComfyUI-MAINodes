@@ -11,7 +11,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MAIVideoCompare] widget build clock-2b");
+console.log("[MAIVideoCompare] widget build clock-3");
 
 const viewURL = (f) => api.apiURL(`/view?filename=${encodeURIComponent(f.filename)}` +
   `&type=${f.type}&subfolder=${encodeURIComponent(f.subfolder)}&t=${Date.now()}`);
@@ -116,6 +116,13 @@ class CompareWidget {
     });
     this.scrub = el("input", { flex: "1" }, this.crow); this.scrub.type = "range"; this.scrub.min = 0; this.scrub.max = 1000; this.scrub.value = 0;
     this.scrub.oninput = () => this.seekAll(this.scrub.value / 1000 * this.dur());
+    this.scrub.addEventListener("pointerdown", () => {
+      this._resumeScrub = this.playing && !(this.clockLead()?.paused ?? true);
+      for (const x of this.vids) x.video.pause();
+    });
+    this.scrub.addEventListener("pointerup", () => {
+      if (this._resumeScrub) { this._resumeScrub = false; this.alignPlay(); }
+    });
     this.fnum = el("span", { minWidth: "80px", color: "#9c9" }, this.crow, "frame 0");
     this.wipe = el("input", { width: "120px", display: "none" }, this.crow); this.wipe.type = "range"; this.wipe.min = 0; this.wipe.max = 100; this.wipe.value = 50;
     this.wipe.oninput = () => this.stage.style.setProperty("--w", this.wipe.value + "%");
@@ -367,11 +374,16 @@ class CompareWidget {
       const near = (t, tol) => t != null && Math.abs(this.tlX(t) - x) < tol;
       this.tlDrag = near(this.loopA, tab ? 14 : 5) ? "in" : near(this.loopB, tab ? 14 : 5) ? "out" : "seek";
       this.tl.setPointerCapture(e.pointerId);
+      this._resumeDrag = this.playing && !(this.clockLead()?.paused ?? true);
+      for (const x of this.vids) x.video.pause();
       if (this.tlDrag === "seek") this.tlMove(e);
       e.stopPropagation();
     });
     this.tl.addEventListener("pointermove", (e) => this.tlMove(e));
-    this.tl.addEventListener("pointerup", () => { this.tlDrag = null; });
+    this.tl.addEventListener("pointerup", () => {
+      this.tlDrag = null;
+      if (this._resumeDrag) { this._resumeDrag = false; this.alignPlay(); }
+    });
     this.tl.addEventListener("dblclick", () => { this.loopA = 0; this.loopB = this.dur() || null; });
     window.addEventListener("resize", () => this.tlResize());
     setTimeout(() => this.tlResize(), 50);
@@ -546,7 +558,7 @@ class CompareWidget {
       if (!this.playing) return;
       // re-seek after the wait (buffering can move currentTime), then start
       for (const x of this.vids) { try { x.video.currentTime = t; } catch (e) {} }
-      const leadC = this.clockLead();
+      const leadC = this._lead = this.clockLead();
       for (const x of this.vids) {
         if (this.syncMode === "clock" && x.video !== leadC) { x.video.pause(); continue; }
         x.video.play().catch(() => { x.video.muted = true; x.video.play().catch(() => {}); });
@@ -583,7 +595,7 @@ class CompareWidget {
       if (this.syncMode === "clock") {
         // master clock: followers are PAUSED and pinned to the lead's time
         // every frame - there is no second free-running player to drift
-        const lc = this.clockLead();
+        const lc = this._lead || this.clockLead();
         if (lc && !lc.paused) for (const x of this.vids) {
           const sv = x.video;
           if (sv === lc) continue;
