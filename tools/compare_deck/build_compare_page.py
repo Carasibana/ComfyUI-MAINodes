@@ -188,7 +188,10 @@ const COLS = __COLS__;
 const REF = ROWS[0].arm;
 const rowOf=a=>ROWS.find(r=>r.arm==a);
 const srcRow=r=>r.src||`${MEDIA}/${r.arm}.mp4`;
-const posterRow=r=>r.poster||`${MEDIA}/${r.arm}.jpg`;
+const posterRow=r=>r.poster||(MEDIA?`${MEDIA}/${r.arm}.jpg`:"");
+// no poster and no media base: omit the attribute entirely, or every card
+// requests "/<arm>.jpg" and shows a 404 black tile
+const posterAttr=r=>{const p=posterRow(r);return p?` poster="${p}"`:"";};
 const fmtv=(k,v)=>v==null?"":(typeof v=="string"?v:v.toFixed(COLS.find(c=>c[0]==k)[2]));
 const colorOf=r=>r.group=="control"||r.group=="reference"?"var(--ref)":r.color||"var(--sat)";
 const LS="cmp."+document.title;let picks=new Set(JSON.parse(localStorage.getItem(LS)||"[]"));
@@ -216,7 +219,7 @@ function render(){
  tb.querySelectorAll("tr").forEach(tr=>tr.onclick=()=>{const c=document.getElementById("card-"+tr.dataset.a);if(c){c.scrollIntoView({behavior:"smooth",block:"center"});c.animate([{boxShadow:"0 0 0 3px var(--pick)"},{boxShadow:"none"}],{duration:1400});}});
  const g=$("#grid");
  g.innerHTML=rows.map(r=>`<div class="card ${picks.has(r.arm)?'sel':''} ${visible(r)?'':'hid'}" id="card-${r.arm}" data-a="${r.arm}">
-  <video src="${srcRow(r)}" poster="${posterRow(r)}" preload="none" loop playsinline muted></video>
+  <video src="${srcRow(r)}"${posterAttr(r)} preload="none" loop playsinline muted></video>
   <div class="ch"><span class="nm"><i style="display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:${colorOf(r)}"></i>${r.arm}</span><span class="chip">${r.group}</span><button class="star ${picks.has(r.arm)?'on':''}" title="star">&#9733;</button></div>
   <div class="desc">${r.desc||""}</div>
   <div class="mets">${COLS.map(c=>r[c[0]]==null?"":`<div><span>${c[1].split(" (")[0]}</span>${fmtv(c[0],r[c[0]])}</div>`).join("")}</div>
@@ -402,7 +405,9 @@ $("#xgo").onclick=async()=>{
  if($("#xaudio").checked){const hv=$("#hear").value=="b"?vb:va;
   try{const at=hv.captureStream().getAudioTracks()[0];if(at)stream.addTrack(at);}catch(e){}}
  const mime=pickMime();
- const rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:20e6});
+ // honour the #xrate selector here too; the precise path already reads it
+ const rrate=(parseInt($("#xrate").value)||24)*1e6;
+ const rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:rrate});
  const chunks=[];rec.ondataavailable=e=>chunks.push(e.data);
  const done=new Promise(r=>rec.onstop=r);
  const wasLoopA=va.loop,wasLoopB=vb.loop;va.loop=vb.loop=false;

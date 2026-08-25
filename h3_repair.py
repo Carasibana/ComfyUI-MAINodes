@@ -198,18 +198,35 @@ class H3RepairPlan:
         regen_lo, regen_hi = spans[t_lo][0], spans[t_hi][1]
         snap_tokens = [t_lo, t_hi]
 
-        # 2. a cut inside the span, or just past it, becomes the exit
+        # 2. a cut inside the span, or just past it, becomes the exit. The exit
+        # hands back to the original AT the cut (splice_hi = cut - 1), so a cut
+        # at or before the last bad frame would leave marked-bad frames in the
+        # output: the candidate must be STRICTLY GREATER than bad_end.
         cuts, bad_cuts = _parse_cuts(shot_cuts, length)
         for s in bad_cuts:
             notes.append(f"ignored shot_cuts entry '{s}': not an integer in 1..{length - 1}")
         reach = max(0, int(cut_reach))
         cands = [c for c in cuts
                  if (regen_lo <= c <= regen_hi) or (regen_hi < c <= regen_hi + reach)]
-        rejected = [c for c in cands if c <= regen_lo]
-        cands = [c for c in cands if c > regen_lo]
+        # a cut STRICTLY inside the bad range cannot be the exit (it would
+        # hand marked-bad frames back); a cut exactly at the last bad frame
+        # stays valid - refusing it would regenerate the next shot's opening
+        # frames, the seam pop the cut doctrine exists to prevent - and the
+        # report says what that choice hands back.
+        rejected = [c for c in cands if c < b]
+        cands = [c for c in cands if c >= b]
         for c in rejected:
-            notes.append(f"cut {c} is at or before the span start {regen_lo}: using it as the exit "
-                         f"would leave nothing repaired, so it was ignored")
+            if c <= regen_lo:
+                notes.append(f"cut {c} is at or before the span start {regen_lo}: using it as the "
+                             f"exit would leave nothing repaired, so it was ignored")
+            else:
+                notes.append(f"cut {c} is strictly inside the bad range (last bad frame {b}): "
+                             f"exiting there would hand back frames {c}-{b} unrepaired, so it "
+                             f"was ignored")
+        if b in cands:
+            notes.append(f"cut {b} equals the last bad frame: exiting ON the cut hands frame {b} "
+                         f"back as the next shot's first frame - extend the bad range past the "
+                         f"cut if that frame itself needs repair")
         cut_used = -1
         if cands:
             cut_used = min(cands, key=lambda c: (abs(c - regen_hi), c))

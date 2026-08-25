@@ -1555,6 +1555,11 @@ class H3StreamedBlocks:
         if cfg["kv_fp4"] and _sage3_api() is None:
             log.warning("H3StreamedBlocks: kv_store kvfp4s needs SageAttention3's fp4 extension (fp4attn_cuda, tried %s); falling back to bf16 (exact)", _SAGE3_DIR)
             cfg["kv_fp4"] = False
+        if cfg["kv_mix"] and (not _SAGE_OK or _sage3_api() is None):
+            log.warning("H3StreamedBlocks: kv_store kvmix needs BOTH the sageattention package (2.x: %s) and SageAttention3's fp4 extension (fp4attn_cuda, tried %s: %s); falling back to bf16 (exact)",
+                        "present" if _SAGE_OK else "missing", _SAGE3_DIR,
+                        "present" if _sage3_api() is not None else "missing")
+            cfg["kv_mix"] = False
         try:  # collision report: who already has a hand on this model (never blocks)
             from . import h3_capabilities as _caps
             for w in _caps.collision_warnings(_caps.block_patch_report(model)):
@@ -1970,7 +1975,10 @@ class H3FakeQuant:
         return (m,)
 
 
-NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3SolAttention": H3SolAttention, "H3MemoryProbe": H3MemoryProbe, "H3FreeCache": H3FreeCache, "H3EvictTextEncoder": H3EvictTextEncoder,
+# H3SolAttention is deliberately NOT registered this release: it rebinds attention
+# process-globally with no restore path - it needs the DyRoPE arm/disarm pattern
+# before it can ship (reviewer finding 2026-08-25). The class stays.
+NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3MemoryProbe": H3MemoryProbe, "H3FreeCache": H3FreeCache, "H3EvictTextEncoder": H3EvictTextEncoder,
                        "H3PrecisionProbe": H3PrecisionProbe, "H3FakeQuant": H3FakeQuant}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3StreamedBlocks": "H3 Streamed Blocks (exact low-VRAM, alpha)",
                               "H3MemoryProbe": "H3 Memory Probe (ledger + allocator trace, alpha)",

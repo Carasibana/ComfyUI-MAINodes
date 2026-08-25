@@ -80,4 +80,24 @@ check("prefix last step full delta", near(float(out[0, 0, 11, 0, 0]), 1.0))
 check("post-prefix untouched", float(out[0, 0, 12, 0, 0]) == 0.0)
 check("original untouched", bool(torch.all(target == 0.0)))
 
+# q rides the data's device (torch.quantile raises on a cpu q vs a cuda input).
+# No cuda here by rule, so the check intercepts torch.quantile and compares the
+# device of both arguments - on CPU that is only meaningful because the q tensor
+# is now built from luma.device/sat.device rather than defaulting to cpu.
+_seen = []
+_real_quantile = torch.quantile
+def _spy(inp, q, *a, **kw):
+    _seen.append((inp.device, q.device if torch.is_tensor(q) else inp.device))
+    return _real_quantile(inp, q, *a, **kw)
+torch.quantile = _spy
+try:
+    m.tensor_scene_color_stats(frames)
+finally:
+    torch.quantile = _real_quantile
+check("quantile q device follows data (2 call sites)", len(_seen) == 2)
+check("quantile q device matches input", all(a == b for a, b in _seen))
+_src = open(os.path.join(HERE, "h3_color_carry.py")).read()
+check("q built with device=", _src.count("device=luma.device") == 1
+      and _src.count("device=sat.device") == 1)
+
 sys.exit(0 if ok else 1)

@@ -202,6 +202,18 @@ def test_off_grid_length_is_named():
     assert p["resolved"]["legal_length"] == 107
 
 
+def test_cut_inside_the_bad_range_rejected():
+    """A cut INSIDE the operator's bad range cannot be the exit: the splice
+    hands back at the cut, so frames cut..bad_end would stay bad."""
+    _, _, _, p, report = _plan(length=90, bad_start=45, bad_end=60, cuts="50", reach=8)
+    assert p["cut_used"] == -1, p
+    assert "is strictly inside the bad range 60" in report, report
+    lo, hi = p["splice_lo"], p["splice_hi"]
+    for f in range(45, 61):
+        assert lo <= f <= hi, (f, lo, hi)
+    assert p["regen_lo"] <= 45 and p["regen_hi"] >= 60, p
+
+
 def test_degenerate_cut_rejected():
     """A cut AT the span start would leave nothing repaired; ignore it."""
     _, _, _, p, report = _plan(bad_start=43, bad_end=44, cuts="43")

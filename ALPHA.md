@@ -241,10 +241,18 @@ ComfyUI node surface does not hold sync reliably (browser video elements
 each run their own clock; every correction strategy trades stutter for
 offset), and the transport can wedge after scrubbing during playback -
 re-queue or reload the page to recover. The standalone deck pages built
-by `tools/compare_deck/` do not share these problems. Planned fix, next
-iteration: the node bakes each pair into ONE combined preview stream and
-every view mode becomes a crop of it - one decoder, one clock, sync by
-construction.
+by `tools/compare_deck/` do not share these problems. Two more, both about
+audio: in clock sync mode audio follows only the clock-owning side, so
+locking audio to the other pane is silent until sync mode is flipped; and
+the realtime export records audio from the locked side even when it is not
+one of the two playing panes, so prefer the precise export. Planned fix,
+next iteration: the node bakes each pair into ONE combined preview stream
+and every view mode becomes a crop of it - one decoder, one clock, sync by
+construction. Deferred with it: the player is duplicated (~330 lines)
+between `web/video_compare.js` and the deck template, and a single-source
+refactor is the next iteration's job (the deck's export bitrate selector
+having been honored on only one of the two export paths was the first bite
+of that divergence).
 
 ## Mid-denoise insert
 
@@ -259,11 +267,15 @@ production; the two-pass insertion path is the shipped construction.
 
 ## VRAM lab instruments
 
-`vram_lab.py`, nodes `H3 FakeQuant (alpha)` and `H3 Sol Attention (alpha)`.
+`vram_lab.py`, node `H3 FakeQuant (alpha)`. `H3 Sol Attention` is in the
+code but NOT registered this release.
 
 Measurement instruments from the quantization review work: FakeQuant
 fake-quantizes a chosen region of the model's activations so a precision
 regime can be auditioned without real kernels; Sol Attention switches the
 attention path for the same kind of audition. Instruments, not
 accelerators: they exist to make honest comparison pages, and their
-numbers only mean something next to a reference arm.
+numbers only mean something next to a reference arm. FakeQuant ships;
+Sol Attention stays unregistered until it gets the DyRoPE arm/disarm
+pattern, because it rebinds attention process-globally with no restore
+path.

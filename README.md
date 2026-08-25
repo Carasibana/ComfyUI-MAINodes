@@ -1070,7 +1070,11 @@ Driving it, once the previews load:
 
 Known issues (alpha): in-node playback sync between sources is
 approximate and can drift or stagger, and scrubbing during playback can
-wedge the transport (re-queue or reload recovers). The standalone deck
+wedge the transport (re-queue or reload recovers). In clock sync mode
+audio follows only the clock-owning side, so locking audio to the other
+pane is silent until sync mode is flipped. The realtime export records
+audio from the locked side even when it is not one of the two playing
+panes; prefer the precise export. The standalone deck
 pages (`tools/compare_deck/`) are the reliable review surface today; a
 combined-single-stream preview that removes the sync problem by
 construction is the planned next iteration.

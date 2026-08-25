@@ -424,12 +424,6 @@ check("report names mode, tokens, both sums and the block split",
       "%d chars" % len(report))
 reset_state()
 
-print()
-if FAILS:
-    print("FAILED: " + ", ".join(FAILS))
-    sys.exit(1)
-print("all dyrope checks passed")
-
 # ---- presets ---------------------------------------------------------------
 print("presets: override the knobs; custom leaves them alone")
 import motion as _m
@@ -444,3 +438,9 @@ req = list(_m.H3DyRoPE.INPUT_TYPES()["required"])
 check("required knobs unchanged in order",
       req == ["model", "sampler", "hold_map", "mode", "block_lo", "block_hi", "fade_end"],
       str(req))
+
+print()
+if FAILS:
+    print("FAILED: " + ", ".join(FAILS))
+    sys.exit(1)
+print("all dyrope checks passed")

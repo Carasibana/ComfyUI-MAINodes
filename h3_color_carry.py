@@ -63,10 +63,14 @@ def tensor_scene_color_stats(frames):
     valid = (luma >= 20.0) & (luma <= 235.0)
     if int(torch.count_nonzero(valid).item()) >= 64:
         luma, sat = luma[valid], sat[valid]
+    # q rides the IMAGE's device: torch.quantile refuses a cpu q against a
+    # cuda input ("Expected all tensors to be on the same device")
     lq = torch.quantile(luma.reshape(-1),
-                        torch.tensor((0.10, 0.50, 0.90), dtype=torch.float32))
+                        torch.tensor((0.10, 0.50, 0.90), dtype=torch.float32,
+                                     device=luma.device))
     sq = torch.quantile(sat.reshape(-1),
-                        torch.tensor((0.25, 0.50, 0.75), dtype=torch.float32))
+                        torch.tensor((0.25, 0.50, 0.75), dtype=torch.float32,
+                                     device=sat.device))
     return {"version": STATS_VERSION,
             "luma_percentiles": [float(v) for v in lq.cpu().tolist()],
             "saturation_percentiles": [float(v) for v in sq.cpu().tolist()],

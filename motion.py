@@ -3102,7 +3102,14 @@ class H3MidInsert:
             f"{ident:.3e} (must be ~0; it is the derivation, verified on this "
             f"tensor)",
         ]
-        if sigma_s > 0.0:
+        if sigma_s >= 1.0:
+            # report only, and the bound divides by (1 - sigma_s): at sigma_s 1
+            # the whole latent IS the noise and the ratio is undefined
+            rep.append(
+                f"noise-only bound at sigma_s {sigma_s:.4f}: n/a (the bound "
+                f"scales as (sigma_s/(1-sigma_s))^2, which is undefined at "
+                f"sigma_s 1.0 - pure noise; measured deficit {def_m:.5f})")
+        elif sigma_s > 0.0:
             wsum = sum(w * (1.0 - w) for _n, _lo, _hi, w in brackets)
             wbar = wsum / max(len(brackets), 1)
             bound = 2.0 * wbar * (sigma_s / (1.0 - sigma_s)) ** 2
