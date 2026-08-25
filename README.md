@@ -965,7 +965,7 @@ graph's `VAEEncode` and `H3 V2V Init`. On the first link the two stats are
 the same tail, the transform is the identity, and the latent passes
 through untouched.
 
-Status, stated plainly: Active path exercised on a real 4-link render 2026-08-24: it fires, corrects in the anchor direction, and stays sub-visible under its clamps on mildly-drifted content. A strong-drift bench (where the 2.4% per-round-trip signature actually accrues) is still owed.
+Status, stated plainly: Active path exercised on a real 4-link render 2026-08-24: it fires, corrects in the anchor direction, and stays sub-visible under its clamps on mildly-drifted content; on the deepest tested link it fires on both channels at or near its clamp. A strong-drift bench (where the 2.4% per-round-trip signature actually accrues) is still owed.
 
 Both nodes are adapted, with permission of the licence, from
 ComfyUI-MiniMaxH3-Contex-Loop (GPL-3.0, the same licence as this pack):

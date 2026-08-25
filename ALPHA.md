@@ -230,7 +230,7 @@ any other dynamic denoise-mask patch; sigma-split samplers unsupported.
 
 Cancels the VAE round-trip color bias on a carried prefix by adding only
 E(corrected) minus E(original) to the latent, so the encode bias cancels and
-the weak scene-one grade survives. Active path exercised on a real 4-link render 2026-08-24: it fires, corrects in the anchor direction, and stays sub-visible under its clamps on mildly-drifted content. A strong-drift bench is still owed.
+the weak scene-one grade survives. Active path exercised on a real 4-link render 2026-08-24: it fires, corrects in the anchor direction, and stays sub-visible under its clamps on mildly-drifted content; on the deepest tested link it fires on both channels at or near its clamp. A strong-drift bench is still owed.
 
 ## Video Compare viewer (upgraded player)
 
