@@ -11,6 +11,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+console.log("[MAIVideoCompare] widget build 5937613+");
+
 const viewURL = (f) => api.apiURL(`/view?filename=${encodeURIComponent(f.filename)}` +
   `&type=${f.type}&subfolder=${encodeURIComponent(f.subfolder)}&t=${Date.now()}`);
 
