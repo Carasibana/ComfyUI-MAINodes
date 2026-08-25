@@ -11,7 +11,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MAIVideoCompare] widget build 5937613+");
+console.log("[MAIVideoCompare] widget build snap-1");
 
 const viewURL = (f) => api.apiURL(`/view?filename=${encodeURIComponent(f.filename)}` +
   `&type=${f.type}&subfolder=${encodeURIComponent(f.subfolder)}&t=${Date.now()}`);
@@ -533,6 +533,23 @@ class CompareWidget {
       // every source in the same tick
       for (const x of this.vids) { try { x.video.currentTime = t; } catch (e) {} }
       for (const x of this.vids) x.video.play().catch(() => { x.video.muted = true; x.video.play().catch(() => {}); });
+      // decoders spin up at different speeds, so a same-tick play() still
+      // staggers: once EVERY source has actually started rolling, snap the
+      // followers onto the lead's clock in one shot; the glide holds it after
+      const lead2 = this.vids[this.pair[0]]?.video || this.vids[0]?.video;
+      let pending = this.vids.length;
+      const onRolling = () => {
+        if (--pending > 0) return;
+        for (const x of this.vids) {
+          if (x.video === lead2) continue;
+          try { x.video.currentTime = lead2.currentTime; } catch (e) {}
+        }
+      };
+      for (const x of this.vids) {
+        const v2 = x.video;
+        const f = () => { v2.removeEventListener("playing", f); onRolling(); };
+        v2.addEventListener("playing", f); setTimeout(f, 1500);
+      }
     });
   }
   tick() {
