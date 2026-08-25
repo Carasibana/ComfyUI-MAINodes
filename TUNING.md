@@ -76,8 +76,7 @@ different dial than one who says "it changed my character's pose."
 | the de-roped span still plays accelerated: background agents run fast inside the held region | that is the stock clock, not the oracle. `H3 DyRoPE` gives the true-duration grid to some blocks or some steps. Two settings worth trying, `physical_blocks` 30-49 and 40-49; see the dose section below, and expect to judge it in playback because the meters cannot rank the two |
 | a de-rope with DyRoPE on shows flicker at the span boundary | flash is an early-block effect: keep the physical grid out of blocks 0-9. Any `*_blocks` range starting at 25 or above meters at the stock control's flash level. If flicker still bothers you more than jitter does, switch to `fade_physical_to_compact` at `fade_end 0.7`, which is flash-free in playback |
 | the sound restarts, jumps level or changes room at a segment join | wire the previous segment's audio as `audio_latent` and set `H3 V2V Init`'s `audio_prefix_ticks` to the handle (a 39-frame handle is exactly 65 ticks). Add `audio_prefix_release_ticks 8` for a soft handover, and then the ASSEMBLY must let the continuation own the overlap tail or the trim discards the ramp. It carries level, timbre and beat, not phrase structure |
-| contrast and texture wash out further with every link of a chain | `H3 Drift Control` on the pass-1 model: schedule-matched noise on the carried video prefix so the model stops treating it as impossibly clean. `prefix_frames` must equal the handle and `matched_steps` + `taper_steps` must equal its latent step count (39 f = 12 = 8 + 4). Single-seed validation, replicate pending |
-| each link of a chain comes back slightly darker than the last | a VAE round trip darkens about 2.4% and handles accumulate it. `H3 Delta Color Carry` cancels the encode bias by construction. Active path exercised on a real 4-link render 2026-08-24: it fires, corrects in the anchor direction, and stays sub-visible under its clamps on mildly-drifted content. A strong-drift bench (where the 2.4% per-round-trip signature actually accrues) is still owed. |
+| contrast and texture wash out further with every link of a chain | `H3 Drift Control` on the pass-1 model: schedule-matched noise on the carried video prefix so the model stops treating it as impossibly clean. `prefix_frames` must equal the handle and `matched_steps` + `taper_steps` must equal its latent step count (39 f = 12 = 8 + 4). replicated across two chains and new seeds; joins hold 0.85-0.89 through link 4 (previously 0.65-class at link 2 without it).4% and handles accumulate it. `H3 Delta Color Carry` cancels the encode bias by construction. Active path exercised on a real 4-link render 2026-08-24: it fires, corrects in the anchor direction, and stays sub-visible under its clamps on mildly-drifted content. A strong-drift bench (where the 2.4% per-round-trip signature actually accrues) is still owed. |
 | a window edit renders garbage, and the damage sits where the window USED to be | the conditioning length was not moved with the crops and the hold map. All four numbers move together: see `docs/WINDOW_MODE.md` |
 
 ## VRAM expectations (measured)
@@ -510,8 +509,9 @@ Wiring and limits, in the order they trip people:
   to exactly that: 8 + 4 is the field-validated recipe.
 - It **refuses to stack** on another dynamic denoise-mask patch, and it does
   not support sigma-split samplers.
-- **Single-seed validation, replicate pending.** Treat the recipe as one
-  run's reading.
+- **Replicated across two chains and new seeds.** Joins hold 0.85-0.89
+  through link 4; the 0.65-class collapse appears without it. The recipe
+  numbers are still one recipe, not a swept space.
 
 `H3 Delta Color Carry` (fed by two `H3 Scene Color Stats`) is for the other
 decay: each carried handle is a VAE round trip, each round trip darkens

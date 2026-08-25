@@ -943,8 +943,10 @@ What it demands, all of which it enforces rather than guesses:
   them cannot share the model.
 - Sigma-split samplers are not supported; our graphs run one
   `SamplerCustomAdvanced` per pass.
-- **Single-seed validation, replicate pending.** The recipe is one run's
-  reading, not a distribution.
+- **Replicated across two chains and new seeds.** Joins hold 0.85-0.89
+  through link 4; without it the control's deep joins fall to the 0.65
+  class. The matched+taper recipe itself is still one recipe, not a swept
+  space.
 
 **`H3 Delta Color Carry`** (with `H3 Scene Color Stats`) attacks the other
 decay: every carried handle is a VAE round trip, each round trip darkens
