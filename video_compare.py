@@ -114,6 +114,26 @@ class MAIVideoCompare:
             fn = f"cmp_{unique_id or 'n'}_{stamp}_{i}.mp4"
             path = os.path.join(tmp, sub, fn)
             v.save_to(path, format=Types.VideoContainer("mp4"), codec=Types.VideoCodec("h264"), crf=preview_crf)
+            # comfy_api writes ~2 keyframes per clip; a sync seek then decodes
+            # up to half the GOP before showing a frame, which the viewer does
+            # constantly. Re-encode previews seek-friendly: keyframe every 12,
+            # faststart, 48 kHz audio. Best-effort: on any failure the
+            # save_to file stands.
+            try:
+                import subprocess
+                path2 = path[:-4] + "_sk.mp4"
+                r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "4",
+                                    "-i", path, "-c:v", "libx264", "-crf", str(preview_crf),
+                                    "-g", "12", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                                    "-c:a", "aac", "-ar", "48000",
+                                    "-movflags", "+faststart", path2],
+                                   capture_output=True, timeout=120)
+                if r.returncode == 0 and os.path.getsize(path2) > 0:
+                    os.replace(path2, path)
+                else:
+                    print(f"[MAIVideoCompare] preview re-encode skipped: {r.stderr.decode()[:160]}")
+            except Exception as e:  # noqa: BLE001
+                print(f"[MAIVideoCompare] preview re-encode skipped: {type(e).__name__}: {e}")
             comp = v.get_components()
             items.append({"index": i, "label": kw.get(f"label_{i}") or f"source {i}",
                           "filename": fn, "subfolder": sub, "type": "temp",
