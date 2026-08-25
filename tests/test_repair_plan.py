@@ -207,7 +207,7 @@ def test_cut_inside_the_bad_range_rejected():
     hands back at the cut, so frames cut..bad_end would stay bad."""
     _, _, _, p, report = _plan(length=90, bad_start=45, bad_end=60, cuts="50", reach=8)
     assert p["cut_used"] == -1, p
-    assert "is strictly inside the bad range 60" in report, report
+    assert "is strictly inside the bad range (last bad frame 60)" in report, report
     lo, hi = p["splice_lo"], p["splice_hi"]
     for f in range(45, 61):
         assert lo <= f <= hi, (f, lo, hi)
