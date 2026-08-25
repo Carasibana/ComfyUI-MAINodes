@@ -11,7 +11,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MAIVideoCompare] widget build clock-1");
+console.log("[MAIVideoCompare] widget build clock-2");
 
 const viewURL = (f) => api.apiURL(`/view?filename=${encodeURIComponent(f.filename)}` +
   `&type=${f.type}&subfolder=${encodeURIComponent(f.subfolder)}&t=${Date.now()}`);
@@ -493,7 +493,11 @@ class CompareWidget {
     try {
       const want = Math.max(1, Math.round(this.tl.clientWidth * (window.devicePixelRatio || 1)));
       if (this.tl.clientWidth && this.tl.width !== want) this.tlResize();
-      this.tickCross(); this.drawTL(); this.drawOvl(); this.loopTick();
+      this.tickCross(); this.loopTick();
+      // paint at 10 Hz: repainting the waveform canvas per animation frame
+      // on the transformed node surface is what stuttered the videos
+      const pnow = performance.now();
+      if (pnow - (this._lastPaint || 0) > 100) { this._lastPaint = pnow; this.drawTL(); this.drawOvl(); }
     } catch (e) {}
     requestAnimationFrame(() => this.raf());
   }
@@ -570,8 +574,12 @@ class CompareWidget {
     if (!this.playing) return;
     const v = this.vids[this.pair[0]]?.video;
     if (v && v.duration) {
-      this.scrub.value = Math.round(v.currentTime / v.duration * 1000);
-      this.fnum.textContent = "frame " + Math.round(v.currentTime * this.fps());
+      const tnow = performance.now();
+      if (tnow - (this._lastDom || 0) > 100) {
+        this._lastDom = tnow;
+        this.scrub.value = Math.round(v.currentTime / v.duration * 1000);
+        this.fnum.textContent = "frame " + Math.round(v.currentTime * this.fps());
+      }
       if (this.syncMode === "clock") {
         // master clock: followers are PAUSED and pinned to the lead's time
         // every frame - there is no second free-running player to drift
@@ -580,7 +588,8 @@ class CompareWidget {
           const sv = x.video;
           if (sv === lc) continue;
           if (!sv.paused) sv.pause();
-          if (Math.abs(sv.currentTime - lc.currentTime) > 0.021) {
+          if (sv.seeking) continue;             // let the decoder finish; self-pacing
+          if (Math.abs(sv.currentTime - lc.currentTime) > 0.03) {
             try { sv.currentTime = lc.currentTime; } catch (e) {}
           }
         }
