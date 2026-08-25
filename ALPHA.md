@@ -219,7 +219,8 @@ README section is load-bearing; read it before wiring.
 
 Schedule-matched noise on a carried video prefix so a chain's later joins
 stop drifting. Second-join delta 0.680 to 0.860 with the first join
-unchanged; replicated across two chains and new seeds; joins hold 0.85-0.89 through link 4 (previously 0.65-class at link 2 without it). Refuses to stack with
+unchanged; replicated across two chains and new seeds; joins hold 0.85-0.89 through link 4 (the earlier chain sat in the 0.65 class at its second
+join before the recipe; cross-chain comparison, not a paired arm). Refuses to stack with
 any other dynamic denoise-mask patch; sigma-split samplers unsupported.
 
 ## Color Carry

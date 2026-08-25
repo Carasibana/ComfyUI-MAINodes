@@ -944,9 +944,10 @@ What it demands, all of which it enforces rather than guesses:
 - Sigma-split samplers are not supported; our graphs run one
   `SamplerCustomAdvanced` per pass.
 - **Replicated across two chains and new seeds.** Joins hold 0.85-0.89
-  through link 4; without it the control's deep joins fall to the 0.65
-  class. The matched+taper recipe itself is still one recipe, not a swept
-  space.
+  through link 4 on the newer chain; the earlier chain, before this node,
+  fell to the 0.65 class by its second join. That is a cross-chain
+  comparison, not a paired drift-off arm. The matched+taper recipe itself
+  is still one recipe, not a swept space.
 
 **`H3 Delta Color Carry`** (with `H3 Scene Color Stats`) attacks the other
 decay: every carried handle is a VAE round trip, each round trip darkens

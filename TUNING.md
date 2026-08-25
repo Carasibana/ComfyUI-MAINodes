@@ -510,8 +510,10 @@ Wiring and limits, in the order they trip people:
 - It **refuses to stack** on another dynamic denoise-mask patch, and it does
   not support sigma-split samplers.
 - **Replicated across two chains and new seeds.** Joins hold 0.85-0.89
-  through link 4; the 0.65-class collapse appears without it. The recipe
-  numbers are still one recipe, not a swept space.
+  through link 4 on the newer chain; the earlier chain fell to the 0.65
+  class at its second join before the recipe existed. Cross-chain
+  comparison, not a paired drift-off arm. The recipe numbers are still
+  one recipe, not a swept space.
 
 `H3 Delta Color Carry` (fed by two `H3 Scene Color Stats`) is for the other
 decay: each carried handle is a VAE round trip, each round trip darkens
