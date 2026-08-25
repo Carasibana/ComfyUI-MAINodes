@@ -11,7 +11,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MAIVideoCompare] widget build clock-2");
+console.log("[MAIVideoCompare] widget build clock-2b");
 
 const viewURL = (f) => api.apiURL(`/view?filename=${encodeURIComponent(f.filename)}` +
   `&type=${f.type}&subfolder=${encodeURIComponent(f.subfolder)}&t=${Date.now()}`);
@@ -497,7 +497,7 @@ class CompareWidget {
       // paint at 10 Hz: repainting the waveform canvas per animation frame
       // on the transformed node surface is what stuttered the videos
       const pnow = performance.now();
-      if (pnow - (this._lastPaint || 0) > 100) { this._lastPaint = pnow; this.drawTL(); this.drawOvl(); }
+      if (pnow - (this._lastPaint || 0) > 150) { this._lastPaint = pnow; this.drawTL(); this.drawOvl(); }
     } catch (e) {}
     requestAnimationFrame(() => this.raf());
   }
