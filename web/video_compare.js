@@ -11,7 +11,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MAIVideoCompare] widget build snap-2");
+console.log("[MAIVideoCompare] widget build clock-1");
 
 const viewURL = (f) => api.apiURL(`/view?filename=${encodeURIComponent(f.filename)}` +
   `&type=${f.type}&subfolder=${encodeURIComponent(f.subfolder)}&t=${Date.now()}`);
@@ -108,6 +108,12 @@ class CompareWidget {
     this.gearBtn = this.btn(this.bar, "⚙ settings", () => this.toggleSettings());
     this.exportBtn = this.btn(this.bar, "⤓ export", () => this.openExport());
     this.playBtn = this.btn(this.crow, "Play", () => this.setPlay(!this.playing));
+    this.syncMode = "clock";
+    this.syncBtn = this.btn(this.crow, "sync: clock", () => {
+      this.syncMode = this.syncMode === "clock" ? "glide" : "clock";
+      this.syncBtn.textContent = "sync: " + this.syncMode;
+      if (this.playing) this.alignPlay();
+    });
     this.scrub = el("input", { flex: "1" }, this.crow); this.scrub.type = "range"; this.scrub.min = 0; this.scrub.max = 1000; this.scrub.value = 0;
     this.scrub.oninput = () => this.seekAll(this.scrub.value / 1000 * this.dur());
     this.fnum = el("span", { minWidth: "80px", color: "#9c9" }, this.crow, "frame 0");
@@ -515,6 +521,11 @@ class CompareWidget {
       }
     }, 100);
   }
+  clockLead() {
+    // the heard side owns the clock; otherwise the A side
+    const hearIdx = this.audio != null ? this.audio : this.pair[0];
+    return (this.vids[hearIdx] || this.vids[this.pair[0]] || this.vids[0])?.video || null;
+  }
   alignPlay() {
     // seek every source to the lead's clock, wait until all can play, then
     // start them in the same tick - the stagger fix
@@ -530,9 +541,12 @@ class CompareWidget {
     Promise.all(this.vids.map((x) => ready(x.video))).then(() => {
       if (!this.playing) return;
       // re-seek after the wait (buffering can move currentTime), then start
-      // every source in the same tick
       for (const x of this.vids) { try { x.video.currentTime = t; } catch (e) {} }
-      for (const x of this.vids) x.video.play().catch(() => { x.video.muted = true; x.video.play().catch(() => {}); });
+      const leadC = this.clockLead();
+      for (const x of this.vids) {
+        if (this.syncMode === "clock" && x.video !== leadC) { x.video.pause(); continue; }
+        x.video.play().catch(() => { x.video.muted = true; x.video.play().catch(() => {}); });
+      }
       // decoders spin up at different speeds, so a same-tick play() still
       // staggers: once EVERY source has actually started rolling, snap the
       // followers onto the lead's clock in one shot; the glide holds it after
@@ -558,6 +572,22 @@ class CompareWidget {
     if (v && v.duration) {
       this.scrub.value = Math.round(v.currentTime / v.duration * 1000);
       this.fnum.textContent = "frame " + Math.round(v.currentTime * this.fps());
+      if (this.syncMode === "clock") {
+        // master clock: followers are PAUSED and pinned to the lead's time
+        // every frame - there is no second free-running player to drift
+        const lc = this.clockLead();
+        if (lc && !lc.paused) for (const x of this.vids) {
+          const sv = x.video;
+          if (sv === lc) continue;
+          if (!sv.paused) sv.pause();
+          if (Math.abs(sv.currentTime - lc.currentTime) > 0.021) {
+            try { sv.currentTime = lc.currentTime; } catch (e) {}
+          }
+        }
+        this.lastSync = v.currentTime;
+        requestAnimationFrame(() => this.tick());
+        return;
+      }
       // continuous drift control, THROTTLED: adjusting playbackRate every
       // animation frame makes Firefox playback shudder, so corrections run
       // at most 4x a second, rates are quantized, and hard seeks are rare
@@ -566,7 +596,7 @@ class CompareWidget {
         this.lastGlide = now;
         for (const x of this.vids) {
           const sv = x.video;
-          if (sv === v || sv.readyState < 3 || Math.abs(sv.duration - v.duration) > 0.08) continue;
+          if (sv === v || sv.readyState < 3) continue;
           const d = v.currentTime - sv.currentTime, ad = Math.abs(d);
           if (ad > 0.5 && now - (this.lastSeekFix || 0) > 600) {
             this.lastSeekFix = now; sv.currentTime = v.currentTime; sv.playbackRate = 1;
