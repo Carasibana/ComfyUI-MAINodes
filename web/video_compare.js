@@ -118,11 +118,14 @@ class CompareWidget {
     root.tabIndex = 0;
     root.addEventListener("keydown", (e) => this.key(e));
     const w = this.node.addDOMWidget("mai_compare_ui", "div", root, { serialize: false });
-    if (w) w.computeSize = (width) => {
-      // fill the node below the widget's own top, never under 470
-      const h = (this.node.size && this.node.size[1]) || 0;
-      return [width, Math.max(470, h - (w.last_y || 60) - 12)];
-    };
+    if (w) {
+      // no computeSize: a DOM widget without it is FLEXIBLE - the frontend's
+      // layout gives it the node's free space via computeLayoutSize, which
+      // reads these two hooks. (A computeSize override pins the height and,
+      // if it tracks the node, ratchets: the node can grow but never shrink.)
+      w.options.getMinHeight = () => 470;
+      w.options.getMaxHeight = () => 100000;
+    }
     const sz = this.node.size; this.node.setSize([Math.max(sz[0], 760), Math.max(sz[1], 640)]);
     this.root = root;
     this.setMode("side");
