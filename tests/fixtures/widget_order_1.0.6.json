@@ -1,0 +1,1652 @@
+{
+ "_comment": "Baseline INPUT_TYPES key order per node at the published tag. Regenerate ONLY when a new release becomes the baseline: python tests/test_widget_order_vs_release.py --regen --tag <published-X.Y.Z>",
+ "tag": "published-1.0.6",
+ "commit": "29984ae2bbab2b71cde2bb79f639d7251ef6782f",
+ "generated_utc": "2026-08-25T00:02:35Z",
+ "node_count": 64,
+ "nodes": {
+  "H3AudioRecover": {
+   "class": "motion.H3AudioRecover",
+   "required": [
+    "audio",
+    "hold_map",
+    "fps"
+   ],
+   "required_types": {
+    "audio": "AUDIO",
+    "hold_map": "STRING",
+    "fps": "INT"
+   },
+   "optional": [
+    "reference",
+    "reference_mix",
+    "audio_source"
+   ],
+   "optional_types": {
+    "reference": "AUDIO",
+    "reference_mix": "FLOAT",
+    "audio_source": "COMBO"
+   },
+   "hidden": []
+  },
+  "H3AudioSmear": {
+   "class": "motion.H3AudioSmear",
+   "required": [
+    "audio",
+    "hold_map",
+    "fps"
+   ],
+   "required_types": {
+    "audio": "AUDIO",
+    "hold_map": "STRING",
+    "fps": "INT"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3CapabilityProbe": {
+   "class": "h3_capabilities.H3CapabilityProbe",
+   "required": [],
+   "required_types": {},
+   "optional": [
+    "model"
+   ],
+   "optional_types": {
+    "model": "MODEL"
+   },
+   "hidden": []
+  },
+  "H3ClockRemap": {
+   "class": "derope_any.H3ClockRemap",
+   "required": [
+    "hold_map",
+    "model_profile"
+   ],
+   "required_types": {
+    "hold_map": "STRING",
+    "model_profile": "COMBO"
+   },
+   "optional": [
+    "custom_block",
+    "custom_hold_scale",
+    "custom_legal_step",
+    "custom_legal_offset",
+    "custom_fps",
+    "custom_cap_seconds"
+   ],
+   "optional_types": {
+    "custom_block": "INT",
+    "custom_hold_scale": "INT",
+    "custom_legal_step": "INT",
+    "custom_legal_offset": "INT",
+    "custom_fps": "FLOAT",
+    "custom_cap_seconds": "FLOAT"
+   },
+   "hidden": []
+  },
+  "H3ConditioningBank": {
+   "class": "motion.H3ConditioningBank",
+   "required": [
+    "conditioning",
+    "bank_key",
+    "store_dir",
+    "mode"
+   ],
+   "required_types": {
+    "conditioning": "CONDITIONING",
+    "bank_key": "STRING",
+    "store_dir": "STRING",
+    "mode": "COMBO"
+   },
+   "optional": [
+    "prompt"
+   ],
+   "optional_types": {
+    "prompt": "STRING"
+   },
+   "hidden": []
+  },
+  "H3ContactSheet": {
+   "class": "contact_sheet.H3ContactSheet",
+   "required": [
+    "clip",
+    "vae",
+    "prompt",
+    "size"
+   ],
+   "required_types": {
+    "clip": "CLIP",
+    "vae": "VAE",
+    "prompt": "STRING",
+    "size": "INT"
+   },
+   "optional": [
+    "ref_image"
+   ],
+   "optional_types": {
+    "ref_image": "IMAGE"
+   },
+   "hidden": []
+  },
+  "H3ContactSheetDecode": {
+   "class": "contact_sheet.H3ContactSheetDecode",
+   "required": [
+    "vae",
+    "samples"
+   ],
+   "required_types": {
+    "vae": "VAE",
+    "samples": "LATENT"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3DrawnPlan": {
+   "class": "timeline.nodes.H3DrawnPlan",
+   "required": [
+    "plan_path"
+   ],
+   "required_types": {
+    "plan_path": "STRING"
+   },
+   "optional": [
+    "plan_json",
+    "ignore_uncompiled_lanes"
+   ],
+   "optional_types": {
+    "plan_json": "STRING",
+    "ignore_uncompiled_lanes": "BOOLEAN"
+   },
+   "hidden": []
+  },
+  "H3EvictTextEncoder": {
+   "class": "vram_lab.H3EvictTextEncoder",
+   "required": [
+    "conditioning",
+    "clip"
+   ],
+   "required_types": {
+    "conditioning": "CONDITIONING",
+    "clip": "CLIP"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3ExactRecover": {
+   "class": "motion.H3ExactRecover",
+   "required": [
+    "images",
+    "hold_map"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "hold_map": "STRING"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3ExpertSchedule": {
+   "class": "motion.H3ExpertSchedule",
+   "required": [
+    "model",
+    "scheduler",
+    "total_steps",
+    "inject",
+    "base_head"
+   ],
+   "required_types": {
+    "model": "MODEL",
+    "scheduler": "COMBO",
+    "total_steps": "INT",
+    "inject": "FLOAT",
+    "base_head": "INT"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3ExtensionPlan": {
+   "class": "h3_extend.H3ExtensionPlan",
+   "required": [
+    "segment_frames",
+    "transition",
+    "handle_frames",
+    "new_frames",
+    "visual_anchor",
+    "audio_anchor",
+    "fps_num",
+    "fps_den",
+    "previous_length"
+   ],
+   "required_types": {
+    "segment_frames": "INT",
+    "transition": "COMBO",
+    "handle_frames": "INT",
+    "new_frames": "INT",
+    "visual_anchor": "COMBO",
+    "audio_anchor": "COMBO",
+    "fps_num": "INT",
+    "fps_den": "INT",
+    "previous_length": "INT"
+   },
+   "optional": [
+    "final_segment"
+   ],
+   "optional_types": {
+    "final_segment": "BOOLEAN"
+   },
+   "hidden": []
+  },
+  "H3FreeCache": {
+   "class": "vram_lab.H3FreeCache",
+   "required": [
+    "samples"
+   ],
+   "required_types": {
+    "samples": "LATENT"
+   },
+   "optional": [
+    "also_gc"
+   ],
+   "optional_types": {
+    "also_gc": "BOOLEAN"
+   },
+   "hidden": []
+  },
+  "H3IndecisionOracle": {
+   "class": "motion.H3IndecisionOracle",
+   "required": [
+    "dump_dir",
+    "length",
+    "width",
+    "height",
+    "step_a",
+    "step_b",
+    "mode",
+    "q",
+    "d_max",
+    "ramp"
+   ],
+   "required_types": {
+    "dump_dir": "STRING",
+    "length": "INT",
+    "width": "INT",
+    "height": "INT",
+    "step_a": "INT",
+    "step_b": "INT",
+    "mode": "COMBO",
+    "q": "FLOAT",
+    "d_max": "INT",
+    "ramp": "BOOLEAN"
+   },
+   "optional": [
+    "samples",
+    "images",
+    "normalization",
+    "blend_w",
+    "detrend_phase",
+    "spatial_reduce",
+    "bridge",
+    "auto_fallback",
+    "alpha",
+    "fps",
+    "s_per_step",
+    "est_steps",
+    "overhead_s"
+   ],
+   "optional_types": {
+    "samples": "LATENT",
+    "images": "IMAGE",
+    "normalization": "COMBO",
+    "blend_w": "FLOAT",
+    "detrend_phase": "BOOLEAN",
+    "spatial_reduce": "COMBO",
+    "bridge": "INT",
+    "auto_fallback": "BOOLEAN",
+    "alpha": "FLOAT",
+    "fps": "INT",
+    "s_per_step": "FLOAT",
+    "est_steps": "INT",
+    "overhead_s": "FLOAT"
+   },
+   "hidden": []
+  },
+  "H3InjectSchedule": {
+   "class": "motion.H3InjectSchedule",
+   "required": [
+    "model",
+    "scheduler",
+    "total_steps",
+    "inject"
+   ],
+   "required_types": {
+    "model": "MODEL",
+    "scheduler": "COMBO",
+    "total_steps": "INT",
+    "inject": "FLOAT"
+   },
+   "optional": [
+    "preset"
+   ],
+   "optional_types": {
+    "preset": "COMBO"
+   },
+   "hidden": []
+  },
+  "H3JerkHeatmap": {
+   "class": "motion.H3JerkHeatmap",
+   "required": [
+    "images",
+    "samples",
+    "alpha",
+    "strip_height"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "samples": "LATENT",
+    "alpha": "FLOAT",
+    "strip_height": "INT"
+   },
+   "optional": [
+    "show_drift"
+   ],
+   "optional_types": {
+    "show_drift": "BOOLEAN"
+   },
+   "hidden": []
+  },
+  "H3JerkOracle": {
+   "class": "motion.H3JerkOracle",
+   "required": [
+    "samples",
+    "length",
+    "q",
+    "d_max",
+    "ramp"
+   ],
+   "required_types": {
+    "samples": "LATENT",
+    "length": "INT",
+    "q": "FLOAT",
+    "d_max": "INT",
+    "ramp": "BOOLEAN"
+   },
+   "optional": [
+    "preset",
+    "bridge",
+    "profile_mode",
+    "abstain_below",
+    "fps",
+    "s_per_step",
+    "est_steps",
+    "overhead_s",
+    "model_profile",
+    "protect_tail"
+   ],
+   "optional_types": {
+    "preset": "COMBO",
+    "bridge": "INT",
+    "profile_mode": "COMBO",
+    "abstain_below": "FLOAT",
+    "fps": "INT",
+    "s_per_step": "FLOAT",
+    "est_steps": "INT",
+    "overhead_s": "FLOAT",
+    "model_profile": "COMBO",
+    "protect_tail": "INT"
+   },
+   "hidden": []
+  },
+  "H3LatentBank": {
+   "class": "motion.H3LatentBank",
+   "required": [
+    "samples",
+    "bank_key",
+    "store_dir",
+    "mode"
+   ],
+   "required_types": {
+    "samples": "LATENT",
+    "bank_key": "STRING",
+    "store_dir": "STRING",
+    "mode": "COMBO"
+   },
+   "optional": [
+    "seed",
+    "fingerprint",
+    "store_dtype"
+   ],
+   "optional_types": {
+    "seed": "INT",
+    "fingerprint": "STRING",
+    "store_dtype": "COMBO"
+   },
+   "hidden": []
+  },
+  "H3LatentUpscale": {
+   "class": "motion.H3LatentUpscale",
+   "required": [
+    "samples",
+    "scale",
+    "mode"
+   ],
+   "required_types": {
+    "samples": "LATENT",
+    "scale": "FLOAT",
+    "mode": "COMBO"
+   },
+   "optional": [
+    "width",
+    "height"
+   ],
+   "optional_types": {
+    "width": "INT",
+    "height": "INT"
+   },
+   "hidden": []
+  },
+  "H3LoadHoldMap": {
+   "class": "derope_any.H3LoadHoldMap",
+   "required": [
+    "path"
+   ],
+   "required_types": {
+    "path": "STRING"
+   },
+   "optional": [
+    "start",
+    "length"
+   ],
+   "optional_types": {
+    "start": "INT",
+    "length": "INT"
+   },
+   "hidden": []
+  },
+  "H3ManualHoldMap": {
+   "class": "motion.H3ManualHoldMap",
+   "required": [
+    "length",
+    "fps",
+    "ranges",
+    "hold",
+    "ramp",
+    "bridge"
+   ],
+   "required_types": {
+    "length": "INT",
+    "fps": "INT",
+    "ranges": "STRING",
+    "hold": "INT",
+    "ramp": "BOOLEAN",
+    "bridge": "INT"
+   },
+   "optional": [
+    "oracle_hold_map",
+    "s_per_step",
+    "est_steps",
+    "overhead_s"
+   ],
+   "optional_types": {
+    "oracle_hold_map": "STRING",
+    "s_per_step": "FLOAT",
+    "est_steps": "INT",
+    "overhead_s": "FLOAT"
+   },
+   "hidden": []
+  },
+  "H3MemoryProbe": {
+   "class": "vram_lab.H3MemoryProbe",
+   "required": [
+    "model",
+    "tag",
+    "ledger",
+    "record_history_forwards",
+    "max_entries",
+    "out_dir"
+   ],
+   "required_types": {
+    "model": "MODEL",
+    "tag": "STRING",
+    "ledger": "BOOLEAN",
+    "record_history_forwards": "INT",
+    "max_entries": "INT",
+    "out_dir": "STRING"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3ModeSwitch": {
+   "class": "motion.H3ModeSwitch",
+   "required": [
+    "mode"
+   ],
+   "required_types": {
+    "mode": "COMBO"
+   },
+   "optional": [
+    "preview",
+    "final"
+   ],
+   "optional_types": {
+    "preview": "*",
+    "final": "*"
+   },
+   "hidden": []
+  },
+  "H3MotionComposite": {
+   "class": "motion.H3MotionComposite",
+   "required": [
+    "regenerated",
+    "baseline",
+    "threshold",
+    "grow",
+    "feather"
+   ],
+   "required_types": {
+    "regenerated": "IMAGE",
+    "baseline": "IMAGE",
+    "threshold": "FLOAT",
+    "grow": "INT",
+    "feather": "INT"
+   },
+   "optional": [
+    "samples",
+    "mask",
+    "invert_mask",
+    "feather_profile",
+    "feather_direction",
+    "mask_is_soft"
+   ],
+   "optional_types": {
+    "samples": "LATENT",
+    "mask": "MASK",
+    "invert_mask": "BOOLEAN",
+    "feather_profile": "COMBO",
+    "feather_direction": "COMBO",
+    "mask_is_soft": "BOOLEAN"
+   },
+   "hidden": []
+  },
+  "H3MotionEditor": {
+   "class": "motion.H3MotionEditor",
+   "required": [
+    "images",
+    "editor_state"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "editor_state": "STRING"
+   },
+   "optional": [
+    "samples",
+    "oracle_hold_map",
+    "fps",
+    "ramp",
+    "bridge",
+    "invert_mask",
+    "outside_blocks",
+    "paint_res",
+    "hold_until_edited"
+   ],
+   "optional_types": {
+    "samples": "LATENT",
+    "oracle_hold_map": "STRING",
+    "fps": "INT",
+    "ramp": "BOOLEAN",
+    "bridge": "INT",
+    "invert_mask": "BOOLEAN",
+    "outside_blocks": "COMBO",
+    "paint_res": "INT",
+    "hold_until_edited": "BOOLEAN"
+   },
+   "hidden": [
+    "unique_id"
+   ]
+  },
+  "H3PlanEstimate": {
+   "class": "timeline.nodes.H3PlanEstimate",
+   "required": [
+    "plan_path"
+   ],
+   "required_types": {
+    "plan_path": "STRING"
+   },
+   "optional": [
+    "plan_json",
+    "ignore_uncompiled_lanes",
+    "port",
+    "recorder_path"
+   ],
+   "optional_types": {
+    "plan_json": "STRING",
+    "ignore_uncompiled_lanes": "BOOLEAN",
+    "port": "INT",
+    "recorder_path": "STRING"
+   },
+   "hidden": []
+  },
+  "H3PlanSettings": {
+   "class": "timeline.nodes.H3PlanSettings",
+   "required": [
+    "plan_path"
+   ],
+   "required_types": {
+    "plan_path": "STRING"
+   },
+   "optional": [
+    "plan_json",
+    "ignore_uncompiled_lanes"
+   ],
+   "optional_types": {
+    "plan_json": "STRING",
+    "ignore_uncompiled_lanes": "BOOLEAN"
+   },
+   "hidden": []
+  },
+  "H3PrecisionProbe": {
+   "class": "vram_lab.H3PrecisionProbe",
+   "required": [
+    "model",
+    "tag",
+    "every",
+    "out_dir"
+   ],
+   "required_types": {
+    "model": "MODEL",
+    "tag": "STRING",
+    "every": "INT",
+    "out_dir": "STRING"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3PrefixFreezeMask": {
+   "class": "h3_extend.H3PrefixFreezeMask",
+   "required": [
+    "plan",
+    "dilated_length"
+   ],
+   "required_types": {
+    "plan": "STRING",
+    "dilated_length": "INT"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3ProbeSchedule": {
+   "class": "motion.H3ProbeSchedule",
+   "required": [
+    "model",
+    "scheduler",
+    "total_steps",
+    "probe_steps"
+   ],
+   "required_types": {
+    "model": "MODEL",
+    "scheduler": "COMBO",
+    "total_steps": "INT",
+    "probe_steps": "INT"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3ProtectPrefix": {
+   "class": "h3_extend.H3ProtectPrefix",
+   "required": [
+    "hold_map",
+    "plan"
+   ],
+   "required_types": {
+    "hold_map": "STRING",
+    "plan": "STRING"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3RecordStart": {
+   "class": "timeline.nodes.H3RecordStart",
+   "required": [
+    "anything",
+    "key"
+   ],
+   "required_types": {
+    "anything": "*",
+    "key": "STRING"
+   },
+   "optional": [
+    "log_path"
+   ],
+   "optional_types": {
+    "log_path": "STRING"
+   },
+   "hidden": []
+  },
+  "H3RecordStop": {
+   "class": "timeline.nodes.H3RecordStop",
+   "required": [
+    "anything",
+    "key",
+    "work_units",
+    "steps"
+   ],
+   "required_types": {
+    "anything": "*",
+    "key": "STRING",
+    "work_units": "INT",
+    "steps": "INT"
+   },
+   "optional": [
+    "pixels",
+    "frames",
+    "model",
+    "path",
+    "log_path"
+   ],
+   "optional_types": {
+    "pixels": "INT",
+    "frames": "INT",
+    "model": "STRING",
+    "path": "STRING",
+    "log_path": "STRING"
+   },
+   "hidden": []
+  },
+  "H3SaveHoldMap": {
+   "class": "derope_any.H3SaveHoldMap",
+   "required": [
+    "hold_map",
+    "filename_prefix"
+   ],
+   "required_types": {
+    "hold_map": "STRING",
+    "filename_prefix": "STRING"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3SeamNormalize": {
+   "class": "h3_extend.H3SeamNormalize",
+   "required": [
+    "source_tail",
+    "generated_prefix",
+    "images",
+    "mode",
+    "max_gain"
+   ],
+   "required_types": {
+    "source_tail": "IMAGE",
+    "generated_prefix": "IMAGE",
+    "images": "IMAGE",
+    "mode": "COMBO",
+    "max_gain": "FLOAT"
+   },
+   "optional": [
+    "source_tail_audio",
+    "generated_prefix_audio",
+    "audio",
+    "audio_mode",
+    "audio_fade_ms"
+   ],
+   "optional_types": {
+    "source_tail_audio": "AUDIO",
+    "generated_prefix_audio": "AUDIO",
+    "audio": "AUDIO",
+    "audio_mode": "COMBO",
+    "audio_fade_ms": "INT"
+   },
+   "hidden": []
+  },
+  "H3SegmentCrop": {
+   "class": "motion.H3SegmentCrop",
+   "required": [
+    "images",
+    "hold_map",
+    "handle_frames"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "hold_map": "STRING",
+    "handle_frames": "INT"
+   },
+   "optional": [
+    "grid_align"
+   ],
+   "optional_types": {
+    "grid_align": "BOOLEAN"
+   },
+   "hidden": []
+  },
+  "H3SegmentSplice": {
+   "class": "motion.H3SegmentSplice",
+   "required": [
+    "baseline",
+    "segment",
+    "splice_map",
+    "feather_frames"
+   ],
+   "required_types": {
+    "baseline": "IMAGE",
+    "segment": "IMAGE",
+    "splice_map": "STRING",
+    "feather_frames": "INT"
+   },
+   "optional": [
+    "baseline_audio",
+    "segment_audio",
+    "fps"
+   ],
+   "optional_types": {
+    "baseline_audio": "AUDIO",
+    "segment_audio": "AUDIO",
+    "fps": "INT"
+   },
+   "hidden": []
+  },
+  "H3StreamedBlocks": {
+   "class": "vram_lab.H3StreamedBlocks",
+   "required": [
+    "model",
+    "q_chunk",
+    "kv_chunk",
+    "mlp_chunk",
+    "min_tokens",
+    "kv_block"
+   ],
+   "required_types": {
+    "model": "MODEL",
+    "q_chunk": "INT",
+    "kv_chunk": "INT",
+    "mlp_chunk": "INT",
+    "min_tokens": "INT",
+    "kv_block": "INT"
+   },
+   "optional": [
+    "final_layer_chunk",
+    "final_layer_gemm",
+    "kv_store",
+    "trim_forward",
+    "self_check"
+   ],
+   "optional_types": {
+    "final_layer_chunk": "INT",
+    "final_layer_gemm": "COMBO",
+    "kv_store": "COMBO",
+    "trim_forward": "BOOLEAN",
+    "self_check": "BOOLEAN"
+   },
+   "hidden": []
+  },
+  "H3TailContext": {
+   "class": "h3_extend.H3TailContext",
+   "required": [
+    "images",
+    "plan"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "plan": "STRING"
+   },
+   "optional": [
+    "audio"
+   ],
+   "optional_types": {
+    "audio": "AUDIO"
+   },
+   "hidden": []
+  },
+  "H3TemporalInsert": {
+   "class": "motion.H3TemporalInsert",
+   "required": [
+    "samples",
+    "hold_map",
+    "init_mode"
+   ],
+   "required_types": {
+    "samples": "LATENT",
+    "hold_map": "STRING",
+    "init_mode": "COMBO"
+   },
+   "optional": [
+    "expand_to_end",
+    "length",
+    "noise_seed"
+   ],
+   "optional_types": {
+    "expand_to_end": "BOOLEAN",
+    "length": "INT",
+    "noise_seed": "INT"
+   },
+   "hidden": []
+  },
+  "H3TimeSmear": {
+   "class": "motion.H3TimeSmear",
+   "required": [
+    "images",
+    "dilation"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "dilation": "INT"
+   },
+   "optional": [
+    "hold_map",
+    "expand_to_end",
+    "fps",
+    "s_per_step",
+    "est_steps",
+    "overhead_s"
+   ],
+   "optional_types": {
+    "hold_map": "STRING",
+    "expand_to_end": "BOOLEAN",
+    "fps": "INT",
+    "s_per_step": "FLOAT",
+    "est_steps": "INT",
+    "overhead_s": "FLOAT"
+   },
+   "hidden": []
+  },
+  "H3TimelineAnalyze": {
+   "class": "timeline.nodes.H3TimelineAnalyze",
+   "required": [
+    "clip_path",
+    "frames",
+    "plan_path",
+    "auto"
+   ],
+   "required_types": {
+    "clip_path": "STRING",
+    "frames": "INT",
+    "plan_path": "STRING",
+    "auto": "BOOLEAN"
+   },
+   "optional": [
+    "jerk_profile",
+    "indecision_profile",
+    "ceiling",
+    "threshold",
+    "prompt",
+    "width",
+    "height",
+    "regen_strength",
+    "steps",
+    "seed",
+    "output_prefix",
+    "graph_path"
+   ],
+   "optional_types": {
+    "jerk_profile": "STRING",
+    "indecision_profile": "STRING",
+    "ceiling": "FLOAT",
+    "threshold": "FLOAT",
+    "prompt": "STRING",
+    "width": "INT",
+    "height": "INT",
+    "regen_strength": "FLOAT",
+    "steps": "INT",
+    "seed": "INT",
+    "output_prefix": "STRING",
+    "graph_path": "STRING"
+   },
+   "hidden": []
+  },
+  "H3TimelineRender": {
+   "class": "timeline.nodes.H3TimelineRender",
+   "required": [
+    "plan_path"
+   ],
+   "required_types": {
+    "plan_path": "STRING"
+   },
+   "optional": [
+    "graph_path",
+    "port",
+    "recorder_path"
+   ],
+   "optional_types": {
+    "graph_path": "STRING",
+    "port": "INT",
+    "recorder_path": "STRING"
+   },
+   "hidden": []
+  },
+  "H3TrajectoryBank": {
+   "class": "motion.H3TrajectoryBank",
+   "required": [
+    "sampler",
+    "dump_dir",
+    "every_n"
+   ],
+   "required_types": {
+    "sampler": "SAMPLER",
+    "dump_dir": "STRING",
+    "every_n": "INT"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3TrajectoryLoad": {
+   "class": "motion.H3TrajectoryLoad",
+   "required": [
+    "dump_dir",
+    "step"
+   ],
+   "required_types": {
+    "dump_dir": "STRING",
+    "step": "INT"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3Trim": {
+   "class": "h3_extend.H3Trim",
+   "required": [
+    "images",
+    "plan",
+    "global_start"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "plan": "STRING",
+    "global_start": "INT"
+   },
+   "optional": [
+    "audio"
+   ],
+   "optional_types": {
+    "audio": "AUDIO"
+   },
+   "hidden": []
+  },
+  "H3TrueClock": {
+   "class": "motion.H3TrueClock",
+   "required": [
+    "sampler",
+    "hold_map"
+   ],
+   "required_types": {
+    "sampler": "SAMPLER",
+    "hold_map": "STRING"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3V2VInit": {
+   "class": "motion.H3V2VInit",
+   "required": [
+    "samples"
+   ],
+   "required_types": {
+    "samples": "LATENT"
+   },
+   "optional": [
+    "length",
+    "oracle_samples",
+    "freeze_threshold",
+    "freeze_grow",
+    "mask",
+    "mask_feather",
+    "invert_mask",
+    "time_varying",
+    "audio_latent",
+    "audio_mode",
+    "audio_strength"
+   ],
+   "optional_types": {
+    "length": "INT",
+    "oracle_samples": "LATENT",
+    "freeze_threshold": "FLOAT",
+    "freeze_grow": "INT",
+    "mask": "MASK",
+    "mask_feather": "INT",
+    "invert_mask": "BOOLEAN",
+    "time_varying": "BOOLEAN",
+    "audio_latent": "LATENT",
+    "audio_mode": "COMBO",
+    "audio_strength": "FLOAT"
+   },
+   "hidden": []
+  },
+  "H3VideoFit": {
+   "class": "motion.H3VideoFit",
+   "required": [
+    "images",
+    "mode"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "mode": "COMBO"
+   },
+   "optional": [
+    "max_frames",
+    "fps",
+    "audio"
+   ],
+   "optional_types": {
+    "max_frames": "INT",
+    "fps": "FLOAT",
+    "audio": "AUDIO"
+   },
+   "hidden": []
+  },
+  "H3WindowCollect": {
+   "class": "motion.H3WindowCollect",
+   "required": [
+    "baseline",
+    "segment",
+    "splice_map",
+    "window_count",
+    "run_name",
+    "feather_frames"
+   ],
+   "required_types": {
+    "baseline": "IMAGE",
+    "segment": "IMAGE",
+    "splice_map": "STRING",
+    "window_count": "INT",
+    "run_name": "STRING",
+    "feather_frames": "INT"
+   },
+   "optional": [
+    "store_dir",
+    "baseline_audio",
+    "segment_audio",
+    "fps",
+    "write",
+    "store_dtype"
+   ],
+   "optional_types": {
+    "store_dir": "STRING",
+    "baseline_audio": "AUDIO",
+    "segment_audio": "AUDIO",
+    "fps": "INT",
+    "write": "BOOLEAN",
+    "store_dtype": "COMBO"
+   },
+   "hidden": []
+  },
+  "H3WindowCrop": {
+   "class": "window_expand.H3WindowCrop",
+   "required": [
+    "images",
+    "window_spec"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "window_spec": "STRING"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "H3WindowExpand": {
+   "class": "window_expand.H3WindowExpand",
+   "required": [
+    "images",
+    "hold_map",
+    "vae",
+    "noise",
+    "guider",
+    "sampler",
+    "sigmas",
+    "max_dilated_frames",
+    "handle_frames",
+    "feather_frames"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "hold_map": "STRING",
+    "vae": "VAE",
+    "noise": "NOISE",
+    "guider": "GUIDER",
+    "sampler": "SAMPLER",
+    "sigmas": "SIGMAS",
+    "max_dilated_frames": "INT",
+    "handle_frames": "INT",
+    "feather_frames": "INT"
+   },
+   "optional": [
+    "audio_vae",
+    "baseline_audio",
+    "fps",
+    "reference_mix",
+    "hot_cut",
+    "snap_search",
+    "max_windows",
+    "grid_growth",
+    "plan_only",
+    "s_per_step",
+    "est_steps"
+   ],
+   "optional_types": {
+    "audio_vae": "VAE",
+    "baseline_audio": "AUDIO",
+    "fps": "INT",
+    "reference_mix": "FLOAT",
+    "hot_cut": "COMBO",
+    "snap_search": "INT",
+    "max_windows": "INT",
+    "grid_growth": "BOOLEAN",
+    "plan_only": "BOOLEAN",
+    "s_per_step": "FLOAT",
+    "est_steps": "INT"
+   },
+   "hidden": []
+  },
+  "H3WindowLoop": {
+   "class": "window_loop.H3WindowLoop",
+   "required": [
+    "model",
+    "positive",
+    "vae",
+    "audio_vae",
+    "sampler",
+    "sigmas",
+    "noise_seed",
+    "images",
+    "hold_map",
+    "budget_dilated"
+   ],
+   "required_types": {
+    "model": "MODEL",
+    "positive": "CONDITIONING",
+    "vae": "VAE",
+    "audio_vae": "VAE",
+    "sampler": "SAMPLER",
+    "sigmas": "SIGMAS",
+    "noise_seed": "INT",
+    "images": "IMAGE",
+    "hold_map": "STRING",
+    "budget_dilated": "INT"
+   },
+   "optional": [
+    "guider",
+    "baseline_audio",
+    "handle_frames",
+    "pin_frames",
+    "feather_frames",
+    "fps",
+    "seed_stride",
+    "draft_width",
+    "draft_height",
+    "upscale_method",
+    "on_interrupt",
+    "plan_only",
+    "audio_rms_search_ms",
+    "s_per_step"
+   ],
+   "optional_types": {
+    "guider": "GUIDER",
+    "baseline_audio": "AUDIO",
+    "handle_frames": "INT",
+    "pin_frames": "INT",
+    "feather_frames": "INT",
+    "fps": "INT",
+    "seed_stride": "INT",
+    "draft_width": "INT",
+    "draft_height": "INT",
+    "upscale_method": "COMBO",
+    "on_interrupt": "COMBO",
+    "plan_only": "BOOLEAN",
+    "audio_rms_search_ms": "FLOAT",
+    "s_per_step": "FLOAT"
+   },
+   "hidden": []
+  },
+  "H3WindowPass": {
+   "class": "window_expand.H3WindowPass",
+   "required": [
+    "images"
+   ],
+   "required_types": {
+    "images": "IMAGE"
+   },
+   "optional": [
+    "audio"
+   ],
+   "optional_types": {
+    "audio": "AUDIO"
+   },
+   "hidden": []
+  },
+  "H3WindowPlan": {
+   "class": "motion.H3WindowPlan",
+   "required": [
+    "images",
+    "hold_map",
+    "max_dilated_frames",
+    "window",
+    "handle_frames"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "hold_map": "STRING",
+    "max_dilated_frames": "INT",
+    "window": "INT",
+    "handle_frames": "INT"
+   },
+   "optional": [
+    "coverage",
+    "snap_search",
+    "grid_align",
+    "fps",
+    "s_per_step",
+    "est_steps",
+    "overhead_s",
+    "edge_protect"
+   ],
+   "optional_types": {
+    "coverage": "COMBO",
+    "snap_search": "INT",
+    "grid_align": "BOOLEAN",
+    "fps": "INT",
+    "s_per_step": "FLOAT",
+    "est_steps": "INT",
+    "overhead_s": "FLOAT",
+    "edge_protect": "INT"
+   },
+   "hidden": []
+  },
+  "H3WindowSeam": {
+   "class": "window_expand.H3WindowSeam",
+   "required": [
+    "segment",
+    "splice_map",
+    "trim_head",
+    "fade_in",
+    "fade_out"
+   ],
+   "required_types": {
+    "segment": "IMAGE",
+    "splice_map": "STRING",
+    "trim_head": "INT",
+    "fade_in": "INT",
+    "fade_out": "INT"
+   },
+   "optional": [
+    "segment_audio",
+    "fps"
+   ],
+   "optional_types": {
+    "segment_audio": "AUDIO",
+    "fps": "INT"
+   },
+   "hidden": []
+  },
+  "MAIConceptCaptureArm": {
+   "class": "concept_lab.nodes.MAIConceptCaptureArm",
+   "required": [
+    "model",
+    "arm",
+    "variant_name",
+    "seed",
+    "replicate",
+    "blocks",
+    "step_quantiles",
+    "steps",
+    "segments",
+    "store",
+    "sketch_dim",
+    "sketch_seed",
+    "stack_label"
+   ],
+   "required_types": {
+    "model": "MODEL",
+    "arm": "COMBO",
+    "variant_name": "STRING",
+    "seed": "INT",
+    "replicate": "INT",
+    "blocks": "STRING",
+    "step_quantiles": "STRING",
+    "steps": "STRING",
+    "segments": "STRING",
+    "store": "STRING",
+    "sketch_dim": "INT",
+    "sketch_seed": "INT",
+    "stack_label": "STRING"
+   },
+   "optional": [
+    "sampler_label",
+    "corpus_row_id",
+    "enabled",
+    "cond_only",
+    "index_root",
+    "tensor_root",
+    "notes"
+   ],
+   "optional_types": {
+    "sampler_label": "STRING",
+    "corpus_row_id": "STRING",
+    "enabled": "BOOLEAN",
+    "cond_only": "BOOLEAN",
+    "index_root": "STRING",
+    "tensor_root": "STRING",
+    "notes": "STRING"
+   },
+   "hidden": []
+  },
+  "MAIConceptCaptureFlush": {
+   "class": "concept_lab.nodes.MAIConceptCaptureFlush",
+   "required": [
+    "capture",
+    "after"
+   ],
+   "required_types": {
+    "capture": "CONCEPT_CAPTURE",
+    "after": "*"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "MAIConceptInjectDelta": {
+   "class": "concept_lab.nodes.MAIConceptInjectDelta",
+   "required": [
+    "model",
+    "pack_path",
+    "blocks",
+    "alpha",
+    "step_mode",
+    "mode",
+    "control",
+    "control_seed"
+   ],
+   "required_types": {
+    "model": "MODEL",
+    "pack_path": "STRING",
+    "blocks": "STRING",
+    "alpha": "FLOAT",
+    "step_mode": "COMBO",
+    "mode": "COMBO",
+    "control": "COMBO",
+    "control_seed": "INT"
+   },
+   "optional": [
+    "cond_only",
+    "enabled"
+   ],
+   "optional_types": {
+    "cond_only": "BOOLEAN",
+    "enabled": "BOOLEAN"
+   },
+   "hidden": []
+  },
+  "MAILoadVideoPath": {
+   "class": "video_out.MAILoadVideoPath",
+   "required": [
+    "path"
+   ],
+   "required_types": {
+    "path": "STRING"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "MAISeedHunter": {
+   "class": "video_compare.MAISeedHunter",
+   "required": [
+    "winner",
+    "preview_crf"
+   ],
+   "required_types": {
+    "winner": "INT",
+    "preview_crf": "INT"
+   },
+   "optional": [
+    "video_1",
+    "video_2",
+    "video_3",
+    "video_4",
+    "video_5",
+    "video_6",
+    "label_1",
+    "label_2",
+    "label_3",
+    "label_4",
+    "label_5",
+    "label_6",
+    "seed_1",
+    "seed_2",
+    "seed_3",
+    "seed_4",
+    "seed_5",
+    "seed_6"
+   ],
+   "optional_types": {
+    "video_1": "VIDEO",
+    "video_2": "VIDEO",
+    "video_3": "VIDEO",
+    "video_4": "VIDEO",
+    "video_5": "VIDEO",
+    "video_6": "VIDEO",
+    "label_1": "STRING",
+    "label_2": "STRING",
+    "label_3": "STRING",
+    "label_4": "STRING",
+    "label_5": "STRING",
+    "label_6": "STRING",
+    "seed_1": "INT",
+    "seed_2": "INT",
+    "seed_3": "INT",
+    "seed_4": "INT",
+    "seed_5": "INT",
+    "seed_6": "INT"
+   },
+   "hidden": [
+    "unique_id"
+   ]
+  },
+  "MAISelectEveryNth": {
+   "class": "video_out.MAISelectEveryNth",
+   "required": [
+    "images",
+    "every",
+    "offset"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "every": "INT",
+    "offset": "INT"
+   },
+   "optional": [],
+   "optional_types": {},
+   "hidden": []
+  },
+  "MAIVideoCompare": {
+   "class": "video_compare.MAIVideoCompare",
+   "required": [
+    "winner",
+    "preview_crf"
+   ],
+   "required_types": {
+    "winner": "INT",
+    "preview_crf": "INT"
+   },
+   "optional": [
+    "video_1",
+    "video_2",
+    "video_3",
+    "video_4",
+    "video_5",
+    "video_6",
+    "label_1",
+    "label_2",
+    "label_3",
+    "label_4",
+    "label_5",
+    "label_6"
+   ],
+   "optional_types": {
+    "video_1": "VIDEO",
+    "video_2": "VIDEO",
+    "video_3": "VIDEO",
+    "video_4": "VIDEO",
+    "video_5": "VIDEO",
+    "video_6": "VIDEO",
+    "label_1": "STRING",
+    "label_2": "STRING",
+    "label_3": "STRING",
+    "label_4": "STRING",
+    "label_5": "STRING",
+    "label_6": "STRING"
+   },
+   "hidden": [
+    "unique_id"
+   ]
+  },
+  "MAIVideoOut": {
+   "class": "video_out.MAIVideoOut",
+   "required": [
+    "images",
+    "fps",
+    "filename_prefix",
+    "codec",
+    "crf"
+   ],
+   "required_types": {
+    "images": "IMAGE",
+    "fps": "FLOAT",
+    "filename_prefix": "STRING",
+    "codec": "COMBO",
+    "crf": "INT"
+   },
+   "optional": [
+    "audio",
+    "hold_map",
+    "notes",
+    "write_meta",
+    "draft_preview",
+    "latent",
+    "draft_vae_name"
+   ],
+   "optional_types": {
+    "audio": "AUDIO",
+    "hold_map": "STRING",
+    "notes": "STRING",
+    "write_meta": "BOOLEAN",
+    "draft_preview": "BOOLEAN",
+    "latent": "LATENT",
+    "draft_vae_name": "STRING"
+   },
+   "hidden": [
+    "prompt",
+    "extra_pnginfo"
+   ]
+  }
+ }
+}
