@@ -244,3 +244,25 @@ by `tools/compare_deck/` do not share these problems. Planned fix, next
 iteration: the node bakes each pair into ONE combined preview stream and
 every view mode becomes a crop of it - one decoder, one clock, sync by
 construction.
+
+## Mid-denoise insert
+
+`motion.py`, node `H3 MidInsert (alpha)`.
+
+Inserts time-dilation tokens into a still-noisy latent at a handoff sigma
+instead of between passes, with a measured variance top-up. Kept for
+research honesty: at its one tested operating point (handoff sigma 0.53,
+four dense steps) it breaks clip continuity in playback, and it is
+documented as that negative rather than removed. Do not reach for it in
+production; the two-pass insertion path is the shipped construction.
+
+## VRAM lab instruments
+
+`vram_lab.py`, nodes `H3 FakeQuant (alpha)` and `H3 Sol Attention (alpha)`.
+
+Measurement instruments from the quantization review work: FakeQuant
+fake-quantizes a chosen region of the model's activations so a precision
+regime can be auditioned without real kernels; Sol Attention switches the
+attention path for the same kind of audition. Instruments, not
+accelerators: they exist to make honest comparison pages, and their
+numbers only mean something next to a reference arm.
