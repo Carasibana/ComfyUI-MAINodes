@@ -117,6 +117,10 @@ class CompareWidget {
     this.buildExportDialog(root);
     root.tabIndex = 0;
     root.addEventListener("keydown", (e) => this.key(e));
+    // interacting with the widget must never start a canvas gesture (node
+    // drag/resize) - that is what collapsed the width mid-wipe-drag
+    root.addEventListener("pointerdown", (e) => e.stopPropagation());
+    root.style.minWidth = "520px";
     const w = this.node.addDOMWidget("mai_compare_ui", "div", root, { serialize: false });
     if (w) {
       // no computeSize: a DOM widget without it is FLEXIBLE - the frontend's
@@ -171,6 +175,7 @@ class CompareWidget {
       const v = document.createElement("video");
       v.src = viewURL(it); v.preload = "auto"; v.loop = true; v.muted = true; v.playsInline = true;
       Object.assign(v.style, { width: "100%", height: "100%", objectFit: "contain", display: "block", background: "#000" });
+      v.preload = "auto";
       this.vids.push({ item: it, video: v });
     }
     this.audio = this.vids.findIndex((x) => x.item.index === this.winner);
@@ -516,12 +521,15 @@ class CompareWidget {
     const t = lead.currentTime || 0;
     for (const x of this.vids) { try { x.video.currentTime = t; } catch (e) {} }
     const ready = (v) => new Promise((res) => {
-      if (v.readyState >= 3) return res();
-      const f = () => { v.removeEventListener("canplay", f); res(); };
-      v.addEventListener("canplay", f); setTimeout(res, 800);
+      if (whole(v) || v.readyState >= 4) return res();
+      const f = () => { v.removeEventListener("canplaythrough", f); res(); };
+      v.addEventListener("canplaythrough", f); setTimeout(res, 4000);
     });
     Promise.all(this.vids.map((x) => ready(x.video))).then(() => {
       if (!this.playing) return;
+      // re-seek after the wait (buffering can move currentTime), then start
+      // every source in the same tick
+      for (const x of this.vids) { try { x.video.currentTime = t; } catch (e) {} }
       for (const x of this.vids) x.video.play().catch(() => { x.video.muted = true; x.video.play().catch(() => {}); });
     });
   }
