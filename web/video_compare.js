@@ -118,7 +118,11 @@ class CompareWidget {
     root.tabIndex = 0;
     root.addEventListener("keydown", (e) => this.key(e));
     const w = this.node.addDOMWidget("mai_compare_ui", "div", root, { serialize: false });
-    if (w) w.computeSize = (width) => [width, 470];      // minimum; the node's height gives the rest
+    if (w) w.computeSize = (width) => {
+      // fill the node below the widget's own top, never under 470
+      const h = (this.node.size && this.node.size[1]) || 0;
+      return [width, Math.max(470, h - (w.last_y || 60) - 12)];
+    };
     const sz = this.node.size; this.node.setSize([Math.max(sz[0], 760), Math.max(sz[1], 640)]);
     this.root = root;
     this.setMode("side");
@@ -488,7 +492,7 @@ class CompareWidget {
     this.playBtn.textContent = on ? "Pause" : "Play";
     if (!on) { for (const x of this.vids) x.video.pause(); return; }
     if (!this.vids.length) return;
-    if (this.started) { for (const x of this.vids) x.video.play().catch(() => {}); return; }
+    if (this.started) { this.alignPlay(); return; }
     this.started = true; this.playBtn.textContent = "Loading";
     const t0 = Date.now();
     const wait = setInterval(() => {
@@ -496,10 +500,27 @@ class CompareWidget {
       if (this.vids.every((x) => whole(x.video)) || Date.now() - t0 > 6000) {
         clearInterval(wait); this.playBtn.textContent = "Pause";
         for (const x of this.vids) { try { x.video.currentTime = 0; } catch (e) {} }
-        for (const x of this.vids) x.video.play().catch(() => { x.video.muted = true; x.video.play().catch(() => {}); });
+        this.alignPlay();
         this.tick();
       }
     }, 100);
+  }
+  alignPlay() {
+    // seek every source to the lead's clock, wait until all can play, then
+    // start them in the same tick - the stagger fix
+    const lead = this.vids[this.pair[0]]?.video || this.vids[0]?.video;
+    if (!lead) return;
+    const t = lead.currentTime || 0;
+    for (const x of this.vids) { try { x.video.currentTime = t; } catch (e) {} }
+    const ready = (v) => new Promise((res) => {
+      if (v.readyState >= 3) return res();
+      const f = () => { v.removeEventListener("canplay", f); res(); };
+      v.addEventListener("canplay", f); setTimeout(res, 800);
+    });
+    Promise.all(this.vids.map((x) => ready(x.video))).then(() => {
+      if (!this.playing) return;
+      for (const x of this.vids) x.video.play().catch(() => { x.video.muted = true; x.video.play().catch(() => {}); });
+    });
   }
   tick() {
     if (!this.playing) return;
@@ -507,10 +528,16 @@ class CompareWidget {
     if (v && v.duration) {
       this.scrub.value = Math.round(v.currentTime / v.duration * 1000);
       this.fnum.textContent = "frame " + Math.round(v.currentTime * this.fps());
-      // once per loop, pull every other same-length source back onto the lead's clock
-      if (v.currentTime < (this.lastSync || 0) - 0.5)
-        for (const x of this.vids) if (x.video !== v && Math.abs(x.video.duration - v.duration) < 0.08 && whole(x.video)
-          && Math.abs(x.video.currentTime - v.currentTime) > 0.1) x.video.currentTime = v.currentTime;
+      // continuous drift control: big gaps seek, small gaps glide via
+      // playbackRate, in-sync runs at 1 (the deck player's syncPair rule)
+      for (const x of this.vids) {
+        const sv = x.video;
+        if (sv === v || sv.readyState < 3 || Math.abs(sv.duration - v.duration) > 0.08) continue;
+        const d = v.currentTime - sv.currentTime, ad = Math.abs(d);
+        if (ad > 0.5) { sv.currentTime = v.currentTime; sv.playbackRate = 1; }
+        else if (ad > 0.05) sv.playbackRate = Math.max(0.9, Math.min(1.1, 1 + d * 0.5));
+        else if (sv.playbackRate !== 1) sv.playbackRate = 1;
+      }
       this.lastSync = v.currentTime;
     }
     requestAnimationFrame(() => this.tick());
