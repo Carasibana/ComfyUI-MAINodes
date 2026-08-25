@@ -45,6 +45,7 @@ same-seed difference clip against the stock block.
 import logging
 import math
 import os
+import sys
 import time
 
 import torch
@@ -65,6 +66,40 @@ except Exception:  # noqa: BLE001
     _SAGE_OK = False
 
 log = logging.getLogger("MAINodes.vram_lab")
+
+# A6: SageAttention3's fp4 kernels (kvfp4s). Built out-of-tree 2026-08-19 (that
+# build is not installed into any ComfyUI venv), so: try a plain import first, and
+# only if that fails add the out-of-tree build directory to sys.path and retry.
+# Lazy -- nothing here runs unless kvfp4s is selected.
+_SAGE3_DIR = "/mnt/work/ai/venvs/sage3-test/SageAttention/sageattention3_blackwell"
+_SAGE3 = None            # None = not tried yet, False = unavailable, else sageattn3.api
+
+
+def _sage3_api():
+    """The sageattn3.api module, or None. Import is attempted once per process."""
+    global _SAGE3
+    if _SAGE3 is not None:
+        return _SAGE3 or None
+    try:
+        import fp4attn_cuda  # noqa: F401
+    except ImportError:
+        if not os.path.isdir(_SAGE3_DIR):
+            _SAGE3 = False
+            return None
+        if _SAGE3_DIR not in sys.path:
+            sys.path.insert(0, _SAGE3_DIR)
+        try:
+            import fp4attn_cuda  # noqa: F401
+        except Exception:  # noqa: BLE001
+            _SAGE3 = False
+            return None
+    try:
+        from sageattn3 import api as _sage3_api_mod
+    except Exception:  # noqa: BLE001
+        _SAGE3 = False
+        return None
+    _SAGE3 = _sage3_api_mod
+    return _sage3_api_mod
 
 
 # --------------------------------------------------------------------------- helpers
@@ -359,6 +394,458 @@ def _sage_attention_q(qc, st, out_dtype):
     return acc.to(out_dtype)                                    # V is not rotated: no un-rotation
 
 
+# --------------------------------------------------------------------------- kvfp4s: SageAttention3 fp4 K/V store (A6, approximation tier)
+
+_KVFP4_LOGGED = False
+
+
+class _Sage3FP4KV:
+    """kvfp4s: K/V kept as NVFP4 in SageAttention3's kernel layouts -- E2M1 packed
+    two per byte plus one e4m3 scale per 16 elements = 0.5625 byte/elem, i.e.
+    0.28x bf16 (1.63 GiB vs 5.79 at 216k tokens, measured) -- and attended on
+    Blackwell fp4 tensor cores straight from the store. Q and K are Hadamard-
+    rotated first (scores invariant; measured 2026-08-19 to cut rel-rms from
+    0.394 to 0.293 on the outlier proxy, no change on plain gaussian). V is not
+    rotated, so the output needs no un-rotation.
+
+    Design notes (reports/overnight_2026-08-20/sage3.md s.4/s.6):
+      - ``per_block_mean`` MUST be False: at H3 lengths the True form's delta_s is
+        [B,H,ceil(L/128),KL] fp32 ~= 82 TB. With per_block_mean False, dropping
+        the Q-centering and delta_s entirely is not worse than computing them
+        (0.27104 vs 0.27167 rel-rms), so the store keeps ONLY the fp4 tensors:
+        no bf16 K, no delta_s, un-centred Q, and a zeros delta_s allocated once.
+      - ``preprocess_qkv`` is never used: it mutates the caller's k in place and
+        recomputes the K mean every call. The per-head K mean is computed once
+        over the full K and frozen (subtracting a constant from every key is
+        softmax-invariant per query row, so it needs no correction term).
+      - The kernel's softmax_scale is derived from the PACKED last dim
+        ((D/2)*2)**-0.5; correct at D=128, a trap if anything reshapes.
+      - The LSE the kernel returns is uninitialised memory (the epilogue store is
+        commented out upstream), so a K-blocked online-softmax combine is
+        impossible -- the store is one contiguous span and Q chunking alone
+        carries the memory win. That is why phase 1 buffers K/V in bf16 and
+        quantises once at finalize(): during that finalize the block holds both
+        (bf16 + fp4) before the bf16 is dropped.
+
+    NOT bit-equal to stock: approximation tier, one rung below kvi8s (measured
+    at 217k tokens: rel-rms 0.293 rotated vs kvi8s-family Sage 2.2's 0.055 on the
+    outlier proxy), ~2.4x faster attention than the exact path. Judged by eyes."""
+
+    def __init__(self, heads, S, hd, device, dtype=torch.bfloat16, rotate=True,
+                 keep_exact=False):
+        api = _sage3_api()
+        if api is None:
+            raise RuntimeError("kvfp4s needs SageAttention3's fp4 extension (fp4attn_cuda) importable")
+        self.api = api
+        self.heads, self.S, self.hd, self.device = heads, S, hd, device
+        self.R = _hadamard(hd, device, torch.bfloat16) if rotate else None
+        pad = (128 - S % 128) % 128
+        self.SP = S + pad
+        self.kbuf = torch.empty((1, heads, self.SP, hd), dtype=torch.bfloat16, device=device)
+        self.vbuf = torch.empty((1, heads, self.SP, hd), dtype=torch.bfloat16, device=device)
+        if pad:                                   # padded keys are masked by KL; keep them finite
+            self.kbuf[:, :, S:].zero_()
+            self.vbuf[:, :, S:].zero_()
+        self.k_fp4 = self.k_sf = self.v_fp4 = self.v_sf = self.ds = None
+        # exact_av: keep a bf16 K/V so text+audio query rows can take an exact
+        # path (reports/sol_sa3/18_fp4_audio_diagnosis.md). Costs one bf16 K/V
+        # per block in flight (~0.8 GiB at 29k tokens, 5.8 at 216k).
+        self.keep_exact = bool(keep_exact)
+        self.k_bf = self.v_bf = None
+        self.t0 = time.time()
+
+    def store(self, a, b, k, v):      # k, v [1, heads, b-a, hd] bf16, one phase-1 chunk
+        k = k.to(torch.bfloat16)
+        self.kbuf[:, :, a:b] = (k @ self.R) if self.R is not None else k
+        self.vbuf[:, :, a:b] = v.to(torch.bfloat16)
+
+    def finalize(self):
+        """Quantise the whole span once: K centred on its frozen per-head mean and
+        permuted, V transposed. The bf16 buffers are dropped here."""
+        global _KVFP4_LOGGED
+        kmean = self.kbuf[:, :, :self.S].mean(dim=-2, keepdim=True)
+        self.kbuf[:, :, :self.S] -= kmean
+        if self.keep_exact:
+            # centred + rotated is an EXACT reference: rotation preserves scores
+            # (R orthogonal) and softmax is invariant to a constant per-key shift.
+            self.k_bf = self.kbuf[:, :, :self.S].clone()
+            self.v_bf = self.vbuf[:, :, :self.S].clone()
+        self.k_fp4, self.k_sf = self.api.scale_and_quant_fp4_permute(self.kbuf)
+        self.v_fp4, self.v_sf = self.api.scale_and_quant_fp4_transpose(self.vbuf)
+        self.kbuf = self.vbuf = None
+        del kmean
+        self.ds = torch.zeros((1, self.heads, 1, self.v_fp4.size(-1) * 2),
+                              dtype=torch.float32, device=self.device)
+        if not _KVFP4_LOGGED:                     # once per process: the engagement check
+            _KVFP4_LOGGED = True
+            torch.cuda.synchronize(self.device)
+            log.info("H3StreamedBlocks kvfp4s: store built, %d tokens, %.3f GiB, %.0f ms, rotated %s",
+                     self.S, self.bytes() / 2 ** 30, (time.time() - self.t0) * 1e3,
+                     "yes" if self.R is not None else "no")
+
+    def bytes(self):
+        if self.k_fp4 is None:
+            return 0
+        n = (self.k_fp4.numel() + self.k_sf.numel() + self.v_fp4.numel() + self.v_sf.numel()
+             + self.ds.numel() * 4)
+        if self.k_bf is not None:
+            n += (self.k_bf.numel() + self.v_bf.numel()) * 2
+        return n
+
+
+def _sage3_attention_q(qc, st, out_dtype):
+    """qc [1,H,c,hd] bf16 against a _Sage3FP4KV store -> [1,H,c,hd] out_dtype."""
+    QL = qc.shape[2]
+    q = qc.to(torch.bfloat16)
+    if st.R is not None:
+        q = q @ st.R
+    pad = (128 - QL % 128) % 128
+    if pad:
+        q = torch.nn.functional.pad(q, (0, 0, 0, pad))
+    ql = st.api.scale_and_quant_fp4(q.contiguous())               # no Q centering (see class doc)
+    del q
+    o = st.api.blockscaled_fp4_attn(ql, (st.k_fp4, st.k_sf), (st.v_fp4, st.v_sf),
+                                    st.ds, st.S, False, False, True)
+    del ql
+    return o[0][:, :, :QL, :].to(out_dtype)                        # V is not rotated: no un-rotation
+
+
+_EXACT_AV_LOGGED = False
+
+
+def _exact_av_rows(o, qc, st, segments, c0, c1, out_dtype):
+    """kvfp4s audio fix: re-run the TEXT and AUDIO query rows on the exact bf16
+    K/V, leaving video rows on the fp4 store.
+
+    Why: audio is 300 of 28,931 packed tokens, so a ~4% attention error that
+    video's redundancy hides as slight ghosting lands audibly on a soundtrack
+    carried by 1% of the sequence. Measured in
+    reports/sol_sa3/18_fp4_audio_diagnosis.md: audio is not quantised WORSE
+    than video (its per-token error is the lowest of the three segments), it is
+    merely far more sensitive, so the fix is routing, not a better quantiser.
+    mod_segments rows carry the modality in row % 3 (0 video, 1 text, 2 audio).
+    """
+    global _EXACT_AV_LOGGED
+    n = 0
+    for sa, sb, row in segments:
+        if row % 3 == 0:                       # video rides the fp4 store
+            continue
+        lo, hi = max(sa, c0), min(sb, c1)
+        if lo >= hi:
+            continue
+        qe = qc[:, :, lo - c0:hi - c0].to(torch.bfloat16)
+        if st.R is not None:
+            qe = qe @ st.R
+        o[:, :, lo - c0:hi - c0] = torch.nn.functional.scaled_dot_product_attention(
+            qe, st.k_bf, st.v_bf).to(out_dtype)
+        n += hi - lo
+    if n and not _EXACT_AV_LOGGED:
+        _EXACT_AV_LOGGED = True
+        log.info("H3StreamedBlocks kvfp4s: exact A/V rows ON (%d text+audio rows "
+                 "in the first chunk take the bf16 path)", n)
+    return o
+
+
+# --------------------------------------------------------------------------- Sol-Attn (comfy-kitchen PR #117 CUDA kernel, out-of-tree build)
+
+# PR #117 is unmerged, so its comfy_kitchen tree cannot be imported alongside the
+# production one (same package name). What CAN be loaded is its compiled CUDA
+# extension on its own -- both trees are built against the same torch nightly, so
+# the ABI matches. This is the same shape as the SA3 fp4 loader above.
+_SOL_DIR = "/mnt/work/ai/venvs/sol-lab/comfy-kitchen-sol-lab/comfy_kitchen/backends/cuda"
+_SOL = None
+
+
+def _sol_ext():
+    """The PR #117 CUDA extension, or None. Loaded once per process."""
+    global _SOL
+    if _SOL is not None:
+        return _SOL or None
+    so = os.path.join(_SOL_DIR, "_C.abi3.so")
+    if not os.path.exists(so):
+        _SOL = False
+        return None
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_C", so)
+        m = importlib.util.module_from_spec(spec)
+        sys.modules.setdefault("_C", m)
+        spec.loader.exec_module(m)
+        if not hasattr(m, "sol_attn"):
+            _SOL = False
+            return None
+        _SOL = m
+    except Exception as e:  # noqa: BLE001
+        log.warning("H3SolAttention: could not load the PR #117 extension (%s)", e)
+        _SOL = False
+        return None
+    return _SOL
+
+
+_SOL_WS = {}
+_SOL_LOGGED = False
+
+
+def _sol_attention(q, k, v, heads, mask=None, skip_reshape=False,
+                   transformer_options=None, **kw):
+    """optimized_attention-compatible shim backed by Sol's CUDA kernel.
+
+    H3 hands us [1, heads, S, D] (skip_reshape). Sol wants [B, T, H, D] bf16 and
+    is self-attention only (q_len == kv_len), which is why this replaces the whole
+    op rather than riding inside the streamed executor's Q chunking.
+    """
+    global _SOL_LOGGED, _SOL_AV_LOGGED
+    ext = _sol_ext()
+    qq = q.tensor if hasattr(q, "tensor") else q
+    kk = k.tensor if hasattr(k, "tensor") else k
+    vv = v.tensor if hasattr(v, "tensor") else v
+    B, H, S, D = qq.shape
+    if ext is None or D != 128 or qq.shape != kk.shape:
+        return _SOL_FALLBACK(q, k, v, heads, mask=mask, skip_reshape=skip_reshape,
+                             transformer_options=transformer_options, **kw)
+    qb = qq.transpose(1, 2).contiguous().to(torch.bfloat16)     # [B, S, H, D]
+    kb = kk.transpose(1, 2).contiguous().to(torch.bfloat16)
+    vb = vv.transpose(1, 2).contiguous().to(torch.bfloat16)
+    key = (B, S, H, qq.device.index)
+    need = ext.sol_attn_workspace(B, S, H, 0)
+    ws = _SOL_WS.get(key)
+    if ws is None or ws.numel() < need:
+        ws = torch.empty(need, dtype=torch.uint8, device=qq.device)
+        _SOL_WS[key] = ws
+    # the raw extension takes explicit shapes/strides and dlpack capsules; the
+    # PR's python wrapper does this marshalling and is not importable here
+    out = torch.empty_like(qb)
+    dl = lambda t: t.detach().__dlpack__(stream=-1)
+    ext.sol_attn(dl(qb), dl(kb), dl(vb), dl(out), dl(ws),
+                 B, S, H, D, 0, float(_SOL_TAU), float(D ** -0.5),
+                 0, 0, 0, 0,
+                 list(qb.stride()[:3]), list(kb.stride()[:3]), list(vb.stride()[:3]),
+                 torch.cuda.current_stream(qq.device).cuda_stream,
+                 centroid_tail=True, key_bias=None)
+    o = out
+    if _SOL_EXACT_AV and (_SOL_AV_SLICES is None or _SOL_AV_SLICES[0] != S) and S > 4096 and not _SOL_AV_LOGGED:
+        _SOL_AV_LOGGED = True
+        log.warning("H3SolAttention: exact_av_rows requested but INACTIVE on the main "
+                    "forward (S=%d, stashed=%s) - layout capture missed; AV rows are "
+                    "riding Sol", S, _SOL_AV_SLICES[0] if _SOL_AV_SLICES else None)
+    if _SOL_EXACT_AV and _SOL_AV_SLICES is not None and _SOL_AV_SLICES[0] == S:
+        # the native scoping: video rows ride Sol, text+audio query rows take an
+        # exact dense bf16 path over the full K/V (same split as the kvfp4s fix;
+        # audio is ~1% of the sequence and phrase-level pacing is long-range, so
+        # a similarity top-k starves exactly what carries it)
+        kbh = kb.transpose(1, 2)                            # [B, H, S, D] bf16 views
+        vbh = vb.transpose(1, 2)
+        n_av = 0
+        for a, b in _SOL_AV_SLICES[1]:
+            qe = qb[:, a:b].transpose(1, 2)                 # [B, H, rows, D]
+            o[:, a:b] = torch.nn.functional.scaled_dot_product_attention(
+                qe, kbh, vbh).transpose(1, 2)
+            n_av += b - a
+        if n_av and not _SOL_AV_LOGGED:
+            _SOL_AV_LOGGED = True
+            log.info("H3SolAttention: exact A/V rows ON (%d of %d query rows dense "
+                     "bf16; video rows ride Sol)", n_av, S)
+    if not _SOL_LOGGED:
+        _SOL_LOGGED = True
+        log.info("H3SolAttention: PR #117 CUDA kernel live (S=%d, heads=%d, tau=%.2f, "
+                 "workspace %.2f GiB)", S, H, _SOL_TAU, need / 2 ** 30)
+    out = o.transpose(1, 2)                                     # back to [B, H, S, D]
+    ret = out.transpose(1, 2).reshape(B, S, H * D)
+    return ret.to(qq.dtype)
+
+
+_SOL_FALLBACK = None
+_SOL_TAU = 1.0
+_SOL_EXACT_AV = False
+_SOL_AV_SLICES = None          # (total_rows, [(a, b), ...] text+audio spans, signature)
+_SOL_AV_LOGGED = False
+_SOL_FWD_ORIG = None
+
+
+def _sol_capture_forward(self, x, timestep, context, transformer_options={}, minimax_payload=None, **kwargs):
+    """Stash the packed layout's text+audio row spans for the Sol exact-AV path.
+
+    Mirrors the signature derivation at the top of MiniMaxH3Model._forward; the
+    layout is the payload's prebuilt one where present, else rebuilt (cheap,
+    cached on signature). cond/ref_img rows carry the video modality and stay on
+    Sol, matching the streamed executor's exact_av_rows split."""
+    global _SOL_AV_SLICES
+    try:
+        video_x, audio_x = x[0], x[1]
+        vx = comfy.ldm.common_dit.pad_to_patch_size(video_x, self.patch_size)
+        payload = minimax_payload or {}
+        sig = (context.shape[1], vx.shape[2], vx.shape[3], vx.shape[4], audio_x.shape[-1])
+        if _SOL_AV_SLICES is None or _SOL_AV_SLICES[2] != sig:
+            layout = payload.get("layout")
+            if layout is None or layout.signature != sig:
+                layout = _h3m.PackedLayout(*sig, keyframes=payload.get("keyframes"),
+                                           refs=payload.get("refs"))
+            av = [(a, b) for a, b, kind in layout.segments
+                  if kind in ("text", "audio", "cond_audio", "ref_audio")]
+            total = max(b for _, b, _ in layout.segments)
+            _SOL_AV_SLICES = (total, av, sig)
+            log.info("H3SolAttention: exact-AV layout stashed (%d spans, %d rows, "
+                     "total %d, kinds %s)", len(av), sum(b - a for a, b in av), total,
+                     [k for _, _, k in layout.segments])
+    except Exception as e:  # noqa: BLE001 -- a stash failure must never break a render
+        log.warning("H3SolAttention: exact-AV layout capture failed (%s); "
+                    "AV rows ride Sol this run", e)
+    return _SOL_FWD_ORIG(self, x, timestep, context,
+                         transformer_options=transformer_options,
+                         minimax_payload=minimax_payload, **kwargs)
+
+
+class H3SolAttention:
+    """Replace H3's attention with Sol-Attn (comfy-kitchen PR #117, CUDA).
+
+    NOT a quantiser: Sol is SPARSE -- it routes each query block to a subset of
+    key blocks. Measured on real captured H3 tensors it runs ~7x dense flash at
+    20.8-22.2% routing density, with attention-output rel-rms 0.099-0.254, which
+    is 2-3x LARGER than the fp4 store at four of five depths
+    (reports/sol_sa3/23_sol_on_the_judged_ladder.md). Ships OFF; judged by eye."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "tau": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 4.0, "step": 0.05,
+                    "tooltip": "Sol's routing threshold. Lower routes MORE blocks "
+                               "(denser, slower, more accurate); 1.0 is the paper default."}),
+        }, "optional": {
+            "exact_av_rows": ("BOOLEAN", {"default": False,
+                    "tooltip": "Route TEXT and AUDIO query rows through exact dense bf16 "
+                               "attention; only video rows ride Sol's sparse routing. This is "
+                               "the scoping MiniMax describe for native H3 sparsity (video-only "
+                               "sparse, non-video dense). The identical split fixed kvfp4s "
+                               "audio outright. Measured motivation: the tau sweep (0.5-1.4, "
+                               "bakery 20260821) left speech pacing rough at every density, so "
+                               "the loss is scoping, not density."}),
+        }}
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "patch"
+    CATEGORY = "MAINodes/VRAM Lab"
+    DESCRIPTION = ("Sol-Attn sparse attention for MiniMax-H3, from the unmerged "
+                   "comfy-kitchen PR #117 CUDA kernel built out-of-tree for sm120.")
+
+    def patch(self, model, tau, exact_av_rows=False):
+        try:  # collision report (never blocks)
+            from . import h3_capabilities as _caps
+            for w in _caps.collision_warnings(_caps.block_patch_report(model)):
+                log.warning("H3SolAttention: %s", w)
+        except Exception as _e:  # noqa: BLE001
+            log.info("H3SolAttention: collision report skipped (%s)", _e)
+        global _SOL_FALLBACK, _SOL_TAU, _SOL_EXACT_AV, _SOL_FWD_ORIG, _SOL_AV_SLICES, _SOL_AV_LOGGED
+        if _sol_ext() is None:
+            log.warning("H3SolAttention: PR #117 extension not available; model unchanged")
+            return (model,)
+        import comfy.ldm.minimax.model as mm
+        if _SOL_FALLBACK is None:
+            _SOL_FALLBACK = mm.optimized_attention
+        _SOL_TAU = float(tau)
+        _SOL_EXACT_AV = bool(exact_av_rows)
+        _SOL_AV_SLICES = None
+        _SOL_AV_LOGGED = False
+        if _SOL_EXACT_AV and _SOL_FWD_ORIG is None:
+            _SOL_FWD_ORIG = _h3m.MiniMaxH3Model._forward
+            _h3m.MiniMaxH3Model._forward = _sol_capture_forward
+        mm.optimized_attention = _sol_attention
+        log.info("H3SolAttention: bound Sol to comfy.ldm.minimax.model.optimized_attention "
+                 "(tau %.2f, exact_av_rows %s)", _SOL_TAU, _SOL_EXACT_AV)
+        return (model,)
+
+
+# --------------------------------------------------------------------------- kvmix: per-head 4/8-bit (the ~6-bit tier)
+
+# Heads are independent in attention, so a mixed-precision tier needs no new
+# kernel: run the fp4 kernel on one head subset and Sage 2.2's int8/fp8 kernel on
+# the other, then write both into the same output. Promoting half the heads is a
+# 6-bit average. Which heads: measured fp4 attention-output damage on real
+# captured tensors under MOTION (reports/sol_sa3/22_motion_carrier_result.md);
+# damage spread across the full 56 heads is 3.69x, and an oracle selecting by it
+# captures 59-73% of summed damage at half the heads.
+_KVMIX_DEFAULT_HI = (0, 2, 3, 4, 5, 11, 12, 17, 18, 19, 21, 23, 24, 26, 27, 30,
+                     31, 32, 35, 39, 41, 42, 43, 46, 48, 49, 51, 54)
+_KVMIX_LOGGED = False
+
+
+class _MixedKV:
+    """kvmix: `hi` heads on Sage 2.2 int8/fp8 (clean), the rest on SA3 fp4 (fast)."""
+
+    def __init__(self, heads, S, hd, device, hi_heads=None, keep_exact=False):
+        hi = sorted({h for h in (hi_heads if hi_heads is not None else _KVMIX_DEFAULT_HI)
+                     if 0 <= h < heads})
+        self.hi = torch.tensor(hi, dtype=torch.long, device=device)
+        lo = [h for h in range(heads) if h not in set(hi)]
+        self.lo = torch.tensor(lo, dtype=torch.long, device=device)
+        self.n_hi, self.n_lo = len(hi), len(lo)
+        self.fp4 = _Sage3FP4KV(self.n_lo, S, hd, device) if self.n_lo else None
+        self.i8 = _SageKV(self.n_hi, S, hd, device) if self.n_hi else None
+        self.S = S
+        # the audio fix must cover EVERY head, not just the fp4 subset, so the
+        # bf16 reference lives here rather than in a sub-store. Unrotated: the
+        # exact path then needs no basis bookkeeping.
+        self.k_bf = self.v_bf = None
+        if keep_exact:
+            self.k_bf = torch.empty((1, heads, S, hd), dtype=torch.bfloat16, device=device)
+            self.v_bf = torch.empty((1, heads, S, hd), dtype=torch.bfloat16, device=device)
+
+    def store(self, a, b, k, v):
+        if self.k_bf is not None:
+            self.k_bf[:, :, a:b] = k.to(torch.bfloat16)
+            self.v_bf[:, :, a:b] = v.to(torch.bfloat16)
+        if self.fp4 is not None:
+            self.fp4.store(a, b, k[:, self.lo].contiguous(), v[:, self.lo].contiguous())
+        if self.i8 is not None:
+            self.i8.store(a, b, k[:, self.hi].contiguous(), v[:, self.hi].contiguous())
+
+    def finalize(self):
+        global _KVMIX_LOGGED
+        if self.fp4 is not None:
+            self.fp4.finalize()
+        if not _KVMIX_LOGGED:
+            _KVMIX_LOGGED = True
+            log.info("H3StreamedBlocks kvmix: %d heads int8/fp8 + %d heads fp4 "
+                     "(avg %.1f bits)", self.n_hi, self.n_lo,
+                     (8 * self.n_hi + 4 * self.n_lo) / max(1, self.n_hi + self.n_lo))
+
+    def bytes(self):
+        return ((self.fp4.bytes() if self.fp4 is not None else 0)
+                + (self.i8.bytes() if self.i8 is not None and hasattr(self.i8, "bytes") else 0))
+
+
+def _exact_av_rows_mixed(o, qc, st, segments, c0, c1, out_dtype):
+    """Same audio fix as the fp4 path, over the mixed store's own bf16 K/V so it
+    covers all heads. Unrotated on both sides, so it is plain exact attention."""
+    global _EXACT_AV_LOGGED
+    n = 0
+    for sa, sb, row in segments:
+        if row % 3 == 0:                       # video rides the quantised stores
+            continue
+        lo, hi = max(sa, c0), min(sb, c1)
+        if lo >= hi:
+            continue
+        qe = qc[:, :, lo - c0:hi - c0].to(torch.bfloat16)
+        o[:, :, lo - c0:hi - c0] = torch.nn.functional.scaled_dot_product_attention(
+            qe, st.k_bf, st.v_bf).to(out_dtype)
+        n += hi - lo
+    if n and not _EXACT_AV_LOGGED:
+        _EXACT_AV_LOGGED = True
+        log.info("H3StreamedBlocks kvmix: exact A/V rows ON (%d text+audio rows "
+                 "in the first chunk take the bf16 path, all heads)", n)
+    return o
+
+
+def _mixed_attention_q(qc, st, out_dtype):
+    """qc [1,H,c,hd] -> [1,H,c,hd], each head through its own kernel."""
+    o = torch.empty(qc.shape, dtype=out_dtype, device=qc.device)
+    if st.fp4 is not None:
+        o[:, st.lo] = _sage3_attention_q(qc[:, st.lo].contiguous(), st.fp4, out_dtype)
+    if st.i8 is not None:
+        o[:, st.hi] = _sage_attention_q(qc[:, st.hi].contiguous(), st.i8, out_dtype)
+    return o
+
+
 # --------------------------------------------------------------------------- F5: trimmed forward (release the embed buffers)
 
 _STOCK_FORWARD_SHA = "f40e52b23fb2f9c7"       # sha256[:16] of inspect.getsource(MiniMaxH3Model._forward) this copy was made from
@@ -530,7 +1017,7 @@ class _PrecProbe:
     a strided row sample (report 7's router signal). Sampled 1 in `every` chunks per
     phase. Writes jsonl; the map is drawn offline (benchmarks/scripts/prec_map.py)."""
 
-    def __init__(self, path, every=8, row_stride=64):
+    def __init__(self, path=None, every=8, row_stride=64):
         self.path, self.every, self.row_stride = path, int(every), int(row_stride)
         self.fwd = -1
         self.rows = []
@@ -570,16 +1057,91 @@ class _PrecProbe:
         yr = self._fq_nvfp4(xr)
         return (yr.float().view(-1, n // 128, 128) @ self.H.T).view(-1, n).to(x2d.dtype)
 
+    def _fq_int4(self, x2d):
+        """A UNIFORM 4-bit lattice at NVFP4's block granularity: 16 evenly spaced codes with an
+        exact per-16-value scale. Not a deployable format on sm120 (the 4-bit tensor cores decode
+        E2M1 only) - this is the diagnostic arm that says whether E2M1's non-uniform spacing is
+        what the activation error is paying for, as the weight-side study found it is."""
+        f = x2d.float()
+        g = f.reshape(-1, 16)
+        sc = g.abs().amax(1, keepdim=True).clamp_min(1e-12) / 7.0
+        q = (g / sc).round_().clamp_(-8, 7)
+        return (q * sc).reshape(f.shape).to(x2d.dtype)
+
+    def _fq_int4_had(self, x2d):
+        n = x2d.shape[1]
+        if self.H is None or self.H.shape[0] != 128 or self.H.device != x2d.device:
+            self.H = _hadamard(128, x2d.device, torch.float32)
+        xr = (x2d.float().view(-1, n // 128, 128) @ self.H).view(-1, n).to(x2d.dtype)
+        yr = self._fq_int4(xr)
+        return (yr.float().view(-1, n // 128, 128) @ self.H.T).view(-1, n).to(x2d.dtype)
+
+    @staticmethod
+    def _group_crest(xs):
+        """Per-16-value crest factor (peak/rms), the quantity MixFP4's 2.224 threshold is defined
+        on. The recorded whole-tensor crest is a different and much coarser statistic."""
+        n = xs.numel() - xs.numel() % 16
+        if n < 16:
+            return None
+        g = xs.reshape(-1)[:n].reshape(-1, 16)
+        rms = g.pow(2).mean(1).sqrt().clamp_min(1e-12)
+        c = g.abs().amax(1) / rms
+        return {"g_crest_med": c.median().item(), "g_crest_p95": c.quantile(0.95).item(),
+                "g_crest_frac_lt_2224": (c < 2.224).float().mean().item()}
+
+    def amax(self, block, proj, x):
+        """Every chunk: running per-(block, proj) activation amax for this forward (calibrated
+        input_scale for a chunk-invariant NVFP4/FP8 activation path needs the whole-layer amax)."""
+        k = ("amax", block, proj)
+        v = x.abs().amax()
+        cur = self.counter.get(k)
+        self.counter[k] = v if cur is None else torch.maximum(cur, v)
+
+    def flush_amax(self):
+        for k, v in list(self.counter.items()):
+            if isinstance(k, tuple) and k and k[0] == "amax":
+                self.rows.append({"fwd": self.fwd, "sigma": self.sigma, "block": k[1], "proj": k[2],
+                                  "seg": "all", "amax_layer": float(v)})
+                del self.counter[k]
+
+    @staticmethod
+    def _bf16_weight(layer, device):
+        """The layer's weight dequantised to bf16 ON the compute device (under dynamic VRAM the
+        stored weight may live on the CPU); None if that is not possible."""
+        w = getattr(layer, "weight", None)
+        if w is None:
+            return None
+        try:
+            if getattr(w, "device", None) is not None and w.device != device:
+                w = w.to(device)
+            if hasattr(w, "dequantize"):
+                w = w.dequantize()
+            return w.to(device=device, dtype=torch.bfloat16)
+        except Exception:  # noqa: BLE001
+            return None
+
     @torch.no_grad()
     def projection(self, block, proj, layer, x, a, b, mod_segments):
         """x: the layer's real input for chunk [a:b] (rows x K), layer: the module. Cheap sample."""
+        self.amax(block, proj, x)
         if not self._take((block, proj)):
             return
         if x.shape[-1] % 128:
             return
         y = layer(x)
         fq = {"nvfp4": self._fq_nvfp4, "nvfp4_had": self._fq_nvfp4_had, "fp8": self._fq_fp8}
+        if os.environ.get("MAINODES_PREC_INT4") == "1":
+            # opt-in so the default instrument stays bit-identical to the run that produced v024
+            fq["int4"] = self._fq_int4
+            fq["int4_had"] = self._fq_int4_had
         outs = {k: layer(f(x)) for k, f in fq.items()}
+        wb = self._bf16_weight(layer, x.device)             # bf16 truth for the absolute scale
+        y_ref = None
+        if wb is not None and wb.shape[-1] == x.shape[-1]:
+            bias = getattr(layer, "bias", None)
+            bias = bias.to(device=x.device, dtype=x.dtype) if bias is not None else None
+            y_ref = torch.nn.functional.linear(x, wb, bias)
+        del wb
         for sa, sb, row in mod_segments:
             lo, hi = max(sa, a), min(sb, b)
             if hi - lo < 16:
@@ -591,11 +1153,21 @@ class _PrecProbe:
                    "rows": int(hi - lo), "x_rms": rms.item(), "x_amax": xs.abs().amax().item(),
                    "x_outlier_frac": (xs.abs() > 6 * rms).float().mean().item(),
                    "x_kurt": ((xs / rms) ** 4).mean().item()}
+            if os.environ.get("MAINODES_PREC_INT4") == "1":
+                gc = self._group_crest(xs)
+                if gc:
+                    rec.update(gc)
             yn = ys.pow(2).sum().sqrt().clamp_min(1e-12)
             for k, o in outs.items():
                 rec["err_" + k] = ((o[lo - a:hi - a].float() - ys).pow(2).sum().sqrt() / yn).item()
+            if y_ref is not None:                            # vs bf16: today's path and the candidates
+                yr = y_ref[lo - a:hi - a].float()
+                rn = yr.pow(2).sum().sqrt().clamp_min(1e-12)
+                rec["err_today_vs_bf16"] = ((ys - yr).pow(2).sum().sqrt() / rn).item()
+                for k, o in outs.items():
+                    rec["err_" + k + "_vs_bf16"] = ((o[lo - a:hi - a].float() - yr).pow(2).sum().sqrt() / rn).item()
             self.rows.append(rec)
-        del y, outs
+        del y, outs, y_ref
 
     @torch.no_grad()
     def block_in(self, x):
@@ -609,7 +1181,7 @@ class _PrecProbe:
                           "rel_change": d.item()})
 
     def flush(self):
-        if not self.rows:
+        if not self.rows or self.path is None:
             return
         import json
         with open(self.path, "a") as f:
@@ -618,15 +1190,47 @@ class _PrecProbe:
         self.rows = []
 
 
+class _FakeQuant:
+    """A6 phase 0d: simulate a lower activation precision on chosen projections / blocks /
+    segments inside the streamed block (fake-quant: quantise -> dequantise the layer input,
+    the layer then runs as shipped). For the end-to-end sensitivity sweep: same seed, one
+    region at a time, latent divergence + eyes. Not a speed path."""
+
+    def __init__(self, fmt, projs, blocks, segs):
+        self.fmt, self.projs, self.blocks, self.segs = fmt, set(projs), blocks, (set(segs) if segs else None)
+        self.p = _PrecProbe(path=None)
+
+    def apply(self, block, proj, x, a, b, mod_segments):
+        if proj not in self.projs or not (self.blocks[0] <= block <= self.blocks[1]) or x.shape[-1] % 128:
+            return x
+        f = {"nvfp4": self.p._fq_nvfp4, "nvfp4_had": self.p._fq_nvfp4_had, "fp8": self.p._fq_fp8}[self.fmt]
+        if self.segs is None:
+            return f(x)
+        out = x.clone()
+        for sa, sb, row in mod_segments:
+            lo, hi = max(sa, a), min(sb, b)
+            if hi > lo and _PrecProbe._seg_kind(row) in self.segs:
+                out[lo - a:hi - a] = f(x[lo - a:hi - a])
+        return out
+
+
 # --------------------------------------------------------------------------- the block
 
-def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=False, kv_sage=False, prec=None, block_index=0):
+def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=False, kv_sage=False, kv_fp4=False, kv_fp4_exact_av=False, kv_mix=False, prec=None, block_index=0, fq=None):
     """K, V for the whole sequence, chunk by chunk (Q computed and dropped).
     kv_int8: store them as _Int8KV (kvi8r, half the bytes; approximation tier).
-    kv_sage: store them as one _SageKV (kvi8s, half the bytes, Sage kernels; approximation tier)."""
+    kv_sage: store them as one _SageKV (kvi8s, half the bytes, Sage kernels; approximation tier).
+    kv_fp4: store them as one _Sage3FP4KV (kvfp4s, 0.28x the bytes, sage3 fp4 kernels;
+    approximation tier) -- buffered bf16 while streaming, quantised once at finalize()."""
     S = x.shape[0]
     attn = block.attn
-    if kv_sage:
+    if kv_mix:
+        K = _MixedKV(heads, S, hd, x.device, keep_exact=kv_fp4_exact_av)
+        V = K                                                    # one store holds both
+    elif kv_fp4:
+        K = _Sage3FP4KV(heads, S, hd, x.device, keep_exact=kv_fp4_exact_av)
+        V = K                                                    # one store holds both
+    elif kv_sage:
         K = _SageKV(heads, S, hd, x.device)
         V = K                                                    # one store holds both
     elif kv_int8:
@@ -640,11 +1244,13 @@ def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chun
         h = _mod_scale_shift_range(block.norm1(x[a:b]), shift_msa, scale_msa, mod_segments, a, b)
         if prec is not None:
             prec.projection(block_index, "qkv", attn.qkv_proj, h, a, b, mod_segments)
+        if fq is not None:
+            h = fq.apply(block_index, "qkv", h, a, b, mod_segments)
         qkv = attn.qkv_proj(h)
         q, k, v = qkv.split(inner, dim=-1)
         rope_c = rope_freqs[:, a:b].contiguous() if rope_freqs is not None else None
         _, k = _norm_rope(attn, q, k, rope_c, s)
-        if kv_sage:
+        if kv_sage or kv_fp4 or kv_mix:
             K.store(a, b, k.transpose(0, 1).unsqueeze(0), v.view(s, heads, hd).transpose(0, 1).unsqueeze(0))
         elif kv_int8:
             K.store(a, b, k.transpose(0, 1).unsqueeze(0))
@@ -653,11 +1259,13 @@ def _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chun
             K[0, :, a:b] = k.transpose(0, 1)
             V[0, :, a:b] = v.view(s, heads, hd).transpose(0, 1)
         del h, qkv, q, k, v, rope_c
+    if kv_fp4 or kv_mix:
+        K.finalize()                                             # one quantisation pass, bf16 dropped
     return K, V
 
 
 def _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments, rope_freqs,
-                   transformer_options, q_chunk, kv_block, heads, hd, inner, head_chunks, prec=None, block_index=0):
+                   transformer_options, q_chunk, kv_block, heads, hd, inner, head_chunks, prec=None, block_index=0, fq=None):
     """Q per chunk, attention against full K/V, out_proj, gated residual in place."""
     S = x.shape[0]
     attn = block.attn
@@ -666,13 +1274,25 @@ def _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments,
     for a, b in q_ranges:
         s = b - a
         h = _mod_scale_shift_range(block.norm1(x[a:b]), shift_msa, scale_msa, mod_segments, a, b)
+        if fq is not None:
+            h = fq.apply(block_index, "qkv", h, a, b, mod_segments)
         qkv = attn.qkv_proj(h)
         q, k, _v = qkv.split(inner, dim=-1)
         rope_c = rope_freqs[:, a:b].contiguous() if rope_freqs is not None else None
         q, _ = _norm_rope(attn, q, k, rope_c, s)
         qc = q.transpose(0, 1).unsqueeze(0).contiguous()      # [1, heads, s, hd]
         del h, qkv, q, k, _v, rope_c
-        if isinstance(K, _SageKV):
+        if isinstance(K, _MixedKV):
+            o = _mixed_attention_q(qc, K, x.dtype)
+            if K.k_bf is not None:
+                _exact_av_rows_mixed(o, qc, K, mod_segments, a, b, x.dtype)
+            o = o.transpose(1, 2).reshape(1, s, inner)
+        elif isinstance(K, _Sage3FP4KV):
+            o = _sage3_attention_q(qc, K, x.dtype)
+            if K.k_bf is not None:
+                _exact_av_rows(o, qc, K, mod_segments, a, b, x.dtype)
+            o = o.transpose(1, 2).reshape(1, s, inner)
+        elif isinstance(K, _SageKV):
             o = _sage_attention_q(qc, K, x.dtype)
             o = o.transpose(1, 2).reshape(1, s, inner)
         elif isinstance(K, _Int8KV):
@@ -687,12 +1307,14 @@ def _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments,
         o = o.squeeze(0)
         if prec is not None:
             prec.projection(block_index, "out", attn.out_proj, o, a, b, mod_segments)
+        if fq is not None:
+            o = fq.apply(block_index, "out", o, a, b, mod_segments)
         o = attn.out_proj(o)
         _mod_gate_range(x, gate_msa, o, mod_segments, a, b)
         del o
 
 
-def _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk, prec=None, block_index=0):
+def _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk, prec=None, block_index=0, fq=None):
     """MLP per chunk, gated residual in place."""
     S = x.shape[0]
     for a, b in _ranges(S, mlp_chunk):
@@ -703,13 +1325,21 @@ def _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chun
             act = torch.nn.functional.silu(gate).mul_(up)
             prec.projection(block_index, "fc2", block.mlp.fc2, act, a, b, mod_segments)
             del gate, up, act
-        o = block.mlp(h)
+        if fq is not None and hasattr(block.mlp, "fc1") and hasattr(block.mlp, "fc2"):
+            h = fq.apply(block_index, "fc1", h, a, b, mod_segments)
+            gate, up = block.mlp.fc1(h).chunk(2, dim=-1)
+            act = torch.nn.functional.silu(gate).mul_(up)
+            act = fq.apply(block_index, "fc2", act, a, b, mod_segments)
+            o = block.mlp.fc2(act)
+            del gate, up, act
+        else:
+            o = block.mlp(h)
         _mod_gate_range(x, gate_mlp, o, mod_segments, a, b)
         del h, o
 
 
 def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transformer_options,
-                           q_chunk=16384, kv_chunk=16384, mlp_chunk=16384, kv_block=0, probe=None, index=None, kv_int8=False, kv_sage=False):
+                           q_chunk=16384, kv_chunk=16384, mlp_chunk=16384, kv_block=0, probe=None, index=None, kv_int8=False, kv_sage=False, kv_fp4=False, kv_fp4_exact_av=False, kv_mix=False):
     """Exact replacement for DiTBlock.forward with chunk-bounded transients.
 
     The three phases are separate named functions so an allocator trace
@@ -725,19 +1355,21 @@ def streamed_block_forward(block, x, t_emb, mod_segments, rope_freqs, transforme
 
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.adaln_proj(t_emb)
     prec = transformer_options.get("h3_precprobe") if isinstance(transformer_options, dict) else None
+    fq = transformer_options.get("h3_fakequant") if isinstance(transformer_options, dict) else None
     x_in_sample = prec.block_in(x) if prec is not None else None
 
     K, V = _phase1_kv(block, x, shift_msa, scale_msa, mod_segments, rope_freqs, kv_chunk, heads, hd, inner, kv_int8=kv_int8, kv_sage=kv_sage,
-                      prec=prec, block_index=index if index is not None else 0)
+                      kv_fp4=kv_fp4, kv_fp4_exact_av=kv_fp4_exact_av, kv_mix=kv_mix,
+                      prec=prec, block_index=index if index is not None else 0, fq=fq)
     if probe is not None:
         probe.mark(index, "kv")
     _phase2_q_attn(block, x, K, V, shift_msa, scale_msa, gate_msa, mod_segments, rope_freqs,
                    transformer_options, q_chunk, kv_block, heads, hd, inner, head_chunks,
-                   prec=prec, block_index=index if index is not None else 0)
+                   prec=prec, block_index=index if index is not None else 0, fq=fq)
     del K, V
     if probe is not None:
         probe.mark(index, "attn")
-    _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk, prec=prec, block_index=index if index is not None else 0)
+    _phase3_mlp(block, x, shift_mlp, scale_mlp, gate_mlp, mod_segments, mlp_chunk, prec=prec, block_index=index if index is not None else 0, fq=fq)
     if probe is not None:
         probe.mark(index, "mlp")
     if prec is not None:
@@ -763,7 +1395,10 @@ def _self_check(block, args, extra, cfg, tag):
     for name, c in variants.items():
         out = streamed_block_forward(block, x.clone(), args["t_emb"], args["mod_segments"], args["rope_freqs"],
                                      args["transformer_options"], q_chunk=c["q_chunk"], kv_chunk=c["kv_chunk"],
-                                     mlp_chunk=c["mlp_chunk"], kv_block=c["kv_block"], kv_int8=cfg.get("kv_int8", False), kv_sage=cfg.get("kv_sage", False))
+                                     mlp_chunk=c["mlp_chunk"], kv_block=c["kv_block"], kv_int8=cfg.get("kv_int8", False), kv_sage=cfg.get("kv_sage", False),
+                                     kv_fp4=cfg.get("kv_fp4", False),
+                                     kv_fp4_exact_av=cfg.get("kv_fp4_exact_av", False),
+                                     kv_mix=cfg.get("kv_mix", False))
         d = (out.float() - ref.float()).abs()
         parts.append(f"{name}: max {d.max().item():.3e} ({d.max().item() / ulp:.2f} ulp) mean {d.mean().item():.2e}")
         del out, d
@@ -790,7 +1425,10 @@ def _make_replacement(block, cfg, index=0):
         x = streamed_block_forward(block, x, args["t_emb"], args["mod_segments"], args["rope_freqs"],
                                    to, q_chunk=cfg["q_chunk"], kv_chunk=cfg["kv_chunk"],
                                    mlp_chunk=cfg["mlp_chunk"], kv_block=cfg["kv_block"], probe=probe, index=index,
-                                   kv_int8=cfg.get("kv_int8", False), kv_sage=cfg.get("kv_sage", False))
+                                   kv_int8=cfg.get("kv_int8", False), kv_sage=cfg.get("kv_sage", False),
+                                   kv_fp4=cfg.get("kv_fp4", False),
+                                   kv_fp4_exact_av=cfg.get("kv_fp4_exact_av", False),
+                                   kv_mix=cfg.get("kv_mix", False))
         return {"img": x}
     return _named(fn, f"block{index:02d}")
 
@@ -877,13 +1515,16 @@ class H3StreamedBlocks:
                 "final_layer_gemm": (["exact (whole GEMM, one fp32 buffer)", "streamed (chunked GEMM, ~1e-6 fp32 diffs)"],
                                      {"default": "exact (whole GEMM, one fp32 buffer)",
                                       "tooltip": "exact: same head GEMM as stock, transient = one fp32 [rows, hidden] (bit-equal). streamed: GEMM per chunk, transient ~chunk-sized, but fp32 cuBLAS is not chunk-invariant (numerically-equivalent tier)."}),
-                "kv_store": (["bf16 (exact)", "kvi8r: rotated int8 K/V (approximate)", "kvi8s: Sage int8/fp8 K/V, rotated (approximate, faster attention)"],
+                "kv_store": (["bf16 (exact)", "kvi8r: rotated int8 K/V (approximate)", "kvi8s: Sage int8/fp8 K/V, rotated (approximate, faster attention)",
+                              "kvfp4s: Sage3 FP4 K/V, rotated (approximate, fastest attention)", "kvmix: per-head 4/8-bit, fp4 + Sage int8 (the ~6-bit tier)"],
                              {"default": "bf16 (exact)",
-                              "tooltip": "kvi8r = rotated int8 K/V. K and V held as int8 with one fp16 scale per row (per token, per head) in a fixed orthonormal 128-wide Hadamard-rotated basis of the head dim; the query chunk is rotated to match and the output un-rotated once, so a K/V block dequant is a single int8->fp16 cast * scale and attention runs in fp16 blockwise (kv_block, default 16384) with an online-softmax combine. Halves the K/V bytes. NOT bit-equal to stock: a same-seed render is a sibling take (first cut 2026-08-18: operator judged the de-rope side by side 'almost perfect'). Second cut (2026-08-18 evening): standalone at 217k tokens the attention costs +16% over the exact path (first cut +24%) with a ~1 GiB transient (first cut ~3), so the K/V saving now shows in the forward peak; the live numbers are in LOWVRAM.md. kvi8s = the same K/V bytes kept in SageAttention's kernel layout (int8 K per 64-token block, fp8 V per channel, Q/K Hadamard-rotated first) and attended on int8/fp8 tensor cores straight from the store, no dequant: standalone ~1.6x faster attention than the exact path at 217k tokens, one rung more approximate than kvi8r; needs the sageattention package (2.x)."}),
+                              "tooltip": "kvi8r = rotated int8 K/V. K and V held as int8 with one fp16 scale per row (per token, per head) in a fixed orthonormal 128-wide Hadamard-rotated basis of the head dim; the query chunk is rotated to match and the output un-rotated once, so a K/V block dequant is a single int8->fp16 cast * scale and attention runs in fp16 blockwise (kv_block, default 16384) with an online-softmax combine. Halves the K/V bytes. NOT bit-equal to stock: a same-seed render is a sibling take (first cut 2026-08-18: operator judged the de-rope side by side 'almost perfect'). Second cut (2026-08-18 evening): standalone at 217k tokens the attention costs +16% over the exact path (first cut +24%) with a ~1 GiB transient (first cut ~3), so the K/V saving now shows in the forward peak; the live numbers are in LOWVRAM.md. kvi8s = the same K/V bytes kept in SageAttention's kernel layout (int8 K per 64-token block, fp8 V per channel, Q/K Hadamard-rotated first) and attended on int8/fp8 tensor cores straight from the store, no dequant: standalone ~1.6x faster attention than the exact path at 217k tokens, one rung more approximate than kvi8r; needs the sageattention package (2.x). kvfp4s = the same idea one precision rung further down, on SageAttention3's Blackwell fp4 kernels: K/V kept as NVFP4 (E2M1 + one e4m3 scale per 16 elements = 0.5625 byte/elem, 0.28x bf16 -- 1.63 GiB vs 5.79 at 216k tokens), Q/K Hadamard-rotated, no delta_s and no Q-centering (measured to cost nothing at per_block_mean False, which is the only affordable setting at H3 lengths). Standalone at 217k tokens: ~2.4x faster attention than the exact path and ~1.4x faster than kvi8s, at rel-rms 0.293 vs Sage 2.2's 0.055 on the outlier proxy (0.192 vs 0.039 plain gaussian) -- clearly the most approximate rung, gated on the operator's eyes. Because the fp4 kernel's log-sum-exp is not retrievable there is no K-blocked combine: phase 1 buffers K/V in bf16 and quantises once, so the block's peak during that one finalize is bf16 + fp4 before the bf16 is dropped. Needs SageAttention3's fp4 extension (fp4attn_cuda) importable; falls back to bf16 (exact) with a warning if it is not."}),
                 "trim_forward": ("BOOLEAN", {"default": True,
                                              "tooltip": "F5: run a copy of the stock model forward that releases the patch-embed and row buffers once the packed sequence is assembled (stock keeps them for the whole forward: 2.14 GiB at 216k tokens). Same math, exact. Applied only if the installed ComfyUI's forward matches the copy (source hash); otherwise skipped with a log line."}),
                 "self_check": ("BOOLEAN", {"default": False,
                                            "tooltip": "Diagnostic: on block 0's first call, run stock and streamed on the same input and log per-phase divergence. Costs one extra block forward."}),
+                "exact_av_rows": ("BOOLEAN", {"default": False,
+                                              "tooltip": "kvfp4s only. Route the TEXT and AUDIO query rows through an exact bf16 attention over a retained bf16 K/V, leaving the video rows (96.3% of the packed sequence, where the speed win lives) on the fp4 store. Audio is ~300 of 28,931 tokens, so the ~4% attention error that video's redundancy hides as slight ghosting lands audibly on a soundtrack carried by 1% of the sequence -- measured: audio is not quantised worse than video, it is merely far more sensitive, so the fix is routing rather than a better quantiser. Costs the bf16 K/V of the block in flight (~0.8 GiB at 29k tokens, 5.8 at 216k) and ~5% more attention time. No effect unless kv_store is kvfp4s."}),
             }
         }
 
@@ -895,7 +1536,8 @@ class H3StreamedBlocks:
                    "projection work at long lengths. See vram_lab.py for the ledger.")
 
     def patch(self, model, q_chunk, kv_chunk, mlp_chunk, min_tokens, kv_block, self_check=False, final_layer_chunk=16384,
-              final_layer_gemm="exact (whole GEMM, one fp32 buffer)", kv_store="bf16 (exact)", trim_forward=True):
+              final_layer_gemm="exact (whole GEMM, one fp32 buffer)", kv_store="bf16 (exact)", trim_forward=True,
+              exact_av_rows=False):
         dm = getattr(getattr(model, "model", None), "diffusion_model", None)
         blocks = getattr(dm, "blocks", None)
         if not blocks or not hasattr(blocks[0], "attn") or not hasattr(blocks[0].attn, "qkv_proj"):
@@ -903,10 +1545,21 @@ class H3StreamedBlocks:
             return (model,)
         cfg = {"q_chunk": q_chunk, "kv_chunk": kv_chunk, "mlp_chunk": mlp_chunk,
                "min_tokens": min_tokens, "kv_block": kv_block, "self_check": bool(self_check),
-               "kv_int8": str(kv_store).startswith("kvi8r"), "kv_sage": str(kv_store).startswith("kvi8s")}
+               "kv_int8": str(kv_store).startswith("kvi8r"), "kv_sage": str(kv_store).startswith("kvi8s"),
+               "kv_fp4": str(kv_store).startswith("kvfp4s"),
+               "kv_fp4_exact_av": bool(exact_av_rows),
+               "kv_mix": str(kv_store).startswith("kvmix")}
         if cfg["kv_sage"] and not _SAGE_OK:
             log.warning("H3StreamedBlocks: kv_store kvi8s needs the sageattention package; falling back to bf16 (exact)")
             cfg["kv_sage"] = False
+        if cfg["kv_fp4"] and _sage3_api() is None:
+            log.warning("H3StreamedBlocks: kv_store kvfp4s needs SageAttention3's fp4 extension (fp4attn_cuda, tried %s); falling back to bf16 (exact)", _SAGE3_DIR)
+            cfg["kv_fp4"] = False
+        if cfg["kv_mix"] and (not _SAGE_OK or _sage3_api() is None):
+            log.warning("H3StreamedBlocks: kv_store kvmix needs BOTH the sageattention package (2.x: %s) and SageAttention3's fp4 extension (fp4attn_cuda, tried %s: %s); falling back to bf16 (exact)",
+                        "present" if _SAGE_OK else "missing", _SAGE3_DIR,
+                        "present" if _sage3_api() is not None else "missing")
+            cfg["kv_mix"] = False
         try:  # collision report: who already has a hand on this model (never blocks)
             from . import h3_capabilities as _caps
             for w in _caps.collision_warnings(_caps.block_patch_report(model)):
@@ -1283,6 +1936,7 @@ class H3PrecisionProbe:
                 pass
             pr.begin_forward(sig)
             out = executor(*args, **kwargs)
+            pr.flush_amax()
             pr.flush()
             return out
         m.add_wrapper_with_key(pe.WrappersMP.DIFFUSION_MODEL, "h3_precprobe", wrapper)
@@ -1290,10 +1944,45 @@ class H3PrecisionProbe:
         return (m,)
 
 
+class H3FakeQuant:
+    """A6 phase 0d: simulate NVFP4 / FP8 activation precision on a chosen set of
+    projections, block range and token segments (fake-quant of the layer input; the
+    layer runs as shipped). For the same-seed sensitivity sweep that decides which
+    layers can go to 4 bits. Needs H3StreamedBlocks downstream. Not a speed path."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "format": (["nvfp4", "nvfp4_had", "fp8"], {"default": "nvfp4"}),
+            "projections": ("STRING", {"default": "qkv,out,fc1,fc2", "tooltip": "comma list of qkv,out,fc1,fc2"}),
+            "block_lo": ("INT", {"default": 0, "min": 0, "max": 63}),
+            "block_hi": ("INT", {"default": 49, "min": 0, "max": 63}),
+            "segments": ("STRING", {"default": "", "tooltip": "empty = all rows; else comma list of video,text,audio,cond_video,cond_audio"}),
+        }}
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "patch"
+    CATEGORY = "MAINodes/VRAM Lab"
+
+    def patch(self, model, format, projections, block_lo, block_hi, segments):
+        projs = [p.strip() for p in projections.split(",") if p.strip()]
+        segs = [p.strip() for p in segments.split(",") if p.strip()]
+        m = model.clone()
+        to = m.model_options.setdefault("transformer_options", {})
+        to["h3_fakequant"] = _FakeQuant(format, projs, (int(block_lo), int(block_hi)), segs)
+        log.info("H3FakeQuant: %s on %s blocks %d..%d segs %s", format, projs, block_lo, block_hi, segs or "all")
+        return (m,)
+
+
+# H3SolAttention is deliberately NOT registered this release: it rebinds attention
+# process-globally with no restore path - it needs the DyRoPE arm/disarm pattern
+# before it can ship (reviewer finding 2026-08-25). The class stays.
 NODE_CLASS_MAPPINGS = {"H3StreamedBlocks": H3StreamedBlocks, "H3MemoryProbe": H3MemoryProbe, "H3FreeCache": H3FreeCache, "H3EvictTextEncoder": H3EvictTextEncoder,
-                       "H3PrecisionProbe": H3PrecisionProbe}
+                       "H3PrecisionProbe": H3PrecisionProbe, "H3FakeQuant": H3FakeQuant}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3StreamedBlocks": "H3 Streamed Blocks (exact low-VRAM, alpha)",
                               "H3MemoryProbe": "H3 Memory Probe (ledger + allocator trace, alpha)",
                               "H3FreeCache": "H3 Free Cache (empty allocator between stages)",
                               "H3EvictTextEncoder": "H3 Evict Text Encoder (unload after encode)",
-                              "H3PrecisionProbe": "H3 Precision Probe (A6: 4-bit vs 8-bit activation map, alpha)"}
+                              "H3PrecisionProbe": "H3 Precision Probe (A6: 4-bit vs 8-bit activation map, alpha)",
+                              "H3FakeQuant": "H3 Fake Quant (A6: simulate NVFP4/FP8 activations per region, alpha)"}

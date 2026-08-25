@@ -177,3 +177,105 @@ approximation (60 dB PSNR against the fp16 decoder on the same latent).
 | `TESTING_ALPHA.md` | hands-on checklist for the manual mask and editor batch |
 | `TUNING.md` | dials with measured numbers, for the finished pipeline |
 | `ROADMAP.md` | where the unfinished parts are meant to go |
+
+---
+
+## Repair verb
+
+`h3_repair.py`, nodes `H3 Repair Plan (alpha)` and `H3 Repair Splice (alpha)`.
+
+Type a bad frame range; the plan snaps it outward to whole tokens, runs the
+regeneration through the nearest shot cut, and the splice puts every
+untouched pixel back bit-exact, printing its seam numbers. Validated on one
+cell and one in-graph rerun (entry seam 0.26x the clip's median frame delta,
+exit ON the source's own cut within 1.8%). Alpha because: one scene family
+so far, and AUDIO IS STILL A WORK IN PROGRESS: the splice passes audio
+through untouched, which is only right when the repair changed no performance.
+
+## DyRoPE
+
+`motion.py`, node `H3 DyRoPE (alpha)`.
+
+An instrument that hands the de-rope's two clock geometries (true world time
+vs the trained grid) to different transformer blocks or different denoise
+steps. The dose map is measured and in TUNING.md: two settings keep the
+world-time correction, everything below them loses it, everything above adds
+shimmer. Alpha because: one scene measured deeply, everything else untested.
+
+## Audio prefix freeze
+
+`motion.py`, inputs `audio_prefix_ticks` and `audio_prefix_release_ticks` on
+`H3 V2V Init`.
+
+The audio twin of the video prefix freeze, with a half-cosine release.
+Bench-tested on chained music (overlap correlation ~0.92 in the full
+chain, 0.98 on the pass-1-only control; beat phase 0.0 ms). It carries local continuity (level, timbre, beat),
+not a track's global phrase structure. Alpha because: the caveat list in the
+README section is load-bearing; read it before wiring.
+
+## Drift Control
+
+`h3_drift.py`, node `H3 Drift Control (alpha)`.
+
+Schedule-matched noise on a carried video prefix so a chain's later joins
+stop drifting. Second-join delta 0.680 to 0.860 with the first join
+unchanged; replicated across two chains and new seeds; joins hold 0.85-0.89 through link 4 (the earlier chain sat in the 0.65 class at its second
+join before the recipe; cross-chain comparison, not a paired arm). Refuses to stack with
+any other dynamic denoise-mask patch; sigma-split samplers unsupported.
+
+## Color Carry
+
+`h3_color_carry.py`, nodes `H3 Delta Color Carry (alpha)` and
+`H3 Scene Color Stats (alpha)`.
+
+Cancels the VAE round-trip color bias on a carried prefix by adding only
+E(corrected) minus E(original) to the latent, so the encode bias cancels and
+the weak scene-one grade survives. Active path exercised on a real 4-link render 2026-08-24: it fires, corrects in the anchor direction, and stays sub-visible under its clamps on mildly-drifted content; on the deepest tested link it fires on both channels at or near its clamp. A strong-drift bench is still owed.
+
+## Video Compare viewer (upgraded player)
+
+`video_compare.py` + `web/video_compare.js`. The review player grew a
+timeline, loop brackets, waveform, blips and a frame-exact export this
+release. KNOWN ISSUES, alpha honesty: multi-video playback inside the
+ComfyUI node surface does not hold sync reliably (browser video elements
+each run their own clock; every correction strategy trades stutter for
+offset), and the transport can wedge after scrubbing during playback -
+re-queue or reload the page to recover. The standalone deck pages built
+by `tools/compare_deck/` do not share these problems. Two more, both about
+audio: in clock sync mode audio follows only the clock-owning side, so
+locking audio to the other pane is silent until sync mode is flipped; and
+the realtime export records audio from the locked side even when it is not
+one of the two playing panes, so prefer the precise export. Planned fix,
+next iteration: the node bakes each pair into ONE combined preview stream
+and every view mode becomes a crop of it - one decoder, one clock, sync by
+construction. Deferred with it: the player is duplicated (~330 lines)
+between `web/video_compare.js` and the deck template, and a single-source
+refactor is the next iteration's job (the deck's export bitrate selector
+having been honored on only one of the two export paths was the first bite
+of that divergence).
+
+## Mid-denoise insert
+
+`motion.py`, node `H3 MidInsert (alpha)`.
+
+Inserts time-dilation tokens into a still-noisy latent at a handoff sigma
+instead of between passes, with a measured variance top-up. Kept for
+research honesty: at its one tested operating point (handoff sigma 0.53,
+four dense steps) it breaks clip continuity in playback, and it is
+documented as that negative rather than removed. Do not reach for it in
+production; the two-pass insertion path is the shipped construction.
+
+## VRAM lab instruments
+
+`vram_lab.py`, node `H3 FakeQuant (alpha)`. `H3 Sol Attention` is in the
+code but NOT registered this release.
+
+Measurement instruments from the quantization review work: FakeQuant
+fake-quantizes a chosen region of the model's activations so a precision
+regime can be auditioned without real kernels; Sol Attention switches the
+attention path for the same kind of audition. Instruments, not
+accelerators: they exist to make honest comparison pages, and their
+numbers only mean something next to a reference arm. FakeQuant ships;
+Sol Attention stays unregistered until it gets the DyRoPE arm/disarm
+pattern, because it rebinds attention process-globally with no restore
+path.

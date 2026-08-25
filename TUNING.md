@@ -14,7 +14,7 @@ rows are `HARDWARE.md`. The short table:
 |---|---|---|
 | the normal starting point (since 2026-08-19): 12-step base pass 1, turbo 6-step pass 2, audio seeded | `examples/motion_pipeline_ref2va_audioinit.json` | ~1.3x; 192 frames at 1 MP in ~12 min on our card |
 | best quality, base model throughout, audio dial available | `examples/motion_pipeline.json` | ~3.5x; the same clip at 25 steps both passes is ~3x the row above |
-| a 16 to 24 GB card | `examples/motion_pipeline_lowvram.json` | as the first row; see `LOWVRAM.md` for the fenced measurements |
+| a 16 to 24 GB card (12 reported working in the field, just slower) | `examples/motion_pipeline_lowvram.json` | as the first row; see `LOWVRAM.md` for the fenced measurements |
 | prompt and seed scouting, not a final | `examples/motion_pipeline_fast_iterate.json` | ~1x or less (0.2 -> 0.4 MP, ~95 s) |
 | user knows where the problem is (two-pass: review the oraclemap, type ranges, requeue) | `examples/motion_pipeline_targeted.json` | baseline + regen cost of YOUR spans only |
 | GUI editing on the node (blocks, painting, automation) | `examples/motion_pipeline_editor.json` | as targeted |
@@ -72,6 +72,12 @@ different dial than one who says "it changed my character's pose."
 | an action repeats or doubles in regenerated spans (two backflips become four) | the model fills dilated time with extra beats instead of slowing the existing ones; its prior for action density wins over the init. Try `inject` toward 0.5 (closer init tracking), and state exact counts positively in the prompt ("performs exactly two backflips in total"). On the roadmap as beat-anchored recovery |
 | the clip contains a mirror or a big reflection and the beats double | do NOT blame the oracle first. Synthetic probe, 2026-08-09: a reflection showing the SAME motion at the SAME time leaves the oracle's output bit-identical (its threshold is a quantile of the profile, so duplicating the motion scales every token equally and selects exactly the same ones; profile shape correlation 0.9999). What does bite is a reflection prominent at a DIFFERENT time than the body, which a camera tilt produces (mirror early, subject late): that leaves two separated hot clusters and `bridge` welds them into one long plateau, +26% dilated time in the probe, of which `bridge` alone is +18%. So on mirror content try `bridge: 0` first, then `inject` toward 0.5, then explicit counts in the prompt. Everything left over after that is the model's action-density prior, not the oracle |
 | background elements (birds, crowds, traffic) speed up during bursts | the AUTOMATIC remedies stay rejected (oracle-mask compositing popped at the boundary, blanket freeze degraded other artifacts). The manual path is new and promising: draw the keep-baseline region yourself (`show_drift` on the heatmap shows what to lasso in blue), wire it into `H3 Motion Composite` `mask` with `invert_mask` on, feather 48-64 smoothstep, and put the seam on a real edge (horizon, rooftop) where nothing moves. Use the `H3 V2V Init` `mask` freeze instead when background and subject share lighting or contact. First internal A/B (demo clip, invented flock + pagoda both removed, static seam) awaits playback ratification |
+| half a second of an otherwise good clip is wrong (a face, a prop, one bad beat) | do not re-render the clip. `H3 Repair Plan` + `H3 Repair Splice`: type the bad frame range, let the plan snap it outward to whole tokens, and splice the rest back as original pixels. Type any nearby shot cut into `shot_cuts`; the exit belongs ON a cut. AUDIO IS STILL A WORK IN PROGRESS here, the splice is video-exact and passes audio through untouched |
+| the de-roped span still plays accelerated: background agents run fast inside the held region | that is the stock clock, not the oracle. `H3 DyRoPE` gives the true-duration grid to some blocks or some steps. Two settings worth trying, `physical_blocks` 30-49 and 40-49; see the dose section below, and expect to judge it in playback because the meters cannot rank the two |
+| a de-rope with DyRoPE on shows flicker at the span boundary | flash is an early-block effect: keep the physical grid out of blocks 0-9. Any `*_blocks` range starting at 25 or above meters at the stock control's flash level. If flicker still bothers you more than jitter does, switch to `fade_physical_to_compact` at `fade_end 0.7`, which is flash-free in playback |
+| the sound restarts, jumps level or changes room at a segment join | wire the previous segment's audio as `audio_latent` and set `H3 V2V Init`'s `audio_prefix_ticks` to the handle (a 39-frame handle is exactly 65 ticks). Add `audio_prefix_release_ticks 8` for a soft handover, and then the ASSEMBLY must let the continuation own the overlap tail or the trim discards the ramp. It carries level, timbre and beat, not phrase structure |
+| contrast and texture wash out further with every link of a chain | `H3 Drift Control` on the pass-1 model: schedule-matched noise on the carried video prefix so the model stops treating it as impossibly clean. `prefix_frames` must equal the handle and `matched_steps` + `taper_steps` must equal its latent step count (39 f = 12 = 8 + 4). replicated across two chains and new seeds; joins hold 0.85-0.89 through link 4 (previously 0.65-class at link 2 without it).4% and handles accumulate it. `H3 Delta Color Carry` cancels the encode bias by construction. Active path exercised on a real 4-link render 2026-08-24: it fires, corrects in the anchor direction, and stays sub-visible under its clamps on mildly-drifted content; on the deepest tested link it fires on both channels at or near its clamp. A strong-drift bench (where the 2.4% per-round-trip signature actually accrues) is still owed. |
+| a window edit renders garbage, and the damage sits where the window USED to be | the conditioning length was not moved with the crops and the hold map. All four numbers move together: see `docs/WINDOW_MODE.md` |
 
 ## VRAM expectations (measured)
 
@@ -364,6 +370,180 @@ video; it is wired into `H3 Audio Recover`'s `reference` at `reference_mix
 1.0`. Lower the mix to hear the model's own foley for the slowed
 performance instead, or blend. If your source has no audio stream, the fit
 node's audio output carries nothing and that link must be removed.
+
+## Repairing a few frames instead of the clip
+
+The repair verb is for a finished clip that is good except for a moment of
+it. Two nodes: `H3 Repair Plan` does integer arithmetic, `H3 Repair Splice`
+does frame selection.
+
+The tuning is almost all in the plan's inputs.
+
+- `bad_start` / `bad_end` are 0-BASED and inclusive. A file-numbered frame
+  46 is 45 here, and getting this wrong by one is the most common way to
+  repair the wrong token.
+- `hold` is the dilation on the repaired span only; everything else stays
+  real time. Set `H3 Time Smear`'s `dilation` to the same number, and turn
+  its `expand_to_end` OFF: an end-expansion rewrite moves every dilated
+  coordinate the plan just computed, and the plan's report says so when it
+  detects the case.
+- `shot_cuts` is where the quality is. Type the 0-based first frame of any
+  new shot near the span. A cut inside the span, or within `cut_reach`
+  frames of its end, becomes the exit, and the splice hands back to the
+  original AT the cut so the seam is an edit the shot already had. On the
+  validation clip, not doing this left the exit seam popping at 2.6x the
+  clip's median frame delta while the model reinvented the next shot's
+  opening frames; extending the mask through the cut did not fix it (2.3x);
+  exiting on the cut did.
+- Wire `images` if you have the frames handy. It costs nothing and the
+  report then tells you whether your entry frame is quiet, and names a
+  quieter frame within four if it is not. The plan never moves the entry
+  for you: change `bad_start` yourself if you want it.
+
+Read both reports rather than eyeballing the result. The plan states the
+snapped token span, the splice bounds and the cost; the splice states the
+entry and exit seam deltas next to the ORIGINAL clip's own delta at the same
+frames, because at a hard cut a big number is the right answer. The measured
+cell (90 frames, bad 45 to 47, hold 3, cut at 53) read entry 3.99/255 =
+0.26x median, exit 138.04 against the original's own 135.57 (1.8% apart),
+and maximum absolute difference 0 outside the splice, which the node
+asserts rather than reports.
+
+**Audio is still a work in progress for repair.** The video splice is
+frame-exact; audio handling across the splice is not finished. The node
+passes an AUDIO input through untouched, same length and same clock, which
+is correct when the repair did not change the performance and is not a
+general answer. If the bad frames carried dialogue, plan on repairing the
+picture and keeping your original track.
+
+## DyRoPE: choosing the dose
+
+`H3 DyRoPE` is a dial on one question: how much of the run sees the clip's
+true world duration instead of the stock uniform grid. That dose is what
+buys the timing correction on a de-roped span, and it is also what costs
+shimmer, so tuning it is picking a point on one curve rather than finding a
+setting that is good at everything.
+
+Two findings shape the whole dial. **Flash is an early-block effect**: the
+physical grid in blocks 0 to 9 reproduces the entire flash penalty (7.84x
+against a stock control's 2.09x), while every arm that keeps it out of those
+blocks meters at the control's level. **Jitter is a dose effect**: once the
+early blocks are excluded, it scales with total physical-time exposure
+(blocks 25-49 2.61x, 30-49 2.33x, 40-49 1.39x; fading by sigma 0.3 2.72x,
+0.5 2.07x, 0.7 2.06x).
+
+The two settings worth starting from, with no winner between them:
+
+| setting | what you get | what it costs |
+|---|---|---|
+| `physical_blocks`, blocks 30-49 | world speed held neutrally through the span | slight flicker or hitch inside the span |
+| `physical_blocks`, blocks 40-49 | the smoothest span, and the cleanest meters measured (1.17x to 1.39x jitter across three takes) | on some content it slightly overshoots and reads over-smooth or slowed |
+| `fade_physical_to_compact`, `fade_end 0.7` | flash-free in playback, timing held | visible jitter (2.06x to 2.87x across takes) |
+
+Below those doses the world-time correction is gone entirely: `fade_end 0.8`
+loses it because the window is too short, and stacking a block restriction
+on top of a sigma window loses it too, even though both parents keep it.
+Above them, shimmer rises. There is no quieter setting that is still on
+time, so a clip whose timing slips wants MORE dose, not a cleverer one.
+
+Three method notes.
+
+- **The meters cannot pick for you.** They rank flash and jitter, and they
+  say nothing about whether the timing benefit survived. Every ranking
+  above came from a meter; every benefit boundary came from playback.
+- **Match the arms.** `physical_all` reproduces `H3 True Clock` exactly and
+  `compact_all` reproduces having no node in the graph, so an A/B is one
+  widget rather than two graphs. Keep the seed, the hold map and the
+  schedule fixed across arms.
+- **Watch out for the patch collision.** The `*_blocks` modes and
+  `H3 Streamed Blocks` both own the double-block replacement slot and
+  ComfyUI keeps one per block; the capability probe reports it. The fade
+  modes use no block patches and compose fine.
+
+## Audio across a join (alpha)
+
+`audio_prefix_ticks` on `H3 V2V Init` freezes the first n audio-latent ticks
+to the seeded `audio_latent` and leaves every later tick at
+`audio_strength`. It is the audio twin of the video prefix freeze, and it is
+how a continuation carries the previous segment's sound instead of starting
+a new performance.
+
+Four constraints, all of which have bitten:
+
+1. **It needs `audio_latent` wired.** The ticks are the audio latent's clock,
+   not the video's: a 39-frame carried handle is exactly 65 ticks.
+2. **An AddGuide AUDIO guide and `ref_audios` cannot coexist** in the same
+   graph; they collide in conditioning-audio packing. (Measured on core 82f839f5; treat as a current-core rule, not a model property.) Pick one route.
+3. **A release changes assembly.** With `audio_prefix_release_ticks` above 0
+   the last n ticks of the frozen prefix ramp up on a half cosine (8 ticks,
+   0.2 s, is the upstream lineage's tested recipe), and the assembly step must let the
+   CONTINUATION own the overlap tail. Trim the other way and the ramp is
+   discarded, which is worse than never asking for it.
+4. **Scope.** It carries local continuity: level, timbre, beat. It does not
+   carry global phrase structure. A longer handle helps at the seam (90
+   frames measured 0.953 overlap correlation vs 0.92 at 39) and gives the
+   model a full musical phrase of context, but only a pinned master track
+   GUARANTEES the structure; that guarantee is by construction.
+
+## Chained segments: drift and colour (alpha)
+
+Two separate decays, two separate nodes, and neither is a substitute for the
+other.
+
+`H3 Drift Control` is for contrast and texture washing out down a chain. The
+carried prefix is bit-clean conditioning, and repeated clean conditioning
+accumulates error: the seam probe reads join one around 0.9 and join two
+around 0.65 across every variant tested. The node gives the carried VIDEO
+prefix a small schedule-matched amount of the sampler's own noise at every
+model evaluation, tapering to exact at the seam end. Audio is untouched by
+design; the frozen per-tick audio prefix stays hard.
+
+Wiring and limits, in the order they trip people:
+
+- Wire the `H3 V2V Init` latent in for shape (it must already carry the
+  noise mask; the node rewrites that mask, it does not create one), feed it
+  the SAME base model your pass-1 guider uses, and take the guider's model
+  from this node's output.
+- `prefix_frames` must equal the plan's handle and sit on the 17k+5 grid.
+  39 frames is 12 latent steps, and `matched_steps` + `taper_steps` must sum
+  to exactly that: 8 + 4 is the field-validated recipe.
+- It **refuses to stack** on another dynamic denoise-mask patch, and it does
+  not support sigma-split samplers.
+- **Replicated across two chains and new seeds.** Joins hold 0.85-0.89
+  through link 4 on the newer chain; the earlier chain fell to the 0.65
+  class at its second join before the recipe existed. Cross-chain
+  comparison, not a paired drift-off arm. The recipe numbers are still
+  one recipe, not a swept space.
+
+`H3 Delta Color Carry` (fed by two `H3 Scene Color Stats`) is for the other
+decay: each carried handle is a VAE round trip, each round trip darkens
+about 2.4%, and a chain accumulates it. It decodes the prefix once, applies
+a weak scene-one exposure and saturation correction in RGB, encodes both the
+original and the corrected frames, and adds only E(corrected) - E(original)
+to the latent, so the encode bias cancels and only the grade survives. The
+delta is low-passed spatially and tapered from zero at the old edge to full
+strength beside the generated future; audio is never touched. Anchor is
+scene one's delivered tail, current is the current predecessor's tail, and
+on link one they are the same tail, so the transform is the identity.
+
+Status, so nobody tunes against a number that does not exist yet:
+Active path exercised on a real 4-link render 2026-08-24: it fires, corrects in the anchor direction, and stays sub-visible under its clamps on mildly-drifted content; on the deepest tested link it fires on both channels at or near its clamp. A strong-drift bench (where the 2.4% per-round-trip signature actually accrues) is still owed.
+
+Both are adapted from ComfyUI-MiniMaxH3-Contex-Loop (GPL-3.0, the same
+licence as this pack); the per-module credit lines in `h3_drift.py` and
+`h3_color_carry.py` state what was taken and what was deliberately not
+ported.
+
+## Window mode (retiming an excerpt)
+
+When only part of a long clip needs retiming, the window lives in four
+coupled places: the prefix crop, the excerpt crop, the hold map, and the
+regeneration's conditioning length. Move three of them and the render breaks
+with the damage parked at the OLD boundary, because a latent longer than its
+conditioning is garbage and the downstream masks resample to the old
+proportions. Window starts also quantize to a 17-frame lattice (0.708 s at
+24 fps), so a request to start at a given second lands on the nearest rung.
+The arithmetic and the procedure are in `docs/WINDOW_MODE.md`.
 
 ## Method
 

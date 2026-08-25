@@ -20,7 +20,7 @@ The folder has three tiers:
 | **a long clip, short renders** | [`motion_pipeline_extend_api.json`](motion_pipeline_extend_api.json) | alpha, API form; 141-frame segments chained by writing the last 39 frames into the next segment's latent under a per-token mask. Below |
 | **the normal starting point** | [`motion_pipeline_ref2va_audioinit.json`](motion_pipeline_ref2va_audioinit.json) | Ref2VA checkpoint, a reference image, the lightx2v turbo LoRA. 12 steps on the base model for pass 1, turbo at 6 steps for the de-rope, audio seeded. 192 frames at 1 MP in ~12 min on our card |
 | best quality, time is no object | [`motion_pipeline.json`](motion_pipeline.json) | FL2VA checkpoint, first-frame image. 25 steps both passes, no turbo, the audio fixes included. The starting-point graph run this way measured 36 min against 12 |
-| a 16 to 24 GB card | [`motion_pipeline_lowvram.json`](motion_pipeline_lowvram.json) | W4A8 checkpoint, NVFP4 text encoder, ~32 GB of system RAM. Measured on fenced 16/24/32 GB budgets, see [`../LOWVRAM.md`](../LOWVRAM.md) |
+| a 16 to 24 GB card (12 reported working in the field, just slower) | [`motion_pipeline_lowvram.json`](motion_pipeline_lowvram.json) | W4A8 checkpoint, NVFP4 text encoder, ~32 GB of system RAM. Measured on fenced 16/24/32 GB budgets, see [`../LOWVRAM.md`](../LOWVRAM.md) |
 | to try prompts and seeds fast | [`motion_pipeline_fast_iterate.json`](motion_pipeline_fast_iterate.json) | 0.2 MP pass 1, 0.4 MP de-rope, ~95 s. A scouting loop, not a final |
 
 If you only read one more line: **pass 1 decides the choreography, pass 2

@@ -1885,6 +1885,444 @@ class H3TrueClock:
         return (_TrueClockSampler(sampler, spans),)
 
 
+# --- DyRoPE: layer-wise / sigma-faded time geometry ------------------------
+#
+# H3 True Clock rewrites the RoPE t-grid for EVERY block. Measured 2026-08-15
+# on the pier cell that bought a real speed correction at the price of seam
+# flash (7.17x the arm's own baseline vs 1.87x for the control) and jitter
+# (5.06x vs 0.85x); the warped-decode arm moved the decode by 0.8%, so the
+# sampler owns the damage. The standing hypothesis is an off-distribution
+# penalty from a non-uniform grid fed identically to all 50 blocks.
+#
+# DyRoPE splits the two geometries apart so they can be given to DIFFERENT
+# blocks, or mixed over the denoise schedule:
+#   physical = True Clock spans        (true_clock_spans(holds))
+#   compact  = the stock uniform grid  (core _video_t_spans, 5/3 * 1,4,4,4,4)
+# The rotation table is built once per forward at
+# comfy/ldm/minimax/model.py:694 and handed to every block, and a
+# ``patches_replace["dit"][("double_block", i)]`` patch receives it as
+# ``args["rope_freqs"]`` and may substitute it (model.py:697-709) — so a
+# per-block table needs no core change. Fade modes need no block patches at
+# all: they hand one interpolated table to everybody, per step.
+#
+# NOTE on where the fade is computed. The packed layout (and with it
+# position_ids) is prebuilt ONCE per sampling run in extra_conds
+# (comfy/model_base.py:2206-2208), so a per-step geometry cannot ride the
+# _video_t_spans patch the way True Clock's does. It rides the rope_freqs
+# wrapper instead, which runs once per forward and can rebuild the t column.
+
+_DYROPE = {
+    "active": False,      # rope_freqs wrapper does work only when this is set
+    "mode": None,
+    "n_tokens": 0,
+    "spans_phys": None,
+    "spans_comp": None,
+    "blocks": (),         # blocks that get the ALTERNATE table
+    "fade_end": 0.5,
+    "sigma_max": None,
+    "sigma": None,
+    "alt_angles": None,   # [S, 96] angles for the alternate geometry, per forward
+    "alt_table": None,    # rotation table built lazily from alt_angles
+    "alt_requested": 0,   # how many blocks actually pulled the alternate table
+    "last_weight": None,
+}
+
+DYROPE_MODES = ["physical_all", "compact_all", "physical_blocks",
+                "compact_blocks", "fade_physical_to_compact",
+                "fade_compact_to_physical", "fade_physical_blocks"]
+
+# modes whose incoming position_ids must already carry the physical grid
+_DYROPE_PHYSICAL_ARMED = ("physical_all", "physical_blocks", "compact_blocks",
+                          "fade_physical_to_compact", "fade_compact_to_physical",
+                          "fade_physical_blocks")
+
+
+def dyrope_stock_spans(n):
+    """The core's UNPATCHED per-token t-spans, read from the core constants.
+
+    Deliberately not a call to comfy.ldm.minimax.model._video_t_spans: that
+    symbol is what True Clock (and h3-motion-lab's local rate) chain onto, so
+    while a run is armed it returns the physical grid. This is the "compact"
+    geometry by definition: the grid the model was trained on."""
+    import comfy.ldm.minimax.model as _mm
+    return [_mm.FRAME_RESCALE * _mm.FRAME_PER_TOKEN[k % len(_mm.FRAME_PER_TOKEN)]
+            for k in range(n)]
+
+
+def dyrope_grid(spans, origin=0.0):
+    """origin + exclusive cumsum, BIT-IDENTICAL to the core's _video_t_grid.
+
+    Deliberately the same float64 torch cumsum the core uses rather than a
+    python running sum: the two disagree in the last bits (summation order),
+    and the compact arm has to rebuild the exact coordinates the model would
+    have seen with no node in the graph."""
+    t = torch.tensor([float(s) for s in spans], dtype=torch.float64)
+    if t.numel() == 0:
+        return []
+    g = float(origin) + torch.cat([torch.zeros(1, dtype=torch.float64), t[:-1].cumsum(0)])
+    return g.tolist()
+
+
+def dyrope_fade_weight(sigma, sigma_max, fade_end):
+    """Weight on the FIRST-named geometry: 1.0 at sigma_max, 0.0 at fade_end,
+    linear in sigma between, clamped outside."""
+    if sigma is None or sigma_max is None:
+        return 1.0
+    span = float(sigma_max) - float(fade_end)
+    if span <= 1e-12:
+        return 0.0 if float(sigma) <= float(fade_end) else 1.0
+    w = (float(sigma) - float(fade_end)) / span
+    return max(0.0, min(1.0, w))
+
+
+def dyrope_video_rows(position_ids, t_lat):
+    """(start_row, rows_per_frame) of the target video segment.
+
+    The target streams are the last two segments of the packed sequence
+    (audio then video, comfy/ldm/minimax/model.py:715), and every row of one
+    latent frame shares one t coordinate, so the trailing run of equal t
+    values is exactly one frame's worth of rows."""
+    t_col = position_ids[:, 0]
+    total = int(t_col.shape[0])
+    last = t_col[-1]
+    rows_per_frame = int((t_col == last).flip(0).cumprod(0).sum().item())
+    if rows_per_frame <= 0:
+        raise RuntimeError("H3 DyRoPE: could not size a video frame's rows")
+    n_rows = t_lat * rows_per_frame
+    if n_rows > total:
+        raise RuntimeError(
+            "H3 DyRoPE: layout too short for %d tokens x %d rows (seq %d)"
+            % (t_lat, rows_per_frame, total))
+    return total - n_rows, rows_per_frame
+
+
+def dyrope_retimed_position_ids(position_ids, start, rows_per_frame, grid):
+    """Copy of position_ids with the video segment's t column replaced by grid
+    (one value per latent token, repeated over the frame's rows). Every other
+    row is bit-identical."""
+    out = position_ids.clone()
+    vals = torch.tensor(grid, dtype=out.dtype, device=out.device)
+    out[start:, 0] = vals.repeat_interleave(rows_per_frame)
+    return out
+
+
+def _install_dyrope_rope_patch():
+    """Chain a geometry-aware override onto MiniMaxH3Model.rope_freqs, once.
+
+    Same sanctioned shape as _install_true_clock_patch: chain whatever is
+    bound, gate on module state armed by the sampler wrapper and disarmed in
+    a finally, so an unarmed process is untouched."""
+    import comfy.ldm.minimax.model as _mm
+    if getattr(_mm.MiniMaxH3Model.rope_freqs, "_h3_dyrope", False):
+        return
+    prev = _mm.MiniMaxH3Model.rope_freqs
+
+    def patched(self, position_ids, device):
+        st = _DYROPE
+        if not st["active"]:
+            return prev(self, position_ids, device)
+        st["alt_angles"] = None
+        st["alt_table"] = None
+        n = int(st["n_tokens"])
+        total = int(position_ids.shape[0])
+        # exact-length guard, same intent as True Clock's: a layout that
+        # cannot hold this clip's tokens is somebody else's call
+        if n <= 0 or total < n:
+            return prev(self, position_ids, device)
+        start, rpf = dyrope_video_rows(position_ids, n)
+        origin = float(position_ids[start, 0])
+        g_phys = dyrope_grid(st["spans_phys"], origin)
+        g_comp = dyrope_grid(st["spans_comp"], origin)
+        # never silently mis-rotate: the rows we identified MUST be the ones
+        # True Clock already retimed
+        have = position_ids[start::rpf, 0].tolist()
+        want = g_phys if st["mode"] in _DYROPE_PHYSICAL_ARMED else g_comp
+        if len(have) != len(want) or max(abs(a - b) for a, b in zip(have, want)) > 1e-9:
+            raise RuntimeError(
+                "H3 DyRoPE: the rows identified as target video (start=%d, "
+                "%d rows/frame, %d tokens) do not carry the armed t-grid "
+                "(first mismatch %r vs %r). Refusing to rotate the wrong "
+                "rows." % (start, rpf, n, have[:4], want[:4]))
+
+        mode = st["mode"]
+        if mode == "physical_blocks":
+            g_default, g_alt = g_comp, g_phys
+        elif mode == "compact_blocks":
+            g_default, g_alt = g_phys, g_comp
+        elif mode == "fade_physical_blocks":
+            # combo arm: the named blocks see the per-step faded grid
+            # (physical at sigma_max, compact by fade_end); every other
+            # block sees compact at every step. Both dose axes at once.
+            w = dyrope_fade_weight(st["sigma"], st["sigma_max"], st["fade_end"])
+            st["last_weight"] = w
+            mixed = [w * float(a) + (1.0 - w) * float(b)
+                     for a, b in zip(st["spans_phys"], st["spans_comp"])]
+            g_default, g_alt = g_comp, dyrope_grid(mixed, origin)
+        else:  # fade_*
+            w = dyrope_fade_weight(st["sigma"], st["sigma_max"], st["fade_end"])
+            st["last_weight"] = w
+            first, second = ((st["spans_phys"], st["spans_comp"])
+                             if mode == "fade_physical_to_compact"
+                             else (st["spans_comp"], st["spans_phys"]))
+            # interpolate SPANS then cumsum: a convex mix of positive spans is
+            # positive, so the grid stays strictly monotone. Never interpolate
+            # rotation tables.
+            mixed = [w * float(a) + (1.0 - w) * float(b) for a, b in zip(first, second)]
+            g_default, g_alt = dyrope_grid(mixed, origin), None
+
+        pos_default = (position_ids if g_default is want
+                       else dyrope_retimed_position_ids(position_ids, start, rpf, g_default))
+        angles = prev(self, pos_default, device)
+        if g_alt is not None:
+            pos_alt = (position_ids if g_alt is want
+                       else dyrope_retimed_position_ids(position_ids, start, rpf, g_alt))
+            st["alt_angles"] = prev(self, pos_alt, device)
+        return angles
+
+    patched._h3_dyrope = True
+    _mm.MiniMaxH3Model.rope_freqs = patched
+
+
+def _dyrope_block_patch(index):
+    """double_block replacement that swaps in the alternate rotation table.
+
+    Registered through ModelPatcher.set_model_patch_replace, so the capability
+    probe (h3_capabilities.block_patch_report) attributes it to this pack and
+    warns about a collision with H3 Streamed Blocks, which owns the same key."""
+    def dyrope_double_block(args, extra):
+        st = _DYROPE
+        angles = st.get("alt_angles")
+        if angles is not None:
+            import comfy.ldm.minimax.model as _mm
+            table = st.get("alt_table")
+            ref = args["rope_freqs"]
+            if table is None or table.dtype != ref.dtype:
+                table = _mm.rope_rotation_table(angles, ref.dtype)
+                st["alt_table"] = table
+            st["alt_requested"] += 1
+            args = dict(args)
+            args["rope_freqs"] = table
+        return extra["original_block"](args)
+
+    dyrope_double_block._h3_dyrope_block = int(index)
+    return dyrope_double_block
+
+
+def _dyrope_diffusion_wrapper(executor, *args, **kwargs):
+    """DIFFUSION_MODEL wrapper: stash this step's sigma before rope_freqs runs.
+
+    forward() builds the executor around _forward with (x, timestep, context,
+    transformer_options, ...) (comfy/ldm/minimax/model.py:539-545) and the
+    core derives sigma as timestep/1000 (model.py:571)."""
+    st = _DYROPE
+    if st["active"] and str(st["mode"]).startswith("fade"):
+        ts = args[1] if len(args) > 1 else kwargs.get("timestep")
+        try:
+            st["sigma"] = float(ts.flatten()[0]) / 1000.0
+        except Exception:  # noqa: BLE001
+            st["sigma"] = None
+    return executor(*args, **kwargs)
+
+
+class _DyRoPESampler:
+    def __init__(self, inner, state):
+        self.inner = inner
+        self.state = state
+
+    def max_denoise(self, model_wrap, sigmas):
+        return self.inner.max_denoise(model_wrap, sigmas)
+
+    def sample(self, *args, **kwargs):
+        prev_clock = _TRUE_CLOCK["spans"]
+        _TRUE_CLOCK["spans"] = self.state["_clock_spans"]   # None for compact_all
+        for k, v in self.state.items():
+            if not k.startswith("_"):
+                _DYROPE[k] = v
+        _DYROPE["sigma"] = None
+        _DYROPE["alt_angles"] = None
+        _DYROPE["alt_table"] = None
+        _DYROPE["alt_requested"] = 0
+        sigmas = kwargs.get("sigmas")
+        if sigmas is None and len(args) > 1:
+            sigmas = args[1]
+        try:
+            _DYROPE["sigma_max"] = float(sigmas[0])
+        except Exception:  # noqa: BLE001
+            _DYROPE["sigma_max"] = None
+        try:
+            return self.inner.sample(*args, **kwargs)
+        finally:
+            _TRUE_CLOCK["spans"] = prev_clock if prev_clock is None else None
+            _DYROPE["active"] = False
+            _DYROPE["mode"] = None
+            _DYROPE["alt_angles"] = None
+            _DYROPE["alt_table"] = None
+            _DYROPE["sigma"] = None
+            _DYROPE["sigma_max"] = None
+
+
+DYROPE_PRESETS = {
+    "custom": None,  # knobs used as-is; old graphs (no preset widget) resolve here
+    "timing fidelity (blocks 30-49)": ("physical_blocks", 30, 49, 0.7),
+    "minimal shimmer (blocks 40-49)": ("physical_blocks", 40, 49, 0.7),
+    "flash-free fade (sigma 0.7)": ("fade_physical_to_compact", 0, 24, 0.7),
+}
+
+
+class H3DyRoPE:
+    """EXPERIMENTAL: give different BLOCKS (or different SIGMAS) different
+    time geometries, instead of one grid for all 50.
+
+    Wraps a SAMPLER and (for the per-block modes) a MODEL, scoped to one run.
+    """
+
+    DESCRIPTION = (
+        "EXPERIMENTAL, default-off, off-distribution: an instrument for the "
+        "question H3 True Clock left open. True Clock hands its "
+        "density-corrected RoPE t-grid to every block at every step; the "
+        "measured cost was seam flash and jitter well above the control's, "
+        "while the speed correction itself worked. This node splits the two "
+        "geometries so they can be handed out selectively:\n\n"
+        "  physical = True Clock's grid (the clip's true world duration)\n"
+        "  compact  = the stock uniform grid the model was trained on\n\n"
+        "physical_all reproduces H3 True Clock exactly; compact_all "
+        "reproduces having no node at all. Those two are the identity arms. "
+        "*_blocks give the named block range one geometry and every other "
+        "block the other. fade_* give every block ONE grid per step, "
+        "interpolated between the two as a function of sigma, complete at "
+        "fade_end (spans are interpolated and then accumulated, so the grid "
+        "stays monotone).\n\n"
+        "Wire H3 Time Smear's hold_map_used into hold_map, the sampler you "
+        "would otherwise pass to SamplerCustomAdvanced into sampler, and — "
+        "for the *_blocks modes — route the model OUT of this node into your "
+        "guider, or the per-block tables never reach the sampler.\n\n"
+        "Not composable with H3 Streamed Blocks: both own the "
+        "double_block replacement slot and Comfy keeps only one per block "
+        "(the capability probe reports the collision). The fade modes use no "
+        "block patches and compose fine.\n\n"
+        "Judged on: does a hybrid keep the world-speed correction while "
+        "bringing seam flash and jitter back toward the control's.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "sampler": ("SAMPLER",),
+            "hold_map": ("STRING", {"default": "", "forceInput": True,
+                         "tooltip": "hold_map_used from the H3 Time Smear that made this clip"}),
+            "mode": (DYROPE_MODES, {"default": "physical_blocks",
+                     "tooltip": "which blocks/steps see the physical grid"}),
+            "block_lo": ("INT", {"default": 30, "min": 0, "max": 49,
+                         "tooltip": "first block of the range (inclusive), *_blocks modes only"}),
+            "block_hi": ("INT", {"default": 49, "min": 0, "max": 49,
+                         "tooltip": "last block of the range (inclusive), *_blocks modes only"}),
+            "fade_end": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.01,
+                         "tooltip": "sigma at which the fade completes; linear in sigma from sigma_max down to here"}),
+        },
+        "optional": {
+            "preset": (list(DYROPE_PRESETS), {"default": "custom",
+                       "tooltip": "a measured setting overrides the mode/block/fade knobs; "
+                                  "custom leaves the knobs in charge (old graphs resolve here)"}),
+        }}
+
+    RETURN_TYPES = ("MODEL", "SAMPLER", "STRING")
+    RETURN_NAMES = ("model", "sampler", "report")
+    FUNCTION = "wrap"
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    @classmethod
+    def IS_CHANGED(cls, *a, **k):
+        # Same reason as H3TrueClock: the layout is prebuilt in extra_conds
+        # BEFORE sampler.sample runs, so the override must be armed at
+        # node-execution time — and a cached hit would leave it disarmed.
+        return float("nan")
+
+    def wrap(self, model, sampler, hold_map, mode, block_lo, block_hi, fade_end,
+             preset="custom"):
+        chosen = DYROPE_PRESETS.get(preset)
+        if chosen is not None:
+            mode, block_lo, block_hi, fade_end = chosen
+        holds = json.loads(hold_map)["holds"]
+        spans_phys = true_clock_spans(holds)
+        n = len(spans_phys)
+        spans_comp = dyrope_stock_spans(n)
+        lo, hi = int(min(block_lo, block_hi)), int(max(block_lo, block_hi))
+        uses_blocks = mode in ("physical_blocks", "compact_blocks",
+                               "fade_physical_blocks")
+        is_fade = str(mode).startswith("fade")
+        blocks = tuple(range(lo, hi + 1)) if uses_blocks else ()
+
+        state = {
+            "active": uses_blocks or is_fade,
+            "mode": mode,
+            "n_tokens": n,
+            "spans_phys": spans_phys,
+            "spans_comp": spans_comp,
+            "blocks": blocks,
+            "fade_end": float(fade_end),
+            "_clock_spans": spans_phys if mode in _DYROPE_PHYSICAL_ARMED else None,
+        }
+
+        _install_true_clock_patch()
+        if state["active"]:
+            _install_dyrope_rope_patch()
+        # armed NOW, before extra_conds builds the layout
+        _TRUE_CLOCK["spans"] = state["_clock_spans"]
+        for k, v in state.items():
+            if not k.startswith("_"):
+                _DYROPE[k] = v
+
+        out_model = model
+        n_blocks = None
+        if uses_blocks:
+            dm = getattr(getattr(model, "model", None), "diffusion_model", None)
+            n_blocks = len(getattr(dm, "blocks", []) or [])
+            try:  # collision report: who already has a hand on this model (never blocks)
+                from . import h3_capabilities as _caps
+                for w in _caps.collision_warnings(_caps.block_patch_report(model)):
+                    print("[MAINodes] H3DyRoPE: " + w)
+            except Exception as _e:  # noqa: BLE001
+                print("[MAINodes] H3DyRoPE: collision report skipped (%s: %s)" % (type(_e).__name__, _e))
+            out_model = model.clone()
+            for i in blocks:
+                if n_blocks and i >= n_blocks:
+                    continue
+                out_model.set_model_patch_replace(_dyrope_block_patch(i), "dit", "double_block", i)
+        if is_fade:
+            import comfy.patcher_extension as _px
+            if out_model is model:
+                out_model = model.clone()
+            out_model.add_wrapper(_px.WrappersMP.DIFFUSION_MODEL,
+                                  _dyrope_diffusion_wrapper)
+
+        if mode == "fade_physical_blocks":
+            who = ("blocks %d-%d -> physical faded to compact by sigma %.3f, "
+                   "all other blocks -> compact%s"
+                   % (lo, hi, float(fade_end),
+                      "" if n_blocks is None else " (of %d)" % n_blocks))
+        elif uses_blocks:
+            alt = "physical" if mode == "physical_blocks" else "compact"
+            other = "compact" if mode == "physical_blocks" else "physical"
+            who = ("blocks %d-%d -> %s, all other blocks -> %s%s"
+                   % (lo, hi, alt, other,
+                      "" if n_blocks is None else " (of %d)" % n_blocks))
+        elif is_fade:
+            who = ("all blocks -> one interpolated grid per step, %s, "
+                   "complete at sigma %.3f" % (mode[5:].replace("_", " "), float(fade_end)))
+        else:
+            who = "all blocks -> %s (identity arm, no block patches)" % mode[:-4].rstrip("_")
+
+        report = ("H3 DyRoPE: mode=%s block_lo=%d block_hi=%d fade_end=%.3f\n"
+                  "tokens=%d  physical sum=%.6f (= %d world frames x 5/3)  "
+                  "compact sum=%.6f (= %d dilated frames x 5/3)\n"
+                  "%s"
+                  % (mode, lo, hi, float(fade_end), n,
+                     sum(spans_phys), len(holds),
+                     sum(spans_comp), sum(_snap_holds(holds)), who))
+        return (out_model, _DyRoPESampler(sampler, state), report)
+
+
+
 class H3V2VInit:
     """Wrap a VAE-encoded video latent as the nested AV latent that
     SamplerCustomAdvanced expects for H3, ready for partial-denoise
@@ -2000,6 +2438,17 @@ class H3V2VInit:
                            "H3 Inject Schedule makes on the video side; 0.0 pins the track outright. "
                            "H3 runs ONE joint pass, so the sigma schedule cannot set this per "
                            "modality - it rides the audio half of the noise mask"}),
+            "audio_prefix_ticks": ("INT", {"default": 0, "min": 0, "max": 36000,
+                "tooltip": "(alpha) freeze the FIRST n audio-latent ticks to the seeded audio_latent "
+                           "content (noise-mask 0 there; every later tick keeps audio_strength). The "
+                           "audio twin of the video prefix freeze: a 39-frame carried handle is 65 "
+                           "ticks exactly. Needs audio_latent wired. 0 = off (scalar behaviour "
+                           "unchanged)"}),
+            "audio_prefix_release_ticks": ("INT", {"default": 0, "min": 0, "max": 400,
+                "tooltip": "(alpha) half-cosine release: the LAST n ticks of the frozen prefix ramp "
+                           "0 -> audio_strength instead of cutting hard (8 ticks = 0.2 s, the field's "
+                           "tested recipe). If used, assembly must let the continuation OWN the "
+                           "overlap tail, or the trim discards the release. 0 = hard edge"}),
         }}
 
     RETURN_TYPES = ("LATENT",)
@@ -2009,7 +2458,8 @@ class H3V2VInit:
     def build(self, samples, length=0, oracle_samples=None, freeze_threshold=0.0,
               freeze_grow=2, mask=None, mask_feather=0, invert_mask=False,
               time_varying=False, audio_latent=None, audio_strength=1.0,
-              audio_mode="custom (use audio_strength)"):
+              audio_mode="custom (use audio_strength)", audio_prefix_ticks=0,
+              audio_prefix_release_ticks=0):
         import torch.nn.functional as F
 
         import comfy.nested_tensor
@@ -2021,13 +2471,24 @@ class H3V2VInit:
             print("[H3V2VInit] audio_strength/audio_mode asks pass 2 to follow an audio "
                   "init, but audio_latent is not wired: the rows are still ZEROS, so it "
                   "has nothing to follow. Wire H3 Audio Smear -> VAEEncodeAudio.")
-        if audio_latent is not None and audio_strength == 1.0:
+        if audio_latent is not None and audio_strength == 1.0 and not audio_prefix_ticks:
             # the likelier half of the mistake: the wiring is done and the last
             # step is not, so the seed is written and then fully renoised away
             print("[H3V2VInit] audio_latent is wired but audio_strength is 1.0, which "
                   "re-renders the audio rows completely: the seeded performance is "
                   "discarded and this behaves exactly as if nothing were wired. Set "
                   "audio_mode to 'follow the original performance (0.5)'.")
+
+        def _aud_noise_mask():
+            m = torch.full((1, 32, 2, audio_t), float(audio_strength))
+            if audio_prefix_ticks:
+                p = min(int(audio_prefix_ticks), audio_t)
+                m[..., :p] = 0.0
+                r = min(int(audio_prefix_release_ticks), p)
+                if r > 0:
+                    ramp = (0.5 - 0.5*torch.cos(torch.linspace(0, torch.pi, r))) * float(audio_strength)
+                    m[..., p-r:p] = ramp
+            return m
 
         video = _video_component(samples)
         if not length:
@@ -2082,7 +2543,7 @@ class H3V2VInit:
             if m.shape[0] == 1:
                 m = m.expand(t_lat, h, w)
             vid_mask = m[None, None].to(video.device)
-            aud_mask = torch.full((1, 32, 2, audio_t), float(audio_strength))
+            aud_mask = _aud_noise_mask()
             out["noise_mask"] = comfy.nested_tensor.NestedTensor(
                 (vid_mask.contiguous(), aud_mask))
         elif oracle_samples is not None and freeze_threshold > 0:
@@ -2104,15 +2565,15 @@ class H3V2VInit:
             if m.shape[-2:] != (h, w):
                 m = F.interpolate(m, size=(h, w), mode="nearest")
             vid_mask = m[0, 0].expand(t_lat, h, w)[None, None].to(video.device)
-            aud_mask = torch.full((1, 32, 2, audio_t), float(audio_strength))
+            aud_mask = _aud_noise_mask()
             out["noise_mask"] = comfy.nested_tensor.NestedTensor(
                 (vid_mask.contiguous(), aud_mask))
-        if "noise_mask" not in out and audio_strength != 1.0:
+        if "noise_mask" not in out and (audio_strength != 1.0 or audio_prefix_ticks):
             # audio-only injection: no video mask was asked for, so the video
             # half denoises exactly as it did before this input existed
             out["noise_mask"] = comfy.nested_tensor.NestedTensor(
                 (torch.ones(1, 1, t_lat, video.shape[3], video.shape[4]),
-                 torch.full((1, 32, 2, audio_t), float(audio_strength))))
+                 _aud_noise_mask()))
         return (out,)
 
 
@@ -2217,6 +2678,34 @@ def temporal_insert_map(holds):
     return holds, dilated, t_base, t_dil, plan
 
 
+def temporal_insert_fill(video, plan, t_dil):
+    """Expand a video latent onto the dilated token grid, per a plan.
+
+    The grid half of the insert, factored out of H3TemporalInsert so
+    H3MidInsert (the mid-denoise variant) runs the SAME arithmetic instead of
+    a second copy of it: exact hits are bit-copied, every other token-time is
+    the plain lerp of its bracketing base tokens.
+
+    Returns (out_v, copied, inserted, brackets) where copied/inserted are
+    dilated token indices in plan order and brackets is [(n, lo, hi, w_hi)]
+    for the inserted ones (what a variance top-up needs).
+    """
+    out_v = torch.empty(video.shape[0], video.shape[1], t_dil,
+                        video.shape[3], video.shape[4],
+                        device=video.device, dtype=video.dtype)
+    copied, inserted, brackets = [], [], []
+    for n, (_t, lo, hi, w, exact) in enumerate(plan):
+        if exact >= 0:
+            out_v[:, :, n] = video[:, :, exact]            # verbatim, maxabs 0
+            copied.append(n)
+            continue
+        inserted.append(n)
+        brackets.append((n, lo, hi, w))
+        out_v[:, :, n] = ((1.0 - w) * video[:, :, lo].float()
+                          + w * video[:, :, hi].float()).to(video.dtype)
+    return out_v, copied, inserted, brackets
+
+
 class H3TemporalInsert:
     """Temporal super-resolution as temporal INPAINTING: expand a video
     latent onto the dilated token grid, interpolate the inserted
@@ -2315,27 +2804,17 @@ class H3TemporalInsert:
             f"base clip needs {t_base} (is this the SMEARED latent? this node "
             "takes the ORIGINAL clip's latent)")
 
-        out_v = torch.empty(video.shape[0], video.shape[1], t_dil,
-                            video.shape[3], video.shape[4],
-                            device=video.device, dtype=video.dtype)
+        out_v, copied, inserted, _brackets = temporal_insert_fill(
+            video, plan, t_dil)
         mask_v = torch.zeros(1, 1, t_dil, video.shape[3], video.shape[4],
                              device=video.device, dtype=video.dtype)
         gen = torch.Generator(device="cpu").manual_seed(int(noise_seed))
-        copied, inserted = [], []
-        for n, (_t, lo, hi, w, exact) in enumerate(plan):
-            if exact >= 0:
-                out_v[:, :, n] = video[:, :, exact]        # verbatim, maxabs 0
-                copied.append(n)
-                continue
-            inserted.append(n)
+        for n in inserted:
             mask_v[:, :, n] = 1.0
-            if init_mode == "noise":
+            if init_mode == "noise":                       # overwrite the lerp
                 out_v[:, :, n] = torch.randn(
                     video.shape[0], video.shape[1], video.shape[3],
                     video.shape[4], generator=gen).to(video.device, video.dtype)
-            else:
-                out_v[:, :, n] = ((1.0 - w) * video[:, :, lo].float()
-                                  + w * video[:, :, hi].float()).to(video.dtype)
 
         if audio_in is None:
             audio = torch.zeros(video.shape[0], 32, 2, _audio_latent_t(dilated),
@@ -2384,6 +2863,291 @@ class H3TemporalInsert:
             rep.insert(1, note)
         used = json.dumps({"holds": holds, "world_len": len(holds)})
         return (out, {"samples": nm}, used, "\n".join(rep))
+
+
+# ------------------------------------------------- mid-denoise topology change
+# PoC (2026-08-24): today the coarse -> dense grid change happens BETWEEN
+# passes - pass 1 takes the coarse grid all the way to sigma 0, H3TemporalInsert
+# expands it, pass 2 re-noises and denoises again. The idea here is to change
+# topology WHILE the denoise is running: stop the coarse pass at a handoff
+# sigma_s, insert the new token-times into the STILL-NOISY latent, and let the
+# dense grid carry on from sigma_s to 0, so the model finishes deciding the
+# motion with the in-betweens already present.
+#
+# THE ONE PIECE OF MATHS THIS NODE OWNS: an inserted token is
+# init = (1 - w) * x_lo + w * x_hi, and at a mid-schedule sigma its two
+# neighbours are NOISY, so the lerp is variance-DEFICIENT - it averages two
+# imperfectly-correlated noise realisations and lands smoother than a real
+# token at that position. Per element, with neighbour variances v_lo / v_hi
+# and noise correlation rho,
+#
+#     Var(init) = (1-w)^2 v_lo + w^2 v_hi + 2 w (1-w) rho sqrt(v_lo v_hi)
+#
+# while a genuine token there would carry, interpolating its neighbours'
+# dispersion the same way its content is interpolated,
+#
+#     v_tgt = (1-w) v_lo + w v_hi
+#
+# Subtract, and rho and the square root collapse into one thing that is
+# actually ON THE TENSOR - the neighbour RESIDUAL:
+#
+#     deficit = v_tgt - Var(init)
+#             = w (1-w) [v_lo + v_hi - 2 rho sqrt(v_lo v_hi)]
+#             = w (1-w) * Var(x_hi - x_lo)                              (*)
+#
+# (*) is why nothing here has to ASSUME a correlation: the deficit is measured
+# directly, per inserted token and per channel, from the residual between the
+# two bracketing tokens. rho is then RECOVERED for the report,
+#     rho = (v_lo + v_hi - Var(x_hi - x_lo)) / (2 sqrt(v_lo v_hi)),
+# and never used to size anything. Sanity check on (*): put v_lo = v_hi = v
+# and w = 0.5 and it gives Var(init) = v (1 + rho) / 2, deficit = v (1 - rho)/2
+# - the (1+rho)/2 law, as the symmetric special case.
+#
+# noise_topup scales the fresh gaussian's VARIANCE (std = sqrt(topup*deficit)),
+# so 0 is the raw lerp and 1 restores the neighbours' spread exactly.
+#
+# HONEST CAVEAT, and it is not small: Var(x_hi - x_lo) also contains the real
+# SIGNAL change between the two neighbours. On fast content the lerp is
+# legitimately smoother than a real token because the content moved, and a full
+# top-up then pays for real motion with white noise. Give sigma_s and the
+# report prints the noise-only bound the flow parameterisation predicts -
+# a handed-off latent is x/(1-sigma) with x = (1-sigma)x0 + sigma*eps, so an
+# independent unit-white residual alone would explain
+#     deficit_noise = 2 w (1-w) (sigma/(1-sigma))^2
+# (H3's video scale_factor is 1.0, so process_latent_out does not rescale this
+# [SRC comfy/latent_formats.py MiniMaxH3Video]). Measured deficit far above
+# that bound means the excess is content, not noise.
+class H3MidInsert:
+    """Insert token-times into a latent that is still mid-denoise, so the
+    dense grid finishes the schedule instead of starting a new one."""
+
+    DESCRIPTION = (
+        "EXPERIMENTAL PoC, off-distribution. The temporal insert done in the "
+        "MIDDLE of a denoise instead of between two passes. Run the coarse "
+        "grid down to a handoff sigma_s only (SplitSigmas' high half), hand "
+        "the STILL-NOISY latent to this node, and sample the dilated grid "
+        "from sigma_s to 0 (the low half) - the model then decides the "
+        "motion with the in-betweens already in the sequence, and the coarse "
+        "pass is partial.\n\n"
+        "The grid arithmetic is H3 Temporal Insert's, shared code, so the two "
+        "routes can never disagree about which token-times exist. What is "
+        "different is the INIT: lerping two NOISY neighbours is variance-"
+        "deficient, and noise_topup adds fresh gaussian noise sized from the "
+        "MEASURED neighbour residual (per token, per channel) so the inserted "
+        "tokens carry the same spread their neighbours do. 0 = raw lerp, "
+        "1 = full top-up. The measured correlation and the deficit are "
+        "printed in the report; wire sigma_s to also print the noise-only "
+        "bound the flow parameterisation predicts, which is how you see how "
+        "much of the deficit was real motion rather than noise.\n\n"
+        "NO NOISE MASK, deliberately. A repaint mask re-noises its frozen "
+        "content from a CLEAN latent every step (comfy/samplers.py "
+        "KSamplerX0Inpaint), and this latent is not clean - it is already at "
+        "sigma_s. Everything continues denoising together, which is the whole "
+        "point. Any noise_mask on the incoming latent is dropped.\n\n"
+        "WIRING: pass A SamplerCustomAdvanced ends on sigma_s and its "
+        "'output' is the noisy latent (already divided by 1-sigma_s by "
+        "inverse_noise_scaling); pass B MUST take DisableNoise, whose zero "
+        "noise makes noise_scaling multiply by 1-sigma_s again and hand the "
+        "sampler back exactly the state pass A left. RandomNoise on pass B "
+        "would add a second full noise draw on top and destroy the handoff.\n\n"
+        "AUDIO IS PASSED THROUGH UNCHANGED - it stays on the BASE clip's "
+        "clock while the video moves onto the dilated one, so pass B sees an "
+        "audio stream that covers only part of the video's span. Take the "
+        "delivered audio from elsewhere. A plain video latent stays plain: "
+        "unlike H3 Temporal Insert this node will NOT fabricate a zero audio "
+        "track, because a clean zero mid-schedule is not a valid state.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "samples": ("LATENT", {"tooltip": "the nested AV latent MID-SCHEDULE: SamplerCustomAdvanced's 'output' from a pass whose sigmas ended at sigma_s"}),
+            "hold_map": ("STRING", {"default": "", "forceInput": True,
+                         "tooltip": "the same map H3 Time Smear / the oracles speak; hold h means h token-times where there was 1"}),
+            "noise_topup": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                            "tooltip": "fraction of the MEASURED variance deficit to restore with fresh gaussian noise. 0 = raw lerp, 1 = the inserted tokens carry their neighbours' spread"}),
+            "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
+                     "tooltip": "the top-up noise draw; fixed so the init is reproducible"}),
+        }, "optional": {
+            "expand_to_end": ("BOOLEAN", {"default": False,
+                              "tooltip": "H3 Temporal Insert's end-jump rewrite. OFF by default here: a mid-denoise arm wants the same grid its between-passes control used"}),
+            "length": ("INT", {"default": 0, "min": 0, "max": 3600,
+                       "tooltip": "0 = derive the base length from the latent; nonzero asserts this exact base length"}),
+            "sigma_s": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001,
+                        "tooltip": "REPORT ONLY, changes nothing: the handoff sigma pass A ended on. Given it, the report prints the noise-only variance deficit the flow parameterisation predicts, to compare against the measured one"}),
+        }}
+
+    RETURN_TYPES = ("LATENT", "STRING", "STRING")
+    RETURN_NAMES = ("samples", "hold_map", "report")
+    FUNCTION = "insert"
+    CATEGORY = "latent/minimax/motion"
+
+    def insert(self, samples, hold_map, noise_topup=1.0, seed=0,
+               expand_to_end=False, length=0, sigma_s=0.0):
+        import comfy.nested_tensor
+
+        parsed = json.loads(hold_map)
+        holds_in = list(parsed["holds"])
+        z = samples["samples"]
+        nested = bool(getattr(z, "is_nested", False) and hasattr(z, "unbind"))
+        parts = list(z.unbind()) if nested else [z]
+        video = parts[0]                                  # (B, 24, t_lat, h, w)
+        audio_in = parts[1] if len(parts) > 1 else None
+        if "world_len" in parsed:
+            assert int(parsed["world_len"]) == len(holds_in), (
+                f"hold map says world_len {parsed['world_len']} but carries "
+                f"{len(holds_in)} holds")
+        if length:
+            assert length == len(holds_in), (
+                f"length {length} but the hold map covers {len(holds_in)} frames")
+
+        note = None
+        if expand_to_end:
+            holds_in, note = expand_hold_map_to_end(holds_in)
+            if note:
+                print("[MAINodes] H3MidInsert " + note)
+
+        holds, dilated, t_base, t_dil, plan = temporal_insert_map(holds_in)
+        assert video.shape[2] == t_base, (
+            f"the latent has {video.shape[2]} tokens; a {len(holds)}-frame "
+            f"base clip needs {t_base} (this node takes the COARSE grid, "
+            "mid-schedule - is it already dilated?)")
+
+        # the grid: H3TemporalInsert's own arithmetic, shared code
+        out_v, copied, inserted, brackets = temporal_insert_fill(
+            video, plan, t_dil)
+
+        # the top-up: measured per inserted token, per channel. See the block
+        # comment above this class for the derivation of deficit = w(1-w)Var(r).
+        vf = video.float()
+        dims = (-2, -1)                       # stats over the spatial cells
+        gen = torch.Generator(device="cpu").manual_seed(int(seed))
+        rho_all, def_all, tgt_all, std_all, ident = [], [], [], [], 0.0
+        for n, lo, hi, w in brackets:
+            a, b = vf[:, :, lo], vf[:, :, hi]              # (B, C, h, w)
+            v_lo = a.var(dim=dims, unbiased=False)
+            v_hi = b.var(dim=dims, unbiased=False)
+            v_res = (b - a).var(dim=dims, unbiased=False)  # THE measurement
+            v_tgt = (1.0 - w) * v_lo + w * v_hi
+            deficit = (w * (1.0 - w)) * v_res
+            rho = ((v_lo + v_hi - v_res)
+                   / (2.0 * (v_lo * v_hi).clamp_min(1e-20).sqrt()))
+            # identity self-check: the lerp we actually built must have the
+            # variance (*) predicts, v_tgt - deficit
+            v_lerp = out_v[:, :, n].float().var(dim=dims, unbiased=False)
+            ident = max(ident, float((v_lerp - (v_tgt - deficit)).abs().max()
+                                     / max(float(v_tgt.abs().max()), 1e-20)))
+            std = (float(noise_topup) * deficit).clamp_min(0.0).sqrt()
+            if noise_topup > 0.0:
+                g = torch.randn(tuple(a.shape), generator=gen).to(
+                    video.device, torch.float32)
+                out_v[:, :, n] = (out_v[:, :, n].float()
+                                  + std[..., None, None] * g).to(video.dtype)
+            rho_all.append(rho)
+            def_all.append(deficit)
+            tgt_all.append(v_tgt)
+            std_all.append(std)
+
+        out = dict(samples)
+        # a repaint mask would re-noise its frozen rows FROM A CLEAN LATENT
+        # every step; this latent is at sigma_s, so any inbound mask is a bug
+        dropped = out.pop("noise_mask", None)
+        if audio_in is None:
+            out["samples"] = out_v
+            audio_note = ("no audio component: the latent stays VIDEO-ONLY "
+                          "(a fabricated zero audio track would be a CLEAN "
+                          "row in a mid-schedule pack)")
+        else:
+            out["samples"] = comfy.nested_tensor.NestedTensor((out_v, audio_in))
+            audio_note = (f"audio passed through untouched, "
+                          f"{tuple(audio_in.shape)} {audio_in.dtype} - still "
+                          f"the BASE clip's clock, "
+                          f"{audio_in.shape[-1]} ticks against "
+                          f"{_audio_latent_t(dilated)} the dilated video wants")
+
+        exact_hits = [p[4] for p in plan if p[4] >= 0]
+        dupes = len(exact_hits) - len(set(exact_hits))
+        starts = [f for f, h in enumerate(holds)
+                  if h > 1 and (f == 0 or holds[f - 1] <= 1)]
+        off = [f for f in starts if f % LEGAL_STEP]
+
+        def _stat(xs):
+            if not xs:
+                return (0.0, 0.0, 0.0)
+            t = torch.stack([x.reshape(-1) for x in xs])
+            return (float(t.mean()), float(t.min()), float(t.max()))
+
+        rho_m, rho_lo, rho_hi = _stat(rho_all)
+        def_m, def_lo, def_hi = _stat(def_all)
+        tgt_m, _tl, _th = _stat(tgt_all)
+        std_m, _sl, std_hi = _stat(std_all)
+        rep = [
+            f"mid-denoise insert: world {len(holds)}f -> dilated {dilated}f, "
+            f"t_lat {t_base} -> {t_dil} tokens (+{t_dil - t_base}); video "
+            f"{video.shape[3]}x{video.shape[4]} cells",
+            f"copied verbatim, STILL NOISY and still denoising (no freeze "
+            f"mask): {len(copied)} token-times [{_index_runs(copied)}]",
+            f"inserted (lerp of noisy neighbours): {len(inserted)} token-times "
+            f"[{_index_runs(inserted)}]",
+            f"measured neighbour correlation rho (per token, per channel, "
+            f"recovered from Var(x_hi - x_lo)): mean {rho_m:.4f}, "
+            f"range [{rho_lo:.4f}, {rho_hi:.4f}]",
+            f"measured variance deficit w(1-w)Var(x_hi - x_lo): mean "
+            f"{def_m:.5f} = {100.0 * def_m / max(tgt_m, 1e-20):.1f}% of the "
+            f"target token variance {tgt_m:.5f}; range "
+            f"[{def_lo:.5f}, {def_hi:.5f}]",
+            f"top-up applied: noise_topup {noise_topup:.2f} -> fresh gaussian "
+            f"std mean {std_m:.5f}, max {std_hi:.5f}, seed {int(seed)}"
+            + ("" if noise_topup > 0.0 else "  (RAW LERP: nothing added)"),
+            f"identity self-check |Var(lerp) - (v_tgt - deficit)| / v_tgt: "
+            f"{ident:.3e} (must be ~0; it is the derivation, verified on this "
+            f"tensor)",
+        ]
+        if sigma_s >= 1.0:
+            # report only, and the bound divides by (1 - sigma_s): at sigma_s 1
+            # the whole latent IS the noise and the ratio is undefined
+            rep.append(
+                f"noise-only bound at sigma_s {sigma_s:.4f}: n/a (the bound "
+                f"scales as (sigma_s/(1-sigma_s))^2, which is undefined at "
+                f"sigma_s 1.0 - pure noise; measured deficit {def_m:.5f})")
+        elif sigma_s > 0.0:
+            wsum = sum(w * (1.0 - w) for _n, _lo, _hi, w in brackets)
+            wbar = wsum / max(len(brackets), 1)
+            bound = 2.0 * wbar * (sigma_s / (1.0 - sigma_s)) ** 2
+            ratio = def_m / max(bound, 1e-20)
+            rep.append(
+                f"noise-only bound at sigma_s {sigma_s:.4f}: an independent "
+                f"unit-white residual alone explains a deficit of "
+                f"{bound:.5f} (mean w(1-w) {wbar:.4f}); measured {def_m:.5f} "
+                f"= {ratio:.2f}x that - "
+                + ("above 1x, so the excess is CONTENT change between "
+                   "neighbours and a full top-up pays for real motion with "
+                   "white noise" if ratio > 1.0 else
+                   "at or below 1x, so the residual is noise-like and the "
+                   "neighbours' noise is CORRELATED (a denoised trajectory "
+                   "keeps its draw); the top-up is honest here"))
+        rep += [
+            (f"T2a rule 1 - hold spans start at frames [{_index_runs(starts)}]; "
+             + ("all on 17-multiples"
+                if not off else
+                f"OFF the 17-multiple phase: {off} - worst case for the "
+                "inserted singletons")),
+            f"AUDIO: {audio_note}",
+            "NO NOISE MASK is emitted: the copied tokens are mid-schedule, "
+            "and repaint would re-noise them from a clean latent. "
+            + ("an inbound noise_mask was DROPPED"
+               if dropped is not None else "none was on the input"),
+            "PASS B MUST USE DisableNoise: pass A's output is already "
+            "x/(1-sigma_s) (inverse_noise_scaling), and zero noise makes "
+            "noise_scaling multiply by (1-sigma_s) again - an exact handoff",
+        ]
+        if dupes:
+            rep.insert(3, f"WARNING: {dupes} exact-hit token(s) are DUPLICATES "
+                          "of another dilated token (edge clamping), so the "
+                          "same noise realisation appears twice in the grid")
+        if note:
+            rep.insert(1, note)
+        used = json.dumps({"holds": holds, "world_len": len(holds)})
+        return (out, used, "\n".join(rep))
 
 
 LATENT_CELL = 16   # image pixels per latent spatial cell (H3 video VAE)
@@ -4632,8 +5396,10 @@ TIMESMEAR_CLASS_MAPPINGS = {
     "H3TimeSmear": H3TimeSmear,
     "H3ExactRecover": H3ExactRecover,
     "H3TrueClock": H3TrueClock,
+    "H3DyRoPE": H3DyRoPE,
     "H3V2VInit": H3V2VInit,
     "H3TemporalInsert": H3TemporalInsert,
+    "H3MidInsert": H3MidInsert,
     "H3LatentUpscale": H3LatentUpscale,
     "H3InjectSchedule": H3InjectSchedule,
     "H3JerkHeatmap": H3JerkHeatmap,
@@ -4661,8 +5427,10 @@ TIMESMEAR_DISPLAY_MAPPINGS = {
     "H3TimeSmear": "H3 Time Smear (integer holds)",
     "H3ExactRecover": "H3 Exact Recover (24fps frame selection)",
     "H3TrueClock": "H3 True Clock (density-corrected RoPE t-grid) [experimental]",
+    "H3DyRoPE": "H3 DyRoPE (layer-wise / sigma-faded time geometry) [experimental]",
     "H3V2VInit": "H3 V2V Init (nested AV latent)",
     "H3TemporalInsert": "H3 Temporal Insert (insert token-times, freeze originals) [experimental]",
+    "H3MidInsert": "H3 Mid Insert (change the token grid MID-denoise) [experimental]",
     "H3LatentUpscale": "H3 Latent Upscale (video only, audio kept) [experimental]",
     "H3InjectSchedule": "H3 Inject Schedule (v2v sigmas, 0.70)",
     "H3JerkHeatmap": "H3 Jerk Heatmap (oracle overlay tile)",
