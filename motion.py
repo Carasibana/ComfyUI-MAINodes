@@ -3801,11 +3801,28 @@ class _TrajBankSampler:
                 return list(t.tensors)
             return [t]
 
+        # At this (KSAMPLER) level x is comfy's PACKED latent: every stream
+        # flattened and concatenated to (B, 1, N) by comfy.utils.pack_latents
+        # (samplers.py CFGGuider.sample), so the NestedTensor branch below
+        # never fires for H3 and "video" holds the whole packed vector. Record
+        # the stream shapes when the guider exposes them so H3TrajectoryLoad
+        # can unpack; otherwise Load needs its `reference` LATENT input.
+        shapes = None
+        for obj in (model_wrap, getattr(model_wrap, "inner_model", None),
+                    getattr(getattr(model_wrap, "inner_model", None), "inner_model", None)):
+            ls = getattr(obj, "latent_shapes", None)
+            if ls:
+                shapes = [list(int(v) for v in sh) for sh in ls]
+                break
+
         def cb(i, denoised, x, total):
             if i % self.every_n == 0 or i == total - 1:
                 comps = parts(x)
                 payload = {"step": i, "total_steps": total,
-                           "video": comps[0].detach().to(torch.float16).cpu()}
+                           "video": comps[0].detach().to(torch.float16).cpu(),
+                           "packed": len(comps) == 1 and comps[0].dim() == 3 and comps[0].shape[1] == 1}
+                if shapes is not None:
+                    payload["latent_shapes"] = shapes
                 if len(comps) > 1:
                     payload["audio"] = comps[1].detach().to(torch.float16).cpu()
                 torch.save(payload, os.path.join(self.dump_dir, f"x_step{i:03d}.pt"))
@@ -3860,7 +3877,24 @@ class H3TrajectoryLoad:
         return {"required": {
             "dump_dir": ("STRING", {"default": "/tmp/h3_trajectory"}),
             "step": ("INT", {"default": 5, "min": 0, "max": 200,
-                             "tooltip": "resume after this saved step (0-based)"}),
+                             "tooltip": "resume FROM this saved step (0-based): the file holds x "
+                                        "entering step k at sigma[k]; remaining_sigmas = sigmas[k:]"}),
+        }, "optional": {
+            "reference": ("LATENT", {"tooltip": "the LATENT the banked run sampled from (e.g. "
+                                     "MiniMaxH3ImageToVideo); supplies the stream shapes when the "
+                                     "bank file predates latent_shapes (AV models pack video+audio "
+                                     "into one flat vector at the sampler)"}),
+            "audio_scale": ("FLOAT", {"default": 4.0, "min": 0.0, "max": 64.0, "step": 0.01,
+                                      "tooltip": "the sampler carries the audio stream scaled onto the "
+                                                 "video schedule by shift/audio_shift (H3: 12/3 = 4); a "
+                                                 "bank file is in that space, so the unpacked audio is "
+                                                 "divided by this before it re-enters as a LATENT (where "
+                                                 "process_latent_in re-applies it). 0 = leave as-is."}),
+            "undo_const_scaling": ("BOOLEAN", {"default": False,
+                                  "tooltip": "flow/CONST models: SamplerCustomAdvanced applies "
+                                             "(1-sigma_k)*latent + sigma_k*noise on entry, so a "
+                                             "DisableNoise resume must be pre-divided by (1-sigma_k). "
+                                             "Off = raw (do it in-graph with LatentMultiply)."}),
         }}
 
     RETURN_TYPES = ("LATENT", "SIGMAS", "INT")
@@ -3869,7 +3903,7 @@ class H3TrajectoryLoad:
     CATEGORY = "latent/minimax/motion"
 
     @classmethod
-    def IS_CHANGED(cls, dump_dir, step):
+    def IS_CHANGED(cls, dump_dir, step, reference=None, audio_scale=4.0, undo_const_scaling=False):
         import os
         p = os.path.join(dump_dir, f"x_step{step:03d}.pt")
         try:
@@ -3877,19 +3911,44 @@ class H3TrajectoryLoad:
         except OSError:
             return float("nan")
 
-    def load(self, dump_dir, step):
+    def load(self, dump_dir, step, reference=None, audio_scale=4.0, undo_const_scaling=False):
         import os
 
         import comfy.nested_tensor
+        import comfy.utils
         p = os.path.join(dump_dir, f"x_step{step:03d}.pt")
         d = torch.load(p, weights_only=True)
         sigmas = torch.load(os.path.join(dump_dir, "sigmas.pt"), weights_only=True)
         video = d["video"].float()
+        shapes = d.get("latent_shapes")
+        if shapes is None and reference is not None:
+            ref = reference["samples"]
+            if hasattr(ref, "is_nested") and ref.is_nested:
+                shapes = [list(t.shape) for t in ref.tensors]
+            else:
+                shapes = [list(ref.shape)]
         if "audio" in d:
-            samples = comfy.nested_tensor.NestedTensor((video, d["audio"].float()))
+            aud = d["audio"].float()
+            if audio_scale and audio_scale != 1.0:
+                aud = aud / float(audio_scale)
+            samples = comfy.nested_tensor.NestedTensor((video, aud))
+        elif shapes is not None and len(shapes) > 1 and video.dim() == 3 and video.shape[1] == 1:
+            # packed vector from the bank -> per-stream tensors (video, audio, ...)
+            streams = comfy.utils.unpack_latents(video, [torch.Size(sh) for sh in shapes])
+            if audio_scale and audio_scale != 1.0 and len(streams) > 1:
+                streams = [streams[0], streams[1] / float(audio_scale)] + list(streams[2:])
+            samples = comfy.nested_tensor.NestedTensor(streams)
+        elif shapes is not None and len(shapes) == 1 and video.dim() == 3 and video.shape[1] == 1:
+            samples = video.reshape(shapes[0])
         else:
             samples = video
-        return ({"samples": samples}, sigmas[step + 1:], int(step))
+        if undo_const_scaling:
+            s_k = float(sigmas[step])
+            if s_k < 1.0:
+                samples = samples * (1.0 / (1.0 - s_k))
+        # x_step{k} is x ENTERING step k (the k-diffusion callback fires before the
+        # update), so the schedule to continue with is sigmas[k:], not sigmas[k+1:].
+        return ({"samples": samples}, sigmas[step:], int(step))
 
 
 class H3MotionComposite:
