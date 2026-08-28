@@ -539,9 +539,12 @@ JSON-schema constrained decoding on local OpenAI-compatible servers
 ### 9.2 LLM Choose
 
 Each Lazy Select case gets a name and a description on the node. They become
-one strict tool per case, the model is forced to call one, the returned
-tool name is the selector, and the parsed `input` becomes typed args via the
-Safe Function signature mechanism. The branch subgraphs are the tools.
+one strict tool per case, the model is forced to call one, and the returned
+tool name is the selector. The branch subgraphs are the tools.
+
+Shipped in Phase 4: the parsed arguments come back as one `args` STRING of
+JSON. Binding them to typed sockets through the Safe Function signature
+mechanism is OWED, not built.
 
 ### 9.3 Loop
 
@@ -553,7 +556,24 @@ max-turns bound. After Judge and Choose exist.
 OpenAI-compatible endpoint first (covers local and most hosted), Anthropic
 native second (strict tools, structured outputs). Keys and endpoints are
 server-side configuration; workflow JSON never carries a key. `ui` reports
-model id, request id, and the parsed decision.
+model id, request id, and the parsed decision, and never the key or the
+resolved URL.
+
+The policy file that does carry endpoints and key names lives in the pack
+directory, which is a git checkout, so it is gitignored and a test enforces
+that. The one file guaranteed to hold an endpoint must never be committable.
+
+The transport is part of this boundary, not just the provider name. A
+workflow names a provider; the request must then reach the host the
+installation configured and no other. Redirects are refused rather than
+followed, because the default urllib opener copies the `Authorization`
+header onto the redirect target: a gateway answering one 302 hands the key
+to whatever host it names and then supplies the selector that drives the
+branch. The proxy environment is ignored for the same reason. Every request
+carries a deadline for the whole exchange rather than per socket operation,
+because a server sending one byte before each timeout expires otherwise
+holds the node forever, measured at 91 seconds for a 92 byte body against a
+2 second timeout.
 
 Core's `Anthropic Claude`, OpenAI and Gemini nodes are text-out only; this
 is not a duplicate.
