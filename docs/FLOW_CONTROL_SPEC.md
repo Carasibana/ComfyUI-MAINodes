@@ -146,7 +146,12 @@ values       Autogrow a..z of AnyType
 ```
 
 For feeding core `If/Else Switch`, Lazy Select, or anything else that takes
-a scalar. Same evaluator and same `ui` report as Gate.
+a scalar. Same evaluator as Gate. Its `ui` report uses `result` where
+Gate uses `took`: a Condition has no branch to have taken, so `took` would
+be a lie. Select reports `selector`, `labels` and `cases`; Filter and
+Partition report `kept_count` and `rejected_count`. Each carries what a
+"why did this run" renderer needs: the decision input, the alternatives,
+the outcome.
 
 ### 4.3 Lazy Select
 
@@ -255,7 +260,18 @@ lambda, comprehensions, generator expressions, walrus, starred, f-strings,
 registered capability.
 
 Limits: source 4 KB, 2000 AST nodes, nesting depth 32, 256 calls per
-evaluation. Exceeding a limit is a validation error before execution.
+evaluation. Exceeding a limit is a validation error before execution where
+the limit is statically decidable, and an evaluation error where it is not:
+`2 ** 5000` is caught at queue time, `pow(2, a)` with `a` on a link cannot
+be. This mirrors core, whose `_safe_pow` exists for the same reason
+(`comfy_extras/nodes_math.py`).
+
+Value size is bounded as well as program size. Sequence repetition and
+concatenation refuse to build a result longer than `MAX_RESULT_LENGTH`, as
+core's simpleeval does with `safe_mult` / `safe_add`. Without that guard
+`'ab' * 5000000 * 200` passes every program-level limit (128 source bytes,
+about 12 AST nodes) and then allocates gigabytes inside `execute`; host RAM
+is this box's real ceiling, so that ends the ComfyUI process.
 
 Dotted names such as `image.width(x)` are resolved directly against the
 registry. No Python module object is ever exposed. There is no `getattr`.
@@ -525,7 +541,7 @@ inserted, or every saved workflow shifts a slot.
 | D. Headless parity | the example API graph run through the harness with no frontend branches identically |
 | E. Expression security | the section 8.5 list, minus statements, rejected by the evaluator |
 | F. Limits | oversized source, deep nesting, huge literals, exponent bombs rejected before execution |
-| G. Lists | Filter / Partition counts; a Partition `kept` list of zero items sends the downstream probe count to 0 |
+| G. Lists | Filter / Partition counts; an empty `kept` list reaches the downstream node as an error or a no-argument call, never as a skip, so the test asserts BOTH measured core shapes and the `kept_count > 0` guard |
 | H. No frontend | Gate D is the proof; no JavaScript exists in Phase 1 |
 
 Test harness: a subprocess ComfyUI on a free localhost port with `--cpu`,
