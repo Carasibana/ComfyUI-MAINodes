@@ -20,10 +20,12 @@ whose values are exact in fp16 so equality is exact:
   5. audio_scale 0 leaves audio untouched.
   6. Schedule: returns sigmas[k:] (x_step{k} is x ENTERING step k) and k.
   7. undo_const_scaling multiplies every stream by 1/(1-sigma_k).
-  8. No shapes and no reference on a packed file -> the packed vector passes
-     through unchanged (the pre-fix behaviour, documented, not silently
-     reshaped).
+  8. No shapes and no reference on a packed file -> a named ValueError
+     (handing the packed vector downstream is the exact pre-fix failure).
   9. IS_CHANGED accepts the optional inputs and tracks the file mtime.
+ 10. A reference whose streams do not sum to the banked vector -> a named
+     ValueError in both directions (shorter would silently misalign).
+ 11. audio_scale recorded in the bank file wins over the widget; 0 = as-is.
 
 Exit code 0 = pass.
 """
@@ -140,12 +142,37 @@ def main():
         check(torch.allclose(s.tensors[0], video * f) and torch.allclose(s.tensors[1], (audio / 4.0) * f),
               "every stream scaled by 1/(1-sigma_k) = %.4f" % f)
 
-    print("8. packed, no shapes, no reference: passthrough")
+    print("8. packed, no shapes, no reference: a named error, never the raw vector")
     with tempfile.TemporaryDirectory() as tmp:
         make_bank(tmp, video, audio, shapes_in_file=False)
-        out, _, _ = node.load(tmp, K)
-        s = out["samples"]
-        check(not getattr(s, "is_nested", False) and s.dim() == 3 and s.shape[1] == 1, "packed vector passes through unchanged")
+        try:
+            node.load(tmp, K); check(False, "raised")
+        except ValueError as e:
+            check("reference" in str(e), "ValueError names the reference input")
+
+    print("10. reference from a different clip: a named error, never silent misalignment")
+    with tempfile.TemporaryDirectory() as tmp:
+        make_bank(tmp, video, audio, shapes_in_file=False)
+        short = {"samples": NestedTensor((torch.zeros(1, 32, 2, 4, 4), torch.zeros(1, 16, 5, 1)))}
+        try:
+            node.load(tmp, K, reference=short); check(False, "raised on a shorter reference")
+        except ValueError as e:
+            check("misalign" in str(e), "shorter reference rejected with the sizes named")
+        longer = {"samples": NestedTensor((torch.zeros(1, 32, 4, 4, 4), torch.zeros(1, 16, 9, 1)))}
+        try:
+            node.load(tmp, K, reference=longer); check(False, "raised on a longer reference")
+        except ValueError as e:
+            check("misalign" in str(e), "longer reference rejected with the sizes named")
+
+    print("11. audio_scale recorded in the bank file wins over the widget")
+    with tempfile.TemporaryDirectory() as tmp:
+        make_bank(tmp, video, audio)
+        d = torch.load(os.path.join(tmp, f"x_step{K:03d}.pt"), weights_only=True); d["audio_scale"] = 2.0
+        torch.save(d, os.path.join(tmp, f"x_step{K:03d}.pt"))
+        out, _, _ = node.load(tmp, K, audio_scale=4.0)
+        check(torch.equal(out["samples"].tensors[1], audio / 2.0), "file value 2.0 used, widget 4.0 ignored")
+        out, _, _ = node.load(tmp, K, audio_scale=0.0)
+        check(torch.equal(out["samples"].tensors[1], audio), "widget 0 still means leave as-is")
 
     print("9. IS_CHANGED")
     with tempfile.TemporaryDirectory() as tmp:

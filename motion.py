@@ -3808,12 +3808,20 @@ class _TrajBankSampler:
         # the stream shapes when the guider exposes them so H3TrajectoryLoad
         # can unpack; otherwise Load needs its `reference` LATENT input.
         shapes = None
+        audio_scale = None
         for obj in (model_wrap, getattr(model_wrap, "inner_model", None),
                     getattr(getattr(model_wrap, "inner_model", None), "inner_model", None)):
+            if obj is None:
+                continue
             ls = getattr(obj, "latent_shapes", None)
-            if ls:
+            if ls and shapes is None:
                 shapes = [list(int(v) for v in sh) for sh in ls]
-                break
+            ms = getattr(obj, "model_sampling", None)
+            if audio_scale is None and ms is not None and hasattr(ms, "audio_scale"):
+                try:
+                    audio_scale = float(ms.audio_scale)
+                except Exception:
+                    audio_scale = None
 
         def cb(i, denoised, x, total):
             if i % self.every_n == 0 or i == total - 1:
@@ -3823,6 +3831,8 @@ class _TrajBankSampler:
                            "packed": len(comps) == 1 and comps[0].dim() == 3 and comps[0].shape[1] == 1}
                 if shapes is not None:
                     payload["latent_shapes"] = shapes
+                if audio_scale is not None:
+                    payload["audio_scale"] = audio_scale
                 if len(comps) > 1:
                     payload["audio"] = comps[1].detach().to(torch.float16).cpu()
                 torch.save(payload, os.path.join(self.dump_dir, f"x_step{i:03d}.pt"))
@@ -3868,9 +3878,19 @@ class H3TrajectoryLoad:
         "Loads a step checkpoint saved by H3 Trajectory Bank and the "
         "matching remaining sigma schedule. Wire the LATENT into a "
         "SamplerCustomAdvanced with DisableNoise and the SIGMAS output as "
-        "its schedule: sampling continues exactly where the banked run "
-        "stopped, under whatever model, LoRA, or guider you attach. "
-        "Changing anything downstream of the loaded step is the point.")
+        "its schedule: sampling continues from the banked state, under "
+        "whatever model, LoRA, or guider you attach. Changing anything "
+        "downstream of the loaded step is the point.\n\n"
+        "Fidelity: the bank stores x in fp16, so a null resume reproduces the "
+        "banked run to ~35-42 dB for sigma <= ~0.90 (measured on H3, euler); "
+        "above ~0.95 fp16 banking stops reproducing the take (instrument "
+        "edge, not model behaviour). Only x is banked, not sampler history, so "
+        "a multistep sampler (dpmpp_2m, res_multistep, gradient_estimation) "
+        "resumes approximately at step k; euler is exact. AV models bank the "
+        "packed video+audio vector; Load unpacks it from latent_shapes "
+        "recorded by the Bank or from the `reference` LATENT, and divides the "
+        "audio stream by the model's audio scale (recorded by the Bank when "
+        "reachable; the widget is the fallback).")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -3889,12 +3909,15 @@ class H3TrajectoryLoad:
                                                  "video schedule by shift/audio_shift (H3: 12/3 = 4); a "
                                                  "bank file is in that space, so the unpacked audio is "
                                                  "divided by this before it re-enters as a LATENT (where "
-                                                 "process_latent_in re-applies it). 0 = leave as-is."}),
+                                                 "process_latent_in re-applies it). A value recorded in "
+                                                 "the bank file wins over this widget; 0 = leave as-is."}),
             "undo_const_scaling": ("BOOLEAN", {"default": False,
                                   "tooltip": "flow/CONST models: SamplerCustomAdvanced applies "
                                              "(1-sigma_k)*latent + sigma_k*noise on entry, so a "
                                              "DisableNoise resume must be pre-divided by (1-sigma_k). "
-                                             "Off = raw (do it in-graph with LatentMultiply)."}),
+                                             "Uses the banked sigma_k, i.e. assumes this node's own "
+                                             "remaining_sigmas is the schedule you wire. Off = raw "
+                                             "(do it in-graph with LatentMultiply)."}),
         }}
 
     RETURN_TYPES = ("LATENT", "SIGMAS", "INT")
@@ -3921,12 +3944,40 @@ class H3TrajectoryLoad:
         sigmas = torch.load(os.path.join(dump_dir, "sigmas.pt"), weights_only=True)
         video = d["video"].float()
         shapes = d.get("latent_shapes")
-        if shapes is None and reference is not None:
+        ref_shapes = None
+        if reference is not None:
             ref = reference["samples"]
             if hasattr(ref, "is_nested") and ref.is_nested:
-                shapes = [list(t.shape) for t in ref.tensors]
+                ref_shapes = [list(t.shape) for t in ref.tensors]
             else:
-                shapes = [list(ref.shape)]
+                ref_shapes = [list(ref.shape)]
+        if shapes is None:
+            shapes = ref_shapes
+        elif ref_shapes is not None and [list(map(int, sh)) for sh in shapes] != [list(map(int, sh)) for sh in ref_shapes]:
+            print(f"[H3TrajectoryLoad] bank file records latent_shapes {shapes}; the wired reference has "
+                  f"{ref_shapes}. Using the file's (it describes what was banked).")
+        if d.get("audio_scale") is not None:
+            file_scale = float(d["audio_scale"])
+            if audio_scale and abs(file_scale - float(audio_scale)) > 1e-6:
+                print(f"[H3TrajectoryLoad] bank file records audio_scale {file_scale:.4f}; widget says "
+                      f"{float(audio_scale):.4f}. Using the file's.")
+            if audio_scale:
+                audio_scale = file_scale
+        packed = video.dim() == 3 and video.shape[1] == 1 and (d.get("packed") or shapes is not None)
+        if packed and shapes is not None:
+            import math
+            total = sum(math.prod(sh[1:]) for sh in shapes)
+            if int(shapes[0][0]) != int(video.shape[0]) or total != int(video.shape[-1]):
+                raise ValueError(
+                    f"H3TrajectoryLoad: the banked vector is {tuple(video.shape)} (batch {video.shape[0]}, "
+                    f"{video.shape[-1]} values) but the stream shapes {shapes} sum to {total} values for batch "
+                    f"{shapes[0][0]}. The reference must be the LATENT the banked run sampled from (same "
+                    f"clip length, canvas and audio length); a mismatch would silently misalign the streams.")
+        if packed and shapes is None and "audio" not in d:
+            raise ValueError(
+                "H3TrajectoryLoad: this bank file holds the packed video+audio vector and carries no "
+                "latent_shapes (older Bank), so the streams cannot be separated. Wire the `reference` "
+                "input with the LATENT the banked run sampled from (e.g. the MiniMaxH3ImageToVideo output).")
         if "audio" in d:
             aud = d["audio"].float()
             if audio_scale and audio_scale != 1.0:
@@ -3946,6 +3997,9 @@ class H3TrajectoryLoad:
             s_k = float(sigmas[step])
             if s_k < 1.0:
                 samples = samples * (1.0 / (1.0 - s_k))
+            else:
+                print(f"[H3TrajectoryLoad] undo_const_scaling: sigma[{step}] = {s_k:.4f} >= 1, nothing to undo "
+                      f"(the latent is fully replaced by noise on entry at sigma 1).")
         # x_step{k} is x ENTERING step k (the k-diffusion callback fires before the
         # update), so the schedule to continue with is sigmas[k:], not sigmas[k+1:].
         return ({"samples": samples}, sigmas[step:], int(step))
