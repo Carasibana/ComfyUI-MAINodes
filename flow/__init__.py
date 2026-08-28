@@ -5,13 +5,14 @@ classes are merged into NODE_CLASS_MAPPINGS here, keyed by the schema's own
 node_id, so the pack's generic module loop picks this package up like any
 other module.
 """
+from .llm import MAIFlowLLMChoose, MAIFlowLLMJudge
 from .nodes import (MAIFlowCondition, MAIFlowFilter, MAIFlowGate,
                     MAIFlowPartition, MAIFlowProbe, MAIFlowSafeFunction,
                     MAIFlowSelect)
 
 NODE_CLASSES = (MAIFlowGate, MAIFlowCondition, MAIFlowSelect,
                 MAIFlowFilter, MAIFlowPartition, MAIFlowProbe,
-                MAIFlowSafeFunction)
+                MAIFlowSafeFunction, MAIFlowLLMJudge, MAIFlowLLMChoose)
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}

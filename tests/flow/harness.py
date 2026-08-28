@@ -51,8 +51,13 @@ def free_port(start: int = PORT_START, limit: int = 60) -> int:
 
 
 class FlowLab:
-    def __init__(self, memory_max: str = "12G"):
+    def __init__(self, memory_max: str = "12G", env: dict | None = None):
         self.memory_max = memory_max
+        # extra environment for the server process. systemd-run --scope runs
+        # the command as its own child, so the scope inherits this too, which
+        # is how a lab gets its own MAINODES_FLOW_POLICY without any file
+        # being written inside the pack.
+        self.env = dict(os.environ, **(env or {}))
         self.port = free_port()
         self.root = tempfile.mkdtemp(prefix="flowlab-")
         self.output = os.path.join(self.root, "output")
@@ -103,7 +108,8 @@ class FlowLab:
         self.log = open(self.log_path, "w", encoding="utf-8")
         try:
             self.proc = subprocess.Popen(fence + command, cwd=COMFY_ROOT, stdout=self.log,
-                                         stderr=subprocess.STDOUT, start_new_session=True)
+                                         stderr=subprocess.STDOUT, start_new_session=True,
+                                         env=self.env)
             self._wait_ready()
         except Exception as first:
             # the memory fence is preferred, not blocking: fall back only when
@@ -118,7 +124,8 @@ class FlowLab:
             self._terminate()
             self.log = open(self.log_path, "w", encoding="utf-8")
             self.proc = subprocess.Popen(command, cwd=COMFY_ROOT, stdout=self.log,
-                                         stderr=subprocess.STDOUT, start_new_session=True)
+                                         stderr=subprocess.STDOUT, start_new_session=True,
+                                         env=self.env)
             self._wait_ready()
         return self
 

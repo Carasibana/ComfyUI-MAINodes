@@ -1,4 +1,4 @@
-"""Installation policy for Safe Function budgets (spec 8.2).
+"""Installation policy: Safe Function budgets (spec 8.2), LLM providers (9.4).
 
 Budgets are serialized on the node so the editor and the API behave
 identically. An installation may lower any of them, never raise them: the
@@ -17,7 +17,10 @@ describe.
 The optional override is a JSON object at the pack root, so an
 administrator edits one file and never the code:
 
-    {"max_iterations": 100, "max_pixels": 8000000}
+    {"max_iterations": 100, "llm_providers": {"local": {...}}}
+
+It is the pack root's flow_policy.json unless MAINODES_FLOW_POLICY names
+another one, which is how a sandbox gets its own without writing into a pack.
 """
 from __future__ import annotations
 
@@ -46,33 +49,75 @@ CEILINGS = {
 
 POLICY_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "flow_policy.json")
+POLICY_ENV = "MAINODES_FLOW_POLICY"      # a sandbox points this at its own file
+# Named LLM endpoints (spec 9.4). A workflow carries the NAME, never a base
+# url and never a key: that is what stops a shared workflow deciding where a
+# user's images go. The key is read from the environment variable the
+# provider names.
+LLM_PROVIDERS = {
+    "local": {"kind": "openai_compatible",
+              "base_url": "http://127.0.0.1:8080/v1",
+              "api_key_env": "MAINODES_LLM_KEY_LOCAL",
+              "default_model": "local-model"},
+}
+# max_tokens is not in DEFAULTS/CEILINGS because it has no node default here
+# and no effective() semantics: the node ships its own default and this is the
+# only ceiling over it
+LLM_MAX_TOKENS_CEILING = 32768           # above the node default of 512
 
 _CACHE: dict = {}
 
 
-def ceilings(path: str | None = None) -> dict:
-    """CEILINGS with the JSON override applied, cached on the file mtime."""
-    path = path or POLICY_PATH
+def policy_path(path: str | None = None) -> str:
+    """An explicit path, then the env override, then the pack root's file."""
+    return path or os.environ.get(POLICY_ENV) or POLICY_PATH
+
+
+def _loaded(path: str) -> dict:
+    """The parsed policy file, cached on its mtime; {} if absent or broken."""
     try:
         stamp = os.stat(path).st_mtime_ns
     except OSError:
-        return dict(CEILINGS)
+        return {}                # no file, and a broken one, change nothing
     cached = _CACHE.get(path)
     if cached is not None and cached[0] == stamp:
-        return dict(cached[1])
-    values = dict(CEILINGS)
+        return cached[1]
     try:
         with open(path, "r", encoding="utf-8") as fh:
             loaded = json.load(fh)
-        for field, value in (loaded or {}).items():
-            if field in CEILINGS and isinstance(value, (int, float)) \
-                    and not isinstance(value, bool) and value > 0:
-                values[field] = type(CEILINGS[field])(value)
     except (OSError, ValueError):
-        # a broken policy file must not take the ceilings with it
-        return dict(CEILINGS)
-    _CACHE[path] = (stamp, dict(values))
+        return {}
+    _CACHE[path] = (stamp, loaded if isinstance(loaded, dict) else {})
+    return _CACHE[path][1]
+
+
+def ceilings(path: str | None = None) -> dict:
+    """CEILINGS with the JSON override applied, cached on the file mtime."""
+    values = dict(CEILINGS)
+    for field, value in _loaded(policy_path(path)).items():
+        if field in CEILINGS and isinstance(value, (int, float)) \
+                and not isinstance(value, bool) and value > 0:
+            values[field] = type(CEILINGS[field])(value)
     return values
+
+
+def llm_providers(path: str | None = None) -> dict:
+    """The shipped providers, replaced name by name from the policy file."""
+    providers = {name: dict(spec) for name, spec in LLM_PROVIDERS.items()}
+    loaded = _loaded(policy_path(path)).get("llm_providers")
+    for name, spec in (loaded or {}).items() if isinstance(loaded, dict) else ():
+        if isinstance(spec, dict):
+            providers[str(name)] = dict(spec)
+    return providers
+
+
+def llm_max_tokens(requested, path: str | None = None) -> int:
+    """The node's max_tokens lowered by the installation ceiling."""
+    # int|float like ceilings(): 2048.0 in a policy file meant the same thing
+    # to an administrator and was silently ignored here
+    ceiling = _loaded(policy_path(path)).get("llm_max_tokens")
+    ok = isinstance(ceiling, (int, float)) and not isinstance(ceiling, bool) and ceiling > 0
+    return min(int(ceiling) if ok else LLM_MAX_TOKENS_CEILING, int(requested))
 
 
 def effective(field: str, requested=None, path: str | None = None):

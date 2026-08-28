@@ -20,6 +20,14 @@ positionally, with a `Flow Probe` in front of socket `b`. Queue it with
 grow, because the body returns `original` before it ever reaches
 `restored`; set it true and the file gains one line.
 
+`llm_choose_select_api.json` is `LLM Choose` into `Lazy Select`: three
+named cases, one strict tool each, and the chosen index selecting which of
+three branches is produced. The expensive branch sits behind a `Flow Probe`,
+so `<output>/flow_probe/llm_choose_select.count` only grows when the model
+picks `repair`. It names the provider `local` and nothing else: add a
+`local` entry to `flow_policy.json` at the pack root pointing at your own
+OpenAI compatible server before you queue it.
+
 Two things to know before you queue any of these graphs:
 
 * The core logic nodes (`Math Expression`, `If/Else Switch`, `Soft
