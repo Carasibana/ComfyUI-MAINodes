@@ -15,7 +15,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .expr import MAX_EXPONENT, ExprError, Ref
+from .expr import MAX_EXPONENT, ExprError, Ref, kind_of
 
 
 @dataclass(frozen=True)
@@ -172,3 +172,124 @@ def pack_of(cap_id: str) -> str:
 
 def ids() -> list[str]:
     return sorted(REGISTRY)
+
+
+# --------------------------------------------------------------- transforms
+#
+# Transforms arrive with Safe Function (spec 5.3). They are NOT
+# predicate_safe: a Gate, Condition, Filter or Partition refuses them,
+# because those nodes decide a branch and planning must stay pure and cheap.
+# All of them are functional (a new tensor, never an in-place write on a
+# value another node also consumes) and every allocation is capped by the
+# installation's max_pixels.
+import torch
+
+from . import policy
+
+
+def _pixels(count: int, what: str) -> None:
+    ceiling = policy.ceilings()["max_pixels"]
+    if count > ceiling:
+        raise ExprError(f"{what} would allocate {count} pixels, over the "
+                        f"max_pixels limit of {ceiling}")
+
+
+def _whole(value, what: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ExprError(f"{what} expects whole numbers, got {type(value).__name__}")
+    return int(value)
+
+
+def _resize(image, width, height):
+    t = _image(image)
+    w, h = _whole(width, "image.resize"), _whole(height, "image.resize")
+    if w < 1 or h < 1:
+        raise ExprError(f"image.resize needs a positive size, got {w}x{h}")
+    _pixels(int(t.shape[0]) * w * h * int(t.shape[3]), "image.resize")
+    out = torch.nn.functional.interpolate(t.movedim(-1, 1).float(), size=(h, w),
+                                          mode="bilinear", align_corners=False)
+    return Ref(out.movedim(1, -1), "IMAGE")
+
+
+def _crop(image, x, y, width, height):
+    t = _image(image)
+    x0, y0 = _whole(x, "image.crop"), _whole(y, "image.crop")
+    w, h = _whole(width, "image.crop"), _whole(height, "image.crop")
+    if x0 < 0 or y0 < 0 or w < 1 or h < 1:
+        raise ExprError(f"image.crop needs a positive box, got {w}x{h} at {x0},{y0}")
+    if y0 + h > int(t.shape[1]) or x0 + w > int(t.shape[2]):
+        raise ExprError(f"image.crop box {w}x{h} at {x0},{y0} leaves an image of "
+                        f"{int(t.shape[2])}x{int(t.shape[1])}")
+    return Ref(t[:, y0:y0 + h, x0:x0 + w, :].clone(), "IMAGE")
+
+
+def _flip(image, horizontal=True):
+    t = _image(image)
+    return Ref(torch.flip(t, dims=[2] if horizontal else [1]), "IMAGE")
+
+
+def _select(image, indices):
+    t = _image(image)
+    items = unref(indices)
+    if isinstance(items, (int, float)) and not isinstance(items, bool):
+        items = [items]
+    if not isinstance(items, (list, tuple)):
+        raise ExprError(f"image.select expects a list of indices, got {type(items).__name__}")
+    batch = int(t.shape[0])
+    picked = []
+    for index in items:
+        i = _whole(index, "image.select")
+        if not -batch <= i < batch:
+            raise ExprError(f"image.select index {i} is out of range for a batch of {batch}")
+        picked.append(i % batch)
+    if not picked:
+        raise ExprError("image.select needs at least one index")
+    _pixels(len(picked) * int(t.shape[1]) * int(t.shape[2]) * int(t.shape[3]), "image.select")
+    return Ref(t[picked].clone(), "IMAGE")
+
+
+def _mask_invert(mask):
+    return Ref(1.0 - _tensor(mask, "mask.invert").float(), "MASK")
+
+
+def _mask_threshold(mask, t):
+    if isinstance(t, bool) or not isinstance(t, (int, float)):
+        raise ExprError(f"mask.threshold expects a number, got {type(t).__name__}")
+    return Ref((_tensor(mask, "mask.threshold") > float(t)).float(), "MASK")
+
+
+def _latent_blend(a, b, t):
+    if isinstance(t, bool) or not isinstance(t, (int, float)):
+        raise ExprError(f"latent.blend expects a number, got {type(t).__name__}")
+    first, second = _latent(a), _latent(b)
+    if tuple(first.shape) != tuple(second.shape):
+        raise ExprError(f"latent.blend needs matching shapes, got {tuple(first.shape)} "
+                        f"and {tuple(second.shape)}")
+    mixed = dict(unref(a))
+    mixed["samples"] = first * (1.0 - float(t)) + second * float(t)
+    return Ref(mixed, "LATENT")
+
+
+def _seq_concat(a, b):
+    first, second = unref(a), unref(b)
+    if isinstance(first, (list, tuple)) and isinstance(second, (list, tuple)):
+        return list(first) + list(second)
+    if getattr(first, "shape", None) is not None and getattr(second, "shape", None) is not None:
+        if tuple(first.shape[1:]) != tuple(second.shape[1:]):
+            raise ExprError(f"seq.concat needs matching shapes after the batch dimension, "
+                            f"got {tuple(first.shape)} and {tuple(second.shape)}")
+        _pixels(int(first[0].numel()) * (int(first.shape[0]) + int(second.shape[0])),
+                "seq.concat")
+        return Ref(torch.cat([first, second], dim=0), kind_of(first))
+    raise ExprError(f"seq.concat joins two lists or two tensors, got "
+                    f"{type(first).__name__} and {type(second).__name__}")
+
+
+TRANSFORMS = {
+    "image.resize": _resize, "image.crop": _crop, "image.flip": _flip,
+    "image.select": _select, "mask.invert": _mask_invert,
+    "mask.threshold": _mask_threshold, "latent.blend": _latent_blend,
+    "seq.concat": _seq_concat,
+}
+for _cid, _transform in TRANSFORMS.items():
+    _add(_cid, _transform, return_type="ANY", predicate_safe=False, cost=1.0)

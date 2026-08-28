@@ -282,6 +282,9 @@ WIDGET_ORDER = {
     "MAIFlowGate": (["expression", "source", "processed", "values"], []),
     "MAIFlowPartition": (["items", "expression"], ["values"]),
     "MAIFlowProbe": (["value", "name", "salt", "delay_s"], []),
+    "MAIFlowSafeFunction": (["source", "max_iterations", "max_ops", "max_calls",
+                             "max_collection", "max_tensor_elements"],
+                            list("abcdefghijkl")),
     "MAIFlowSelect": (["selector"],
                       ["labels"] + [f"case_{i}" for i in range(8)] + ["default"]),
 }

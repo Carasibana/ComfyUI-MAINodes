@@ -14,6 +14,7 @@ required again. Flow Probe exists so that is counted rather than guessed.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import os
 import string
@@ -25,7 +26,9 @@ import folder_paths
 from comfy_api.latest import io
 
 from . import capabilities  # noqa: F401  (registers the v1 capability packs)
-from .expr import ExprError, describe, evaluate, validate, wrap
+from . import policy, safefn
+from .expr import (ExprError, describe, dotted_name, evaluate, validate,
+                   wrap)
 
 MISSING = object()          # not connected, as core's Soft Switch uses it
 CATEGORY = "MAINodes/Flow"
@@ -81,6 +84,9 @@ def _syntax_check(expression):
         return True
     try:
         validate(expression)
+        # a transform is not a predicate: these four nodes decide a branch,
+        # and a decision has to be cheap enough to make while planning
+        _predicate_check(expression)
     except ExprError as e:
         return f"expression: {e}"
     return True
@@ -124,6 +130,11 @@ class MAIFlowGate(io.ComfyNode):
 
     @classmethod
     def _decide(cls, expression, values) -> bool:
+        expression = _first(expression)
+        # not validate-only: an expression that arrives on a LINK reaches
+        # validate_inputs as None, and check_lazy_status runs this more than
+        # once per node, so a transform here runs several times per queue
+        _predicate_check(expression)
         return bool(evaluate(expression, _bind(values)))
 
     @classmethod
@@ -183,6 +194,8 @@ class MAIFlowCondition(io.ComfyNode):
     @classmethod
     def execute(cls, expression, values=None) -> io.NodeOutput:
         resolved, _ = _autogrow(values)
+        expression = _first(expression)
+        _predicate_check(expression)        # see MAIFlowGate._decide
         result = evaluate(expression, _bind(resolved))
         try:
             as_float = float(result)
@@ -288,7 +301,8 @@ class _ListNode(io.ComfyNode):
     @classmethod
     def _split(cls, items, expression, values):
         expression = _first(expression)
-        resolved, _ = _autogrow(values, unlist=True)
+        _predicate_check(expression)        # see MAIFlowGate._decide: a linked
+        resolved, _ = _autogrow(values, unlist=True)     # expression skips validate
         items = list(items or [])
         tree = validate(expression)
         kept, rejected = [], []
@@ -414,3 +428,122 @@ class MAIFlowProbe(io.ComfyNode):
             time.sleep(float(delay_s))
         ui = {"flow_probe": [{"name": safe, "count": count, "digest": digest}]}
         return io.NodeOutput(value, ui=ui)
+
+
+class MAIFlowSafeFunction(io.ComfyNode):
+    """A restricted Python-like function whose inputs are planned by itself.
+
+    Twelve FIXED lazy sockets, not Autogrow: the executor reads laziness from
+    the unexpanded INPUT_TYPES (comfy_execution/graph.py:118 and :159), so a
+    grown slot is always a strong link and every input would resolve before
+    the body ran, which is the one thing this node exists not to do.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MAIFlowSafeFunction",
+            display_name="Safe Function",
+            category=CATEGORY,
+            is_experimental=True,
+            search_aliases=["python", "script", "function", "def main", "code"],
+            description=("Runs a restricted Python-like function. Parameters bind to the "
+                         "sockets positionally: the first parameter reads a, the second b, "
+                         "and so on. Sockets are lazy, so a socket the body never reaches "
+                         "is never produced."),
+            inputs=[
+                io.String.Input("source", default=safefn.DEFAULT_SOURCE, multiline=True),
+                *[io.AnyType.Input(name, lazy=True, optional=True,
+                                   tooltip=f"parameter {index + 1}")
+                  for index, name in enumerate(safefn.SOCKETS)],
+                # min=1: zero is refused at queue time, so the editor must not
+                # offer it. A new budget is APPENDED, never inserted (spec 10),
+                # or every saved workflow shifts one widget slot
+                io.Int.Input("max_iterations", default=1000, min=1, max=100_000_000),
+                io.Int.Input("max_ops", default=50000, min=1, max=100_000_000),
+                io.Int.Input("max_calls", default=5000, min=1, max=100_000_000),
+                io.Int.Input("max_collection", default=10000, min=1, max=100_000_000),
+                io.Int.Input("max_tensor_elements", default=100_000_000, min=1,
+                             max=1_000_000_000),
+            ],
+            outputs=[io.AnyType.Output(display_name="result")],
+        )
+
+    @classmethod
+    def _compile(cls, source, max_iterations, max_ops, max_calls,
+                 max_collection, max_tensor_elements) -> safefn.Function:
+        return safefn.Function(source, safefn.limits(max_iterations, max_ops,
+                                                     max_calls, max_collection,
+                                                     max_tensor_elements))
+
+    @classmethod
+    def validate_inputs(cls, source=None, max_iterations=None, max_ops=None,
+                        max_calls=None, max_collection=None,
+                        max_tensor_elements=None, **_ignored):
+        # **_ignored: core re-adds arguments this method does not name (the
+        # nested Autogrow dict among them) after filtering by argspec.
+        for field, value in (("max_iterations", max_iterations), ("max_ops", max_ops),
+                             ("max_calls", max_calls),
+                             ("max_collection", max_collection),
+                             ("max_tensor_elements", max_tensor_elements)):
+            problem = policy.check_positive(field, value) if value is not None else None
+            if problem:
+                return problem
+        try:
+            function = cls._compile(source, max_iterations, max_ops, max_calls,
+                                    max_collection, max_tensor_elements)
+        except safefn.SafeFnError as e:
+            return str(e)
+        for param in function.params:
+            value = _ignored.get(param.socket)
+            if value is None or isinstance(value, (list, dict)):
+                continue            # a link, or absent: checked at execute
+            try:
+                function.check_annotation(param, value)
+            except safefn.SafeFnError as e:
+                return str(e)
+        return True
+
+    @classmethod
+    def check_lazy_status(cls, source, max_iterations=1000, max_ops=50000,
+                          max_calls=5000, max_collection=10000,
+                          max_tensor_elements=100_000_000, **sockets) -> list[str]:
+        function = cls._compile(source, max_iterations, max_ops, max_calls,
+                                max_collection, max_tensor_elements)
+        return function.plan(sockets)
+
+    @classmethod
+    def execute(cls, source, max_iterations=1000, max_ops=50000, max_calls=5000,
+                max_collection=10000, max_tensor_elements=100_000_000,
+                **sockets) -> io.NodeOutput:
+        function = cls._compile(source, max_iterations, max_ops, max_calls,
+                                max_collection, max_tensor_elements)
+        value, budget = function.execute(sockets)
+        ui = {"flow": [{"node": "Safe Function",
+                        "result": describe(capabilities.unref(value)),
+                        "signature": [f"{p.socket}={p.name}:{p.annotation or 'ANY'}"
+                                      for p in function.params],
+                        "used": dict(budget.used),
+                        "sockets": sorted(k for k, v in sockets.items() if v is not None)}]}
+        return io.NodeOutput(capabilities.unref(value), ui=ui)
+
+
+def _predicate_check(source: str) -> None:
+    """Refuse a transform inside a Gate / Condition / Filter / Partition.
+
+    Those nodes decide a branch, and a decision has to be cheap and pure
+    enough to make while planning (spec 5.3, 8.3).
+    """
+    if not isinstance(source, str):
+        return                      # absent; evaluate() reports it as empty
+    try:
+        tree = ast.parse(source, mode="eval")
+    except SyntaxError:
+        return                      # validate() reports the syntax error
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = node.func.id if isinstance(node.func, ast.Name) else dotted_name(node.func)
+        cap = capabilities.resolve(name)
+        if cap is not None and not cap.predicate_safe:
+            raise ExprError(f"{name} is a transform; not available in a condition")

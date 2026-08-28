@@ -263,9 +263,17 @@ def test_capability_type_errors_name_the_capability():
     assert "image.*" in str(e.value) and "3-D" in str(e.value)
 
 
-def test_every_v1_capability_is_predicate_safe():
-    unsafe = [c.id for c in capabilities.REGISTRY.values() if not c.predicate_safe]
-    assert unsafe == []
+def test_every_predicate_pack_capability_is_predicate_safe():
+    """The transform pack arrived with Safe Function (spec 5.3); nothing else
+    may be unsafe, and a transform is refused inside a Gate or Condition.
+
+    The eight names are a literal on purpose, in two files: asserting
+    against the registry constant would pass for a NEW transform, which is
+    the security-relevant event this is here to catch.
+    """
+    unsafe = sorted(c.id for c in capabilities.REGISTRY.values() if not c.predicate_safe)
+    assert unsafe == ["image.crop", "image.flip", "image.resize", "image.select",
+                      "latent.blend", "mask.invert", "mask.threshold", "seq.concat"]
 
 
 def test_a_bare_capability_name_is_refused_at_validation():

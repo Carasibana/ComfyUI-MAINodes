@@ -107,7 +107,68 @@ Measured on core 0.33.0, both of them things a graph can hit.
   empty `kept` with a Gate on `kept_count` rather than relying on the list
   being empty.
 
+## Safe Function
+
+A node whose body is a restricted, Python-like function. There is no
+`eval`, no `exec` and no imports: the body is parsed, checked against an
+allowlist, and run by an interpreter that can only call registered
+capabilities.
+
+```python
+def main(original: IMAGE, restored: IMAGE, enabled: BOOL = True, strength: FLOAT = 1.0) -> IMAGE:
+    if not enabled:
+        return original
+    if strength <= 0:
+        return original
+    return restored
+```
+
+**Parameters bind to the sockets a..l positionally.** The first parameter
+reads socket `a`, the second `b`, and so on, whatever they are called in the
+source: the names are for the author, and API form always uses the letters,
+so the node runs with no frontend at all. A parameter with a default may
+leave its socket unconnected. Annotations (`IMAGE`, `MASK`, `LATENT`, `BOOL`,
+`INT`, `FLOAT`, `STRING`) are checked against the value that arrives.
+
+The sockets are lazy and the function plans them itself. It runs first with
+the unconnected inputs unknown, stops at the first branch that depends on
+one, asks for exactly that socket, and resumes. A socket on a branch the
+body never reaches is never produced, so the example above never runs the
+restore chain when `enabled` is false.
+
+| Available | Not available |
+|---|---|
+| assignment to one plain name, plain or augmented (`x = 1`, `x += 1`) | `while` (use `for _ in range(limit)` with `break`) |
+| `if` / `elif` / `else` | `import`, `class`, nested `def`, decorators |
+| `for x in range(n)`, a list, a tuple, a capability result | `try`, `raise`, `with`, `global`, `nonlocal`, `del`, `assert` |
+| `break`, `continue`, `return` | comprehensions, `lambda`, `yield`, f-strings, `%` on a string, `async` |
+| the expression language above, plus transforms | recursion, attribute access, dynamic code of any kind |
+
+Transforms (`image.resize`, `image.crop`, `image.flip`, `image.select`,
+`mask.invert`, `mask.threshold`, `latent.blend`, `seq.concat`) are available
+here and refused inside a Gate, Condition, Filter or Partition expression,
+because those nodes decide a branch and a decision has to be cheap to plan.
+
+Five budgets stop a runaway body, all five on the node so the editor and the
+API behave the same: `max_iterations` (shared across nested loops),
+`max_ops`, `max_calls`, `max_collection`, a running total of the sequence
+elements and characters allocated, and `max_tensor_elements`, a running
+total of the elements the transforms return. Two resources, two units, two
+budgets: charged against one number, a single `image.flip` on a 64x64x3
+image costs 12288 against a collection ceiling of 10000. Exceeding one names
+the limit, the line and the setting to change. An installation can lower any
+of them with a `flow_policy.json` at the pack root; the effective limit is
+the lower of the two, there is no unlimited setting, and the shipped ceiling
+sits well above the node default, so raising a budget on the node works and
+only a ceiling somebody lowered makes the message point at the file.
+
+Values are bounded as well as programs. A sequence refuses to grow past
+`MAX_RESULT_LENGTH`, and an integer past `MAX_INT_BITS`, because `x = x * x`
+in a loop reaches gigabytes of int in forty steps with every budget nearly
+untouched and a bigint multiply is one uninterruptible call.
+
+
 ## Examples
 
-`examples/flow/README.md` covers both shipped graphs. They are API form;
+`examples/flow/README.md` covers the shipped graphs. They are API form;
 editor form is owed.

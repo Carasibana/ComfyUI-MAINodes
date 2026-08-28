@@ -26,6 +26,11 @@ MAX_EXPONENT = 4000          # same cap as core's Math Expression
 # gigabytes of str. Core's simpleeval guards the same hole with safe_mult /
 # safe_add / MAX_STRING_LENGTH; host RAM is this box's real ceiling.
 MAX_RESULT_LENGTH = 1_000_000    # elements of a sequence, characters of a str
+# An integer has no length, so MAX_RESULT_LENGTH never sees one: `x = x * x`
+# in a loop passes every other guard and reaches 134 MB of int in 30 steps,
+# 137 GB in 40, and a bigint multiply is one uninterruptible C call. A
+# million bits is 125 KB, far above `2 ** 4000` and far below any real cost.
+MAX_INT_BITS = 1_000_000
 
 
 class ExprError(ValueError):
@@ -93,9 +98,23 @@ def describe(value):
     return wrap(value).describe()
 
 
+def _whole(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _too_many_bits(operator_name: str, bits: int):
+    return ExprError(
+        f"'{operator_name}' would build a {bits}-bit integer, over the "
+        f"MAX_INT_BITS limit of {MAX_INT_BITS}")
+
+
 def _safe_pow(base, exp):
     if abs(exp) > MAX_EXPONENT:
         raise ExprError(f"exponent {exp} exceeds the maximum allowed ({MAX_EXPONENT})")
+    if _whole(base) and _whole(exp) and exp > 0:
+        bits = base.bit_length() * exp
+        if bits > MAX_INT_BITS:
+            raise _too_many_bits("**", bits)
     return _op.pow(base, exp)
 
 
@@ -117,6 +136,10 @@ def _safe_mult(left, right):
             size = len(seq) * count
             if size > MAX_RESULT_LENGTH:
                 raise _too_long("*", size, seq)
+    if _whole(left) and _whole(right):
+        bits = left.bit_length() + right.bit_length()
+        if bits > MAX_INT_BITS:
+            raise _too_many_bits("*", bits)
     return _op.mul(left, right)
 
 
@@ -129,9 +152,23 @@ def _safe_add(left, right):
     return _op.add(left, right)
 
 
+def _safe_mod(left, right):
+    """Numeric remainder only. `%` on a str is printf, and printf allocates.
+
+    `'%900000000000d' % 1` is a dozen AST nodes and takes the host down
+    before any budget is consulted, and a Gate or a Condition has no
+    collection budget at all. Refusing it also settles a contradiction: the
+    f-string refusal already says there is no formatting capability.
+    """
+    if isinstance(left, str):
+        raise ExprError("string formatting is not available; there is no "
+                        "formatting capability")
+    return _op.mod(left, right)
+
+
 _BINOPS = {
     ast.Add: _safe_add, ast.Sub: _op.sub, ast.Mult: _safe_mult, ast.Div: _op.truediv,
-    ast.FloorDiv: _op.floordiv, ast.Mod: _op.mod, ast.Pow: _safe_pow,
+    ast.FloorDiv: _op.floordiv, ast.Mod: _safe_mod, ast.Pow: _safe_pow,
 }
 _CMPOPS = {
     ast.Eq: _op.eq, ast.NotEq: _op.ne, ast.Lt: _op.lt, ast.LtE: _op.le,

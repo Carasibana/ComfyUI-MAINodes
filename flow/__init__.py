@@ -6,10 +6,12 @@ node_id, so the pack's generic module loop picks this package up like any
 other module.
 """
 from .nodes import (MAIFlowCondition, MAIFlowFilter, MAIFlowGate,
-                    MAIFlowPartition, MAIFlowProbe, MAIFlowSelect)
+                    MAIFlowPartition, MAIFlowProbe, MAIFlowSafeFunction,
+                    MAIFlowSelect)
 
 NODE_CLASSES = (MAIFlowGate, MAIFlowCondition, MAIFlowSelect,
-                MAIFlowFilter, MAIFlowPartition, MAIFlowProbe)
+                MAIFlowFilter, MAIFlowPartition, MAIFlowProbe,
+                MAIFlowSafeFunction)
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}

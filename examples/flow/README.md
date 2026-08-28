@@ -13,7 +13,14 @@ each execution appends a line to `<output>/flow_probe/resize_gate.count`.
 Queue it with `scale` at 1.0 and the file does not grow; set 0.5 and it
 gains one line.
 
-Two things to know before you queue either graph:
+`safe_function_api.json` is the section 8 example of the spec: one
+`Safe Function` whose parameters bind to sockets `a`, `b` and `c`
+positionally, with a `Flow Probe` in front of socket `b`. Queue it with
+`enabled` false and `<output>/flow_probe/safe_function.count` does not
+grow, because the body returns `original` before it ever reaches
+`restored`; set it true and the file gains one line.
+
+Two things to know before you queue any of these graphs:
 
 * The core logic nodes (`Math Expression`, `If/Else Switch`, `Soft
   Switch`) are flagged experimental. They stay hidden in the node search
