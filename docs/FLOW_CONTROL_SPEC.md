@@ -395,13 +395,17 @@ run in planning mode; they are cheap by declaration.
 ### 8.4 Inputs and outputs
 
 Signature-driven inputs do not map onto Autogrow, whose template is one
-type. Inputs are `AnyType` sockets named by the signature, validated in
-`validate_inputs` against the declared types. Frontend type checking is
-lost on this node; backend validation restores it. Rendering inputs from
-the signature text needs custom JavaScript, so this node is not
-frontend-free to build; it is frontend-free to run, which is what matters.
+type, and the backend cannot derive sockets from widget text without
+JavaScript. Decision (2026-08-28): the node has lazy `AnyType` sockets
+`a`..`z` (Autogrow, or a fixed set if lazy does not survive Autogrow) and
+the function's parameters bind to them POSITIONALLY: the first parameter
+reads `a`, the second `b`, and so on. Parameter names are for the author;
+API-form JSON always uses `a`..`z`, so the node runs with no frontend at
+all. A later JavaScript pass renames the sockets for display only.
+Defaults apply when a socket is not connected. Annotations are checked in
+`validate_inputs` where the value is known, otherwise at execute.
 
-One declared output in v1.
+One declared output in v1, typed `AnyType`.
 
 ### 8.5 Security acceptance (Gate E)
 
