@@ -162,6 +162,21 @@ the lower of the two, there is no unlimited setting, and the shipped ceiling
 sits well above the node default, so raising a budget on the node works and
 only a ceiling somebody lowered makes the message point at the file.
 
+That file fails closed. Not having one is the only way to get the shipped
+defaults: a `flow_policy.json` that exists and cannot be read, or that names
+a key this pack does not know, or that gives a ceiling as `"5"` instead of
+`5`, is an error that turns Safe Function and the LLM nodes off until it is
+fixed, and it says which key is wrong. It used to be ignored, which meant a
+typo silently handed back the shipped ceiling and nobody was watching. Gate,
+Condition, Lazy Select, Filter, Partition and Flow Probe never read it and
+keep working.
+
+Every transform declares the peak it will allocate before it runs, and a
+capability that allocates cannot be registered without that declaration, so a
+new one cannot quietly arrive unguarded. The declaration is in elements, which
+is a rough proxy for memory: fp16 and fp32 do not cost the same, so the
+declared peak is deliberately pessimistic.
+
 Values are bounded as well as programs. A sequence refuses to grow past
 `MAX_RESULT_LENGTH`, and an integer past `MAX_INT_BITS`, because `x = x * x`
 in a loop reaches gigabytes of int in forty steps with every budget nearly

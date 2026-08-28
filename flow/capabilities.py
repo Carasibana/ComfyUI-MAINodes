@@ -28,6 +28,11 @@ class Capability:
     return_type: str = "ANY"
     predicate_safe: bool = True
     cost: float = 0.0
+    # An allocating capability declares its PEAK, in elements, before it runs.
+    # register() refuses one without it, so "I forgot to guard this transform"
+    # is a construction error rather than a runtime hole. `version` is recorded
+    # and not yet consumed; see the owed note in spec 5.3.
+    preflight: Callable | None = None
 
 
 REGISTRY: dict[str, Capability] = {}
@@ -39,6 +44,11 @@ def register(cap: Capability) -> Capability:
     """Register by full id; ids in a bare pack also answer to a bare name."""
     if cap.id in REGISTRY:
         raise ValueError(f"capability '{cap.id}' is already registered")
+    if not cap.predicate_safe and cap.preflight is None:
+        raise ValueError(
+            f"capability '{cap.id}' allocates and declares no preflight. A "
+            f"transform states its peak in elements before it runs; the guard "
+            f"is not something each one remembers on its own")
     REGISTRY[cap.id] = cap
     pack, _, bare = cap.id.rpartition(".")
     if pack in _BARE_PACKS:
@@ -57,8 +67,10 @@ def resolve(name: str | None) -> Capability | None:
     return REGISTRY.get(full) if full else None
 
 
-def _add(cid, fn, *, return_type="ANY", predicate_safe=True, cost=0.0, version=1):
-    return register(Capability(cid, version, fn, (), return_type, predicate_safe, cost))
+def _add(cid, fn, *, return_type="ANY", predicate_safe=True, cost=0.0, version=1,
+         preflight=None):
+    return register(Capability(cid, version, fn, (), return_type, predicate_safe,
+                               cost, preflight))
 
 
 def unref(value):
@@ -201,18 +213,36 @@ def ids() -> list[str]:
 # predicate_safe: a Gate, Condition, Filter or Partition refuses them,
 # because those nodes decide a branch and planning must stay pure and cheap.
 # All of them are functional (a new tensor, never an in-place write on a
-# value another node also consumes) and every allocation is capped by the
-# installation's max_pixels.
+# value another node also consumes) and every one of them declares its peak
+# in elements, which check_peak() enforces against the installation's
+# max_pixels before the call. register() refuses a transform without one.
 import torch
 
 from . import policy
 
 
-def _pixels(count: int, what: str) -> None:
-    ceiling = policy.ceilings()["max_pixels"]
+def check_peak(cap: Capability, args, path: str | None = None) -> int:
+    """The ONE place a transform's declared peak is enforced (spec 8.2).
+
+    It used to sit inside three of the eight transforms, and the module said
+    "every allocation is capped by the installation's max_pixels", which was
+    not true: crop, flip, mask.invert, mask.threshold and latent.blend had no
+    check at all. Those five cannot grow past their input, so the exposure was
+    an accounting gap rather than an unbounded hole, but the sentence was
+    false and a blend builds about three full-size temporaries in one call.
+
+    Estimates are in ELEMENTS. Bytes would be the better unit, since fp32 and
+    fp16 do not cost the same and interpolate() promotes to float; that is
+    owed, and the peak below is deliberately the pessimistic count.
+    """
+    if cap.preflight is None:
+        return 0
+    count = int(cap.preflight(*args))
+    ceiling = policy.ceilings(path)["max_pixels"]
     if count > ceiling:
-        raise ExprError(f"{what} would allocate {count} pixels, over the "
+        raise ExprError(f"{cap.id} would allocate {count} pixels, over the "
                         f"max_pixels limit of {ceiling}")
+    return count
 
 
 def _whole(value, what: str) -> int:
@@ -226,7 +256,6 @@ def _resize(image, width, height):
     w, h = _whole(width, "image.resize"), _whole(height, "image.resize")
     if w < 1 or h < 1:
         raise ExprError(f"image.resize needs a positive size, got {w}x{h}")
-    _pixels(int(t.shape[0]) * w * h * int(t.shape[3]), "image.resize")
     out = torch.nn.functional.interpolate(t.movedim(-1, 1).float(), size=(h, w),
                                           mode="bilinear", align_corners=False)
     return Ref(out.movedim(1, -1), "IMAGE")
@@ -265,7 +294,6 @@ def _select(image, indices):
         picked.append(i % batch)
     if not picked:
         raise ExprError("image.select needs at least one index")
-    _pixels(len(picked) * int(t.shape[1]) * int(t.shape[2]) * int(t.shape[3]), "image.select")
     return Ref(t[picked].clone(), "IMAGE")
 
 
@@ -299,18 +327,68 @@ def _seq_concat(a, b):
         if tuple(first.shape[1:]) != tuple(second.shape[1:]):
             raise ExprError(f"seq.concat needs matching shapes after the batch dimension, "
                             f"got {tuple(first.shape)} and {tuple(second.shape)}")
-        _pixels(int(first[0].numel()) * (int(first.shape[0]) + int(second.shape[0])),
-                "seq.concat")
         return Ref(torch.cat([first, second], dim=0), kind_of(first))
     raise ExprError(f"seq.concat joins two lists or two tensors, got "
                     f"{type(first).__name__} and {type(second).__name__}")
 
 
+def _numel(value) -> int:
+    raw = unref(value)
+    if isinstance(raw, dict):
+        raw = raw.get("samples")
+    shape = getattr(raw, "shape", None)
+    if shape is None:
+        return len(raw) if isinstance(raw, (str, list, tuple)) else 0
+    count = 1
+    for size in shape:
+        count *= int(size)
+    return count
+
+
+def _p_resize(image, width, height):
+    t = _image(image)
+    return int(t.shape[0]) * abs(int(width)) * abs(int(height)) * int(t.shape[3])
+
+
+def _p_crop(image, x, y, width, height):
+    t = _image(image)
+    return int(t.shape[0]) * abs(int(width)) * abs(int(height)) * int(t.shape[3])
+
+
+def _p_select(image, indices):
+    t = _image(image)
+    items = unref(indices)
+    count = len(items) if isinstance(items, (list, tuple)) else 1
+    return count * int(t.shape[1]) * int(t.shape[2]) * int(t.shape[3])
+
+
+def _p_concat(a, b):
+    return _numel(a) + _numel(b)
+
+
+# the multipliers are the temporaries the expression builds, not just the
+# result: `.float()` copies, `1.0 - t` copies, and a blend is two products
+# and a sum before anything is returned
+def _p_same(image, *_ignored):
+    return _numel(image)
+
+
+def _p_twice(value, *_ignored):
+    return 2 * _numel(value)
+
+
+def _p_blend(a, b, t):
+    return 3 * _numel(a)
+
+
 TRANSFORMS = {
-    "image.resize": _resize, "image.crop": _crop, "image.flip": _flip,
-    "image.select": _select, "mask.invert": _mask_invert,
-    "mask.threshold": _mask_threshold, "latent.blend": _latent_blend,
-    "seq.concat": _seq_concat,
+    "image.resize": (_resize, _p_resize), "image.crop": (_crop, _p_crop),
+    "image.flip": (_flip, _p_same), "image.select": (_select, _p_select),
+    "mask.invert": (_mask_invert, _p_twice),
+    "mask.threshold": (_mask_threshold, _p_twice),
+    "latent.blend": (_latent_blend, _p_blend),
+    "seq.concat": (_seq_concat, _p_concat),
 }
-for _cid, _transform in TRANSFORMS.items():
-    _add(_cid, _transform, return_type="ANY", predicate_safe=False, cost=1.0)
+for _cid, (_transform, _peak) in TRANSFORMS.items():
+    _add(_cid, _transform, return_type="ANY", predicate_safe=False, cost=1.0,
+         preflight=_peak)

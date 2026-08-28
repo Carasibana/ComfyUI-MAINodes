@@ -339,8 +339,20 @@ Only installed extension code registers capabilities. Third-party packs
 register under their own prefix and are shown separately in the UI. A
 workflow cannot add to the registry.
 
-Workflow metadata records the runtime and pack versions used; a load with a
-missing or older pack fails validation before queueing.
+OWED, not built (removed as a claim 2026-08-28): workflow metadata recording
+the runtime and pack versions, and a load with a missing or older pack failing
+validation before queueing. `Capability.version` is recorded in the registry
+and has no consumer: it reaches no node input, no cache key and no validation.
+The spec asserted this as shipped behaviour for a day, which is the rule about
+measuring before writing the claim, broken in the document that states it.
+
+An allocating capability MUST declare a `preflight` returning the peak it will
+allocate, in elements, and `register()` refuses one without it. The check runs
+in a single place before the call, not inside each transform: three of the
+eight guarded themselves and five did not, while the module claimed all of
+them did. Elements is the wrong unit and bytes is owed, since fp16 and fp32 do
+not cost the same and `interpolate` promotes to float; the declared peak is
+deliberately pessimistic in the meantime.
 
 ---
 
@@ -462,6 +474,19 @@ lowers them, and only then does a budget message point at
 
 There is NO setting that means unlimited: zero and negatives are refused at
 queue time, because an unbounded budget is the thing that takes a host down.
+
+The installation policy file FAILS CLOSED. An absent file is the only state
+that means "use the shipped defaults". A file that exists and cannot be read,
+parsed, or understood is an error, and so is an unknown key or a ceiling that
+is not a positive number. The failure mode this replaces was silent: an
+administrator who set a ceiling of 5 and then mistyped the JSON, or wrote "5"
+instead of 5, or misspelled the key, got the shipped ceiling of 100000 back
+with nothing said, and a restriction that evaporates on a typo is worse than
+no restriction because nobody is watching it. Only Safe Function and the LLM
+nodes read the file, so a broken policy disables exactly those and leaves
+Gate, Condition, Lazy Select, Filter, Partition and Flow Probe running, which
+is what section 8.5 already asks for.
+
 An installation ceiling may lower any of them;
 the effective limit is the minimum. Exceeding a budget stops the function
 with the limit, the line, and the setting to change.
@@ -493,8 +518,14 @@ reads `a`, the second `b`, and so on. Parameter names are for the author;
 API-form JSON always uses those socket names, so the node runs with no
 frontend at all. Twelve sockets, `a`..`l`, shipped in Phase 3; the count is
 a constant, not a promise of the alphabet. A later JavaScript pass renames the sockets for display only.
-Defaults apply when a socket is not connected. Annotations are checked in
-`validate_inputs` where the value is known, otherwise at execute.
+Defaults apply when a socket is not connected, and a default is a LITERAL:
+a number, a string, `True`, `False`, `None`, or a list or tuple of those. It
+was validated as an expression and then evaluated at parse time, so
+`def main(x, y = sqrt(25))` ran a capability outside every budget on each of
+the three parses per execution. There is no user value in a computed default,
+so the capability is deleted rather than accounted for and a whole execution
+phase stops existing. Annotations are checked in `validate_inputs` where the
+value is known, otherwise at execute.
 
 One declared output in v1, typed `AnyType`. The value handed back must be
 fully resolved: an unresolved socket buried inside a returned list, tuple or
@@ -605,9 +636,10 @@ Every feature survives save / load, copy / paste, templates, API export,
 execution without the MAINodes frontend, and migration. Frontend decoration
 never holds the only copy of execution semantics.
 
-Cache identity includes expression or function source, signature, runtime
-and pack versions, budgets, and scalar inputs, all of which are ordinary
-inputs and therefore already in core's signature. Unselected lazy branches
+Cache identity includes expression or function source, signature, budgets and
+scalar inputs, all of which are ordinary inputs and therefore already in
+core's signature. Runtime and pack versions are NOT in it; see the owed note
+in section 5.3. Unselected lazy branches
 never run for fingerprinting; core guarantees this.
 
 Migration rule inherited from the pack: new inputs are appended last, never
@@ -627,6 +659,16 @@ inserted, or every saved workflow shifts a slot.
 | F. Limits | oversized source, deep nesting, huge literals, exponent bombs rejected before execution |
 | G. Lists | Filter / Partition counts; an empty `kept` list reaches the downstream node as an error or a no-argument call, never as a skip, so the test asserts BOTH measured core shapes and the `kept_count > 0` guard |
 | H. No frontend | Gate D is the proof; no JavaScript exists in Phase 1 |
+
+Meta-invariants (`tests/flow/test_invariants.py`) are tested over the registry
+itself rather than per feature, because the same defect shape appeared five
+times and each instance was a rule that one call site was supposed to
+remember: every allocating capability declares a preflight; a capability that
+duplicates an operator refuses what the operator refuses; every bare name is
+the same object as its full id; every budget has a node input, a ceiling above
+its default, and a positive check; only an absent policy file means the
+shipped defaults. Adding a reviewer does not stop the class. Stating the rule
+as a test over the registry turns the next omission into an import error.
 
 Test harness: a subprocess ComfyUI on a free localhost port with `--cpu`,
 `--disable-all-custom-nodes`, an extra-model-paths file pointing

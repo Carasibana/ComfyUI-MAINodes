@@ -485,8 +485,8 @@ class _LLMNode(io.ComfyNode):
             if provider is not None:
                 provider_spec(provider)
             cls.check(**rest)
-        except LLMError as e:
-            return str(e)
+        except (LLMError, policy.PolicyError) as e:
+            return str(e)          # a broken policy file turns these nodes off
         return True
 
     @classmethod

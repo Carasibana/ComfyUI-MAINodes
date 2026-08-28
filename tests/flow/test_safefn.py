@@ -212,8 +212,11 @@ def counted_transform():
         calls.append(value)
         return f"transformed:{value}"
 
+    # preflight is mandatory for an allocating capability, and register()
+    # refusing this fixture without one is the invariant doing its job
     capabilities.register(capabilities.Capability(
-        "test.count", 1, fn, (), "ANY", predicate_safe=False))
+        "test.count", 1, fn, (), "ANY", predicate_safe=False, cost=1.0,
+        preflight=lambda value: 0))
     try:
         yield calls
     finally:
@@ -393,11 +396,89 @@ def test_the_installation_ceiling_lowers_a_node_setting(tmp_path):
     with pytest.raises(SafeFnError) as e:
         inside.execute({"a": 1})
     assert str(e.value).endswith("(used 5). Raise max_iterations on the node.")
-    # a missing or broken policy file leaves the shipped ceilings standing
+    # ONLY a missing file leaves the shipped ceilings standing
     assert policy.ceilings(str(tmp_path / "absent.json")) == policy.CEILINGS
+
+
+BROKEN = [
+    ("{not json", "cannot be read as JSON"),
+    ('{"max_iterations": "5"}', "sets max_iterations to '5'"),
+    ('{"max_iteration": 5}', "'max_iteration', which is not a policy key"),
+    ('{"max_pixels": 0}', "sets max_pixels to 0"),
+    ('{"llm_providers": 7}', "'llm_providers' is a JSON object, got int"),
+    ('["max_iterations"]', "its top level is a list"),
+]
+
+
+@pytest.mark.parametrize("content,expected", BROKEN, ids=[b[0][:24] for b in BROKEN])
+def test_a_policy_file_that_cannot_be_honoured_fails_closed(tmp_path, content, expected):
+    """The restriction must not evaporate on a typo.
+
+    This file used to be ignored whenever it could not be read: an
+    administrator who set a ceiling of 5 and then mistyped the JSON, or quoted
+    the number, or misspelled the key, silently got the shipped ceiling of
+    100000 back with nothing said. That is worse than no policy, because
+    nobody is watching a restriction they believe is in force. Absent is now
+    the only state that means "use the shipped defaults".
+    """
+    path = str(tmp_path / "flow_policy.json")
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write("{not json")
-    assert policy.ceilings(path) == policy.CEILINGS
+        fh.write(content)
+    with pytest.raises(policy.PolicyError) as e:
+        policy.ceilings(path)
+    assert expected in str(e.value)
+    # cached on the mtime, so it is refused again without re-reading
+    with pytest.raises(policy.PolicyError):
+        policy.ceilings(path)
+    # and it turns Safe Function off at QUEUE time rather than mid-run
+    from flow.nodes import MAIFlowSafeFunction
+    import os as _os
+    previous = _os.environ.get(policy.POLICY_ENV)
+    _os.environ[policy.POLICY_ENV] = path
+    try:
+        message = MAIFlowSafeFunction.validate_inputs(
+            source=safefn.DEFAULT_SOURCE, max_iterations=1000, max_ops=50000,
+            max_calls=5000, max_collection=10000, max_tensor_elements=100_000_000)
+        assert message is not True and expected in str(message)
+    finally:
+        if previous is None:
+            _os.environ.pop(policy.POLICY_ENV, None)
+        else:
+            _os.environ[policy.POLICY_ENV] = previous
+    # fixing the file is enough; nothing needs restarting
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write('{"max_iterations": 5}')
+    assert policy.ceilings(path)["max_iterations"] == 5
+
+
+def test_a_parameter_default_is_a_literal_and_never_runs_anything():
+    """The comment said "a default is a literal"; the code evaluated one.
+
+    A default was validated as an expression and then EVALUATED at parse time,
+    so `sqrt(25)`, `'a' * 999999` and `2 ** 4000` were all accepted and all ran
+    outside every budget, on each of the three parses per execution. The
+    capability is deleted rather than accounted for.
+    """
+    for source in ("def main(x, y = sqrt(25)):\n    return y\n",
+                   "def main(x, y = 'a' * 999999):\n    return y\n",
+                   "def main(x, y = 2 ** 4000):\n    return y\n",
+                   "def main(x, y = z):\n    return y\n"):
+        with pytest.raises(SafeFnError) as e:
+            compile_it(source)
+        assert "is a literal: a number, a string, True, False, None" in str(e.value)
+    # what a default may be, including the shapes that are not bare Constants
+    for source, expected in (("def main(x, y = 5):\n    return y\n", 5),
+                             ("def main(x, y = -1):\n    return y\n", -1),
+                             ("def main(x, y = -2.5):\n    return y\n", -2.5),
+                             ("def main(x, y = True):\n    return y\n", True),
+                             ("def main(x, y = None):\n    return y\n", None),
+                             ("def main(x, y = 'ok'):\n    return y\n", "ok"),
+                             ("def main(x, y = [1, 2]):\n    return y\n", [1, 2]),
+                             ("def main(x, y = (1, 2)):\n    return y\n", (1, 2))):
+        # unref_deep: a list default is wrapped like any other non-scalar, and
+        # the node boundary is what unwraps it
+        value = capabilities.unref_deep(compile_it(source).execute({"a": 0})[0])
+        assert value == expected, source
 
 
 # --- the language, running ------------------------------------------------

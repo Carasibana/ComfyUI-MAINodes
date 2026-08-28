@@ -432,7 +432,9 @@ class MAIFlowProbe(io.ComfyNode):
 
     @classmethod
     def execute(cls, value=None, name="probe", salt=0, delay_s=0.0) -> io.NodeOutput:
-        safe = "".join(c for c in str(name) if c.isalnum() or c in "-_.") or "probe"
+        # [:64]: the sanitizer kept every legal character, so a 500 character
+        # name became a 500 character filename and NAME_MAX is 255
+        safe = "".join(c for c in str(name) if c.isalnum() or c in "-_.")[:64] or "probe"
         directory = os.path.join(folder_paths.get_output_directory(), "flow_probe")
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, f"{safe}.count")
@@ -509,7 +511,9 @@ class MAIFlowSafeFunction(io.ComfyNode):
         try:
             function = cls._compile(source, max_iterations, max_ops, max_calls,
                                     max_collection, max_tensor_elements)
-        except safefn.SafeFnError as e:
+        except (safefn.SafeFnError, policy.PolicyError) as e:
+            # PolicyError: the installation file exists and cannot be honoured,
+            # so this node is off until it is fixed. Say so at queue time.
             return str(e)
         for param in function.params:
             value = _ignored.get(param.socket)

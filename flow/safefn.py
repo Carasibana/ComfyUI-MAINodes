@@ -22,8 +22,9 @@ from collections import deque
 from typing import NamedTuple
 
 from . import capabilities, policy
-from .expr import (MAX_DEPTH, MAX_NODES, MAX_SOURCE_BYTES, ExprError, Ref,
-                   _BINOPS, _Eval, _reject, _Validator, dotted_name, wrap)
+from .expr import (MAX_DEPTH, MAX_ELEMENTS, MAX_NODES, MAX_SOURCE_BYTES,
+                   ExprError, Ref, _BINOPS, _Eval, _reject, _Validator,
+                   dotted_name, wrap)
 
 SOCKETS = "abcdefghijkl"          # twelve fixed lazy slots; never Autogrow
 MAX_PARAMS = len(SOCKETS)
@@ -209,6 +210,40 @@ def _kind_name(value) -> str:
     return wrap(raw).describe().split("[")[0]
 
 
+_LITERAL_TYPES = (bool, int, float, str, type(None))
+
+
+def _literal(name: str, node, line):
+    """A parameter default is a LITERAL, and now actually is one.
+
+    It used to be validated as an expression and then EVALUATED at parse
+    time, so `def main(x, y = sqrt(25))` ran a capability outside every
+    budget, on every parse, and the source is parsed once in validate_inputs,
+    once per planning pass and once in execute. There is no user value in a
+    computed default, so the capability is deleted rather than accounted for:
+    a whole execution phase stops existing.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, _LITERAL_TYPES):
+        return node.value
+    # -1 is UnaryOp(USub, Constant(1)), not a negative constant
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)) \
+            and isinstance(node.operand, ast.Constant) \
+            and isinstance(node.operand.value, (int, float)) \
+            and not isinstance(node.operand.value, bool):
+        value = node.operand.value
+        return -value if isinstance(node.op, ast.USub) else value
+    if isinstance(node, (ast.List, ast.Tuple)):
+        if len(node.elts) > MAX_ELEMENTS:
+            raise _rejected(line, f"the default for '{name}' has {len(node.elts)} "
+                                  f"elements, the limit is {MAX_ELEMENTS}")
+        items = [_literal(name, element, line) for element in node.elts]
+        return tuple(items) if isinstance(node, ast.Tuple) else items
+    raise _rejected(line, f"the default for '{name}' is a literal: a number, a "
+                          f"string, True, False, None, or a list or tuple of those. "
+                          f"It is never computed, so nothing runs while the node "
+                          f"is being parsed")
+
+
 def _annotation_of(node) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
@@ -370,12 +405,8 @@ class Function:
             has_default, default = index >= offset, None
             if has_default:
                 node = args.defaults[index - offset]
-                try:
-                    _Validator(set()).walk(node)      # a default is a literal
-                    default = _Eval({}).run(node)
-                except ExprError as e:
-                    raise _rejected(getattr(node, "lineno", function.lineno),
-                                    f"default for '{argument.arg}': {e}") from None
+                default = _literal(argument.arg, node,
+                                   getattr(node, "lineno", function.lineno))
             params.append(Param(argument.arg, SOCKETS[index],
                                 _annotation_of(argument.annotation), default, has_default))
         return params
@@ -572,6 +603,9 @@ class _Interp(_Eval):
             return unknown
         if self.planning and not cap.predicate_safe:
             return Unknown(transform=True, name=name)   # planning is pure
+        # reserve BEFORE the allocation, not account for it after: the running
+        # total below bounds accumulation, and this bounds one call
+        capabilities.check_peak(cap, args)
         self.budget.spend("max_calls", line)
         try:
             return cap.fn(*args)

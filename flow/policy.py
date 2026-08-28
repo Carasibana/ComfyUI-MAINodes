@@ -21,6 +21,19 @@ administrator edits one file and never the code:
 
 It is the pack root's flow_policy.json unless MAINODES_FLOW_POLICY names
 another one, which is how a sandbox gets its own without writing into a pack.
+
+POLICY FAILS CLOSED. Absent is the only state that means "use the shipped
+defaults". A file that exists but cannot be read, parsed, or understood is an
+error, because the failure mode it replaces is silent: an administrator who
+sets a ceiling of 5 and then makes a JSON typo, or writes "5" instead of 5,
+got the shipped ceiling of 100000 back with nothing said. A restriction that
+evaporates on a typo is worse than no restriction, since nobody is looking.
+An unknown key is an error for the same reason: `max_iteration` is a
+restriction the administrator believes is in force.
+
+Only Safe Function and the LLM nodes read this file, so a broken policy
+disables exactly those and leaves Gate, Condition, Lazy Select, Filter,
+Partition and Flow Probe running, which is what spec 8.5 asks for.
 """
 from __future__ import annotations
 
@@ -68,35 +81,80 @@ LLM_MAX_TOKENS_CEILING = 32768           # above the node default of 512
 _CACHE: dict = {}
 
 
+class PolicyError(ValueError):
+    """The policy file exists but cannot be honoured. Never silently ignored."""
+
+
+# llm_providers is an object; every other key is a positive number
+_KNOWN_OBJECTS = ("llm_providers",)
+_KNOWN = set(CEILINGS) | set(_KNOWN_OBJECTS) | {"llm_max_tokens"}
+
+
+def _validated(loaded, path: str) -> dict:
+    """Every key known, every ceiling a positive number, or PolicyError."""
+    if not isinstance(loaded, dict):
+        raise PolicyError(f"{path} is a JSON object of policy keys, and its top level "
+                          f"is a {type(loaded).__name__}")
+    for key, value in loaded.items():
+        if key not in _KNOWN:
+            raise PolicyError(
+                f"{path} sets '{key}', which is not a policy key, so it restricts "
+                f"nothing. Known keys: {', '.join(sorted(_KNOWN))}")
+        if key in _KNOWN_OBJECTS:
+            if not isinstance(value, dict):
+                raise PolicyError(f"{path}: '{key}' is a JSON object, got "
+                                  f"{type(value).__name__}")
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise PolicyError(
+                f"{path} sets {key} to {value!r}. A ceiling is a positive number; "
+                f"quoting it or setting it to zero would otherwise return the "
+                f"shipped ceiling with nothing said")
+    return loaded
+
+
 def policy_path(path: str | None = None) -> str:
     """An explicit path, then the env override, then the pack root's file."""
     return path or os.environ.get(POLICY_ENV) or POLICY_PATH
 
 
 def _loaded(path: str) -> dict:
-    """The parsed policy file, cached on its mtime; {} if absent or broken."""
+    """The validated policy file, cached on its mtime. Absent means {}.
+
+    Anything else that goes wrong raises, and the failure is cached with the
+    mtime too, so a broken file is not re-read on every capability call and is
+    picked up again the moment it is edited.
+    """
     try:
         stamp = os.stat(path).st_mtime_ns
     except OSError:
-        return {}                # no file, and a broken one, change nothing
+        return {}                # NO FILE is the only "use the shipped defaults"
     cached = _CACHE.get(path)
     if cached is not None and cached[0] == stamp:
+        if isinstance(cached[1], PolicyError):
+            raise cached[1]
         return cached[1]
     try:
         with open(path, "r", encoding="utf-8") as fh:
-            loaded = json.load(fh)
-    except (OSError, ValueError):
-        return {}
-    _CACHE[path] = (stamp, loaded if isinstance(loaded, dict) else {})
-    return _CACHE[path][1]
+            result = _validated(json.load(fh), path)
+    except PolicyError as e:              # a ValueError too: catch it first
+        _CACHE[path] = (stamp, e)
+        raise
+    except (OSError, ValueError) as e:
+        error = PolicyError(f"{path} exists but cannot be read as JSON ({e}). Fix it "
+                            f"or remove it; it is not ignored, because a policy that "
+                            f"evaporates on a typo is a restriction nobody is watching")
+        _CACHE[path] = (stamp, error)
+        raise error
+    _CACHE[path] = (stamp, result)
+    return result
 
 
 def ceilings(path: str | None = None) -> dict:
     """CEILINGS with the JSON override applied, cached on the file mtime."""
     values = dict(CEILINGS)
     for field, value in _loaded(policy_path(path)).items():
-        if field in CEILINGS and isinstance(value, (int, float)) \
-                and not isinstance(value, bool) and value > 0:
+        if field in CEILINGS:            # _validated already proved it usable
             values[field] = type(CEILINGS[field])(value)
     return values
 
