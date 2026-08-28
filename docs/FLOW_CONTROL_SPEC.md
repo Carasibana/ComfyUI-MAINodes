@@ -418,7 +418,7 @@ it can be revisited with evidence.
 
 ### 8.2 Budgets
 
-All four are serialized on the node, so the editor and the API behave
+All five are serialized on the node, so the editor and the API behave
 identically and the same workflow behaves the same on two machines. A budget
 that lives only in installation policy would break that, so policy may lower
 a node's value but never replace it:
@@ -427,8 +427,23 @@ a node's value but never replace it:
 max loop iterations   default 1000      (shared across nested loops)
 max interpreted ops   default 50000
 max capability calls  default 5000
-max collection size   default 10000
+max collection size   default 10000     sequence elements and characters
+max tensor elements   default 100000000 elements of transform results
 ```
+
+Two resources, two units, two budgets. `max_collection` counts what a
+sequence operation builds; `max_tensor_elements` counts what a transform
+returns. Charging both against one number was measured to make the transform
+pack unusable: one `image.flip` on a 64x64x3 image is 12288 elements against
+a collection ceiling of 10000, and a 1 MP image is 3145728. The per-result
+`max_pixels` cap (64 MP) still applies on top.
+
+The installation ceiling sits ABOVE the node default, not on it. A ceiling
+equal to the default means raising the node value is silently clamped, so
+"raise it on the node" would be advice that cannot work. Ceilings ship at
+roughly a hundred times the defaults; an administrator who wants to restrict
+lowers them, and only then does a budget message point at
+`flow_policy.json`.
 
 There is NO setting that means unlimited: zero and negatives are refused at
 queue time, because an unbounded budget is the thing that takes a host down.
