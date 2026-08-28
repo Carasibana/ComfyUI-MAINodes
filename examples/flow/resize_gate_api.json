@@ -1,0 +1,36 @@
+{
+  "scale": {
+    "class_type": "PrimitiveFloat",
+    "_meta": {"title": "scale (the one copy of the value)"},
+    "inputs": {"value": 0.5}
+  },
+  "source_image": {
+    "class_type": "EmptyImage",
+    "_meta": {"title": "the image to process"},
+    "inputs": {"width": 64, "height": 64, "batch_size": 1, "color": 0}
+  },
+  "resize": {
+    "class_type": "ImageScaleBy",
+    "_meta": {"title": "the expensive branch"},
+    "inputs": {"image": ["source_image", 0], "upscale_method": "bilinear", "scale_by": ["scale", 0]}
+  },
+  "probe": {
+    "class_type": "MAIFlowProbe",
+    "_meta": {"title": "counts how often the resize actually ran"},
+    "inputs": {"value": ["resize", 0], "name": "resize_gate", "salt": 0, "delay_s": 0.0}
+  },
+  "gate": {
+    "class_type": "MAIFlowGate",
+    "_meta": {"title": "Gate: resize only when scale is not 1.0"},
+    "inputs": {
+      "expression": "a != 1.0",
+      "source": ["source_image", 0],
+      "processed": ["probe", 0],
+      "values.a": ["scale", 0]
+    }
+  },
+  "preview": {
+    "class_type": "PreviewAny",
+    "inputs": {"source": ["gate", 0]}
+  }
+}

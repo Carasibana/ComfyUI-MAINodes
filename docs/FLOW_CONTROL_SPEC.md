@@ -273,6 +273,20 @@ core's simpleeval does with `safe_mult` / `safe_add`. Without that guard
 about 12 AST nodes) and then allocates gigabytes inside `execute`; host RAM
 is this box's real ceiling, so that ends the ComfyUI process.
 
+That guard is per operation, and the bound it gives is honest rather than
+total: a chain of sub-limit allocations (`'a' * 999999 + 'a' * 999999 ...`)
+can still reach a few hundred MB of transient string before the AST node
+budget stops it. That is three orders of magnitude below the unguarded case
+and matches how core behaves. A running total threaded through the
+evaluator would close it; if Safe Function's loops make that worth doing,
+do it there, where a loop can repeat an allocation.
+
+A bare capability name is a queue-time error, not a value: `sqrt` alone
+would otherwise evaluate to the function object and silently feed a branch
+`True` forever. A bound value of the same name still wins, so a connected
+input may legally be called `sqrt`; the node layer cannot produce that
+collision, since value names are `a`..`z` plus `item`, `index`, `count`.
+
 Dotted names such as `image.width(x)` are resolved directly against the
 registry. No Python module object is ever exposed. There is no `getattr`.
 

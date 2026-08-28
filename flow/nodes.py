@@ -1,0 +1,416 @@
+"""Flow control nodes: Gate, Condition, Lazy Select, Filter, Partition, Probe.
+
+Phase 1 of docs/FLOW_CONTROL_SPEC.md. Nothing here duplicates a core node:
+core already has If/Else Switch, Soft Switch, Math Expression and the
+boolean glue. What core lacks is predicates over data rather than widget
+scalars, a fused "process if" with passthrough, N-way lazy dispatch, list
+Filter / Partition, and a way to count executions from outside the server.
+
+Laziness is core's: an input marked lazy is only produced when
+``check_lazy_status`` asks for it by name, and the producers that only that
+input depends on never run. The trap that costs people the saving is a
+second consumer (a preview, a save) on the guarded branch, which makes it
+required again. Flow Probe exists so that is counted rather than guessed.
+"""
+from __future__ import annotations
+
+import hashlib
+import os
+import string
+import time
+
+import torch
+
+import folder_paths
+from comfy_api.latest import io
+
+from . import capabilities  # noqa: F401  (registers the v1 capability packs)
+from .expr import ExprError, describe, evaluate, validate, wrap
+
+MISSING = object()          # not connected, as core's Soft Switch uses it
+CATEGORY = "MAINodes/Flow"
+
+
+def _autogrow(values, *, tuples=False, unlist=False) -> tuple[dict, dict]:
+    """Normalise one Autogrow argument into {name: value}, {name: prompt_key}.
+
+    Three shapes arrive at the same argument: the plain dict in ``execute``,
+    ``(value, original_key)`` pairs in ``check_lazy_status`` (core sets
+    create_dynamic_tuple so a lazy request can name the real input), and
+    one-element lists on an is_input_list node.
+    """
+    out: dict = {}
+    keys: dict = {}
+    for name, value in (values or {}).items():
+        key = name
+        if tuples and isinstance(value, tuple) and len(value) == 2 and isinstance(value[1], str):
+            value, key = value
+        if unlist and isinstance(value, list):
+            value = value[0] if value else None
+        out[name] = value
+        keys[name] = key
+    return out, keys
+
+
+def _first(value):
+    """First item of an is_input_list argument."""
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def _bind(values: dict, extra: dict | None = None) -> dict:
+    names = {k: wrap(v) for k, v in values.items()}
+    if extra:
+        names.update({k: wrap(v) for k, v in extra.items()})
+    return names
+
+
+def _report(values: dict) -> dict:
+    return {k: describe(v) for k, v in values.items()}
+
+
+def _syntax_check(expression):
+    """validate_inputs body: syntax, limits and capability names at queue time.
+
+    Name binding is not checked here because the grown value inputs are
+    links, so their names are known to the prompt but their values are not.
+    """
+    expression = _first(expression)
+    if expression is None:
+        return True
+    try:
+        validate(expression)
+    except ExprError as e:
+        return f"expression: {e}"
+    return True
+
+
+def _any_values_template(minimum: int = 1) -> io.Autogrow.TemplateNames:
+    return io.Autogrow.TemplateNames(
+        input=io.AnyType.Input("value"), names=list(string.ascii_lowercase), min=minimum)
+
+
+class MAIFlowGate(io.ComfyNode):
+    """processed if expression else source, with the untaken side never run."""
+
+    @classmethod
+    def define_schema(cls):
+        t = io.MatchType.Template("gate")
+        return io.Schema(
+            node_id="MAIFlowGate",
+            display_name="Gate (process if)",
+            category=CATEGORY,
+            is_experimental=True,
+            search_aliases=["if", "conditional", "process if", "skip", "branch"],
+            description=("Runs the processed branch only when the expression is true, "
+                         "otherwise passes source through. Both branches are lazy, so the "
+                         "untaken one and its exclusive producers never execute."),
+            inputs=[
+                io.String.Input("expression", default="a != 1.0", multiline=True),
+                io.MatchType.Input("source", template=t, lazy=True),
+                io.MatchType.Input("processed", template=t, lazy=True),
+                io.Autogrow.Input("values", template=_any_values_template()),
+            ],
+            outputs=[io.MatchType.Output(template=t, display_name="result")],
+        )
+
+    @classmethod
+    def validate_inputs(cls, expression=None, values=None):
+        # `values` must be in the signature even though it is unused: core
+        # rebuilds the Autogrow dict for any node whose validate_inputs is
+        # called, and an unexpected keyword is a validation exception.
+        return _syntax_check(expression)
+
+    @classmethod
+    def _decide(cls, expression, values) -> bool:
+        return bool(evaluate(expression, _bind(values)))
+
+    @classmethod
+    def check_lazy_status(cls, expression, source=None, processed=None, values=None):
+        resolved, _ = _autogrow(values, tuples=True)
+        if cls._decide(expression, resolved):
+            if processed is None:
+                return ["processed"]
+        elif source is None:
+            return ["source"]
+        return []
+
+    @classmethod
+    def execute(cls, expression, source=None, processed=None, values=None) -> io.NodeOutput:
+        resolved, _ = _autogrow(values)
+        took_processed = cls._decide(expression, resolved)
+        ui = {"flow": [{"node": "Gate",
+                        "took": "processed" if took_processed else "source",
+                        "expression": expression,
+                        "values": _report(resolved)}]}
+        return io.NodeOutput(processed if took_processed else source, ui=ui)
+
+
+class MAIFlowCondition(io.ComfyNode):
+    """One expression, four scalar forms, for feeding core's logic nodes."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MAIFlowCondition",
+            display_name="Condition",
+            category=CATEGORY,
+            is_experimental=True,
+            search_aliases=["predicate", "expression", "boolean", "test"],
+            description=("Evaluates a flow expression over connected values and reports it as "
+                         "BOOL, FLOAT, INT and STRING. Same language as Gate, and a superset "
+                         "of core's Math Expression."),
+            inputs=[
+                io.String.Input("expression", default="a != 1.0", multiline=True),
+                io.Autogrow.Input("values", template=_any_values_template()),
+            ],
+            outputs=[
+                io.Boolean.Output(display_name="BOOL"),
+                io.Float.Output(display_name="FLOAT"),
+                io.Int.Output(display_name="INT"),
+                io.String.Output(display_name="STRING"),
+            ],
+        )
+
+    @classmethod
+    def validate_inputs(cls, expression=None, values=None):
+        # `values` must be in the signature even though it is unused: core
+        # rebuilds the Autogrow dict for any node whose validate_inputs is
+        # called, and an unexpected keyword is a validation exception.
+        return _syntax_check(expression)
+
+    @classmethod
+    def execute(cls, expression, values=None) -> io.NodeOutput:
+        resolved, _ = _autogrow(values)
+        result = evaluate(expression, _bind(resolved))
+        try:
+            as_float = float(result)
+        except (TypeError, ValueError):
+            as_float = 0.0
+        try:
+            as_int = int(result)
+        except (TypeError, ValueError):
+            as_int = 0
+        ui = {"flow": [{"node": "Condition", "result": describe(result),
+                        "expression": expression, "values": _report(resolved)}]}
+        return io.NodeOutput(bool(result), as_float, as_int, str(result), ui=ui)
+
+
+class MAIFlowSelect(io.ComfyNode):
+    """N-way lazy dispatch: only the selected case is ever produced.
+
+    Fixed slots, not Autogrow. An Autogrow template does carry lazy=True
+    into every grown slot, but the executor decides laziness from the
+    UNEXPANDED INPUT_TYPES (comfy_execution/graph.py:118 and :159), where a
+    grown name such as "cases.case_0" does not exist, so every grown slot
+    would get a strong link and every case would run. Measured on core
+    0.33.0; see FLOW.md. Eight fixed MatchType slots keep the laziness,
+    which is the whole point of the node.
+    """
+
+    MAX_CASES = 8
+
+    @classmethod
+    def define_schema(cls):
+        t = io.MatchType.Template("select")
+        cases = [io.MatchType.Input(f"case_{i}", template=t, lazy=True, optional=True)
+                 for i in range(cls.MAX_CASES)]
+        return io.Schema(
+            node_id="MAIFlowSelect",
+            display_name="Lazy Select",
+            category=CATEGORY,
+            is_experimental=True,
+            search_aliases=["switch", "case", "dispatch", "multiplex", "index"],
+            description=("Picks one case by index or by label. Every case is lazy, so the "
+                         "unselected cases and their exclusive producers never execute."),
+            inputs=[
+                io.MultiType.Input(io.Int.Input("selector", default=0, min=0,
+                                                max=cls.MAX_CASES - 1), [io.String]),
+                io.String.Input("labels", default="", optional=True,
+                                tooltip="optional comma separated case names, in slot order"),
+                *cases,
+                io.MatchType.Input("default", template=t, lazy=True, optional=True),
+            ],
+            outputs=[io.MatchType.Output(template=t, display_name="result")],
+        )
+
+    @classmethod
+    def _index(cls, selector, labels):
+        names = [s.strip() for s in (labels or "").split(",") if s.strip()]
+        if isinstance(selector, str):
+            if selector in names:
+                return names.index(selector)
+            if selector.strip().lstrip("-").isdigit():
+                return int(selector.strip())
+            raise ValueError(
+                f"Lazy Select: selector {selector!r} is not one of the labels {names}")
+        return int(selector)
+
+    @classmethod
+    def _pick(cls, selector, labels, cases, default):
+        """The connected case for this selector, or 'default', naming the miss."""
+        name = f"case_{cls._index(selector, labels)}"
+        if cases.get(name, MISSING) is not MISSING:
+            return name
+        if default is MISSING:
+            raise ValueError(
+                f"Lazy Select: selector {selector!r} selects {name}, which is not connected, "
+                f"and no default is connected either")
+        return "default"
+
+    @classmethod
+    def check_lazy_status(cls, selector, labels="", default=MISSING, **cases):
+        name = cls._pick(selector, labels, cases, default)
+        value = default if name == "default" else cases[name]
+        return [name] if value is None else []
+
+    @classmethod
+    def execute(cls, selector, labels="", default=MISSING, **cases) -> io.NodeOutput:
+        name = cls._pick(selector, labels, cases, default)
+        value = default if name == "default" else cases[name]
+        ui = {"flow": [{"node": "Select", "took": name, "selector": describe(selector),
+                        "labels": labels,
+                        "cases": sorted(k for k, v in cases.items() if v is not MISSING)}]}
+        return io.NodeOutput(value, ui=ui)
+
+
+class _ListNode(io.ComfyNode):
+    """Shared per-item evaluation for Filter and Partition."""
+
+    @classmethod
+    def validate_inputs(cls, expression=None, values=None):
+        # `values` must be in the signature even though it is unused: core
+        # rebuilds the Autogrow dict for any node whose validate_inputs is
+        # called, and an unexpected keyword is a validation exception.
+        return _syntax_check(expression)
+
+    @classmethod
+    def _split(cls, items, expression, values):
+        expression = _first(expression)
+        resolved, _ = _autogrow(values, unlist=True)
+        items = list(items or [])
+        tree = validate(expression)
+        kept, rejected = [], []
+        for index, item in enumerate(items):
+            names = _bind(resolved, {"item": item, "index": index, "count": len(items)})
+            (kept if evaluate(expression, names, tree=tree) else rejected).append(item)
+        return kept, rejected, resolved, expression
+
+
+def _list_inputs(expression_default: str):
+    return [
+        io.AnyType.Input("items"),
+        io.String.Input("expression", default=expression_default, multiline=True),
+        io.Autogrow.Input("values", template=_any_values_template(minimum=0), optional=True),
+    ]
+
+
+class MAIFlowFilter(_ListNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MAIFlowFilter",
+            display_name="Filter (list)",
+            category=CATEGORY,
+            is_experimental=True,
+            is_input_list=True,
+            search_aliases=["where", "select items", "list filter"],
+            description=("Keeps the list items whose expression is true. The expression sees "
+                         "item, index and count, plus any connected values."),
+            inputs=_list_inputs("item > 0"),
+            outputs=[
+                io.AnyType.Output(display_name="kept", is_output_list=True),
+                io.Int.Output(display_name="kept_count"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, items=None, expression=None, values=None) -> io.NodeOutput:
+        kept, rejected, resolved, expression = cls._split(items, expression, values)
+        ui = {"flow": [{"node": "Filter", "expression": expression,
+                        "kept_count": len(kept), "rejected_count": len(rejected),
+                        "values": _report(resolved)}]}
+        return io.NodeOutput(kept, len(kept), ui=ui)
+
+
+class MAIFlowPartition(_ListNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MAIFlowPartition",
+            display_name="Partition (list)",
+            category=CATEGORY,
+            is_experimental=True,
+            is_input_list=True,
+            search_aliases=["split list", "kept rejected", "list partition"],
+            description=("Splits a list into kept and rejected by the expression. Feed the "
+                         "expensive branch only kept, and guard that branch with a Gate on "
+                         "kept_count > 0: an empty list does not map zero times."),
+            inputs=_list_inputs("item > 0"),
+            outputs=[
+                io.AnyType.Output(display_name="kept", is_output_list=True),
+                io.AnyType.Output(display_name="rejected", is_output_list=True),
+                io.Int.Output(display_name="kept_count"),
+                io.Int.Output(display_name="rejected_count"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, items=None, expression=None, values=None) -> io.NodeOutput:
+        kept, rejected, resolved, expression = cls._split(items, expression, values)
+        ui = {"flow": [{"node": "Partition", "expression": expression,
+                        "kept_count": len(kept), "rejected_count": len(rejected),
+                        "values": _report(resolved)}]}
+        return io.NodeOutput(kept, rejected, len(kept), len(rejected), ui=ui)
+
+
+def _digest(value) -> str:
+    h = hashlib.sha1()
+    if isinstance(value, torch.Tensor):
+        h.update(value.detach().to("cpu").contiguous().numpy().tobytes())
+    elif isinstance(value, dict) and isinstance(value.get("samples"), torch.Tensor):
+        h.update(value["samples"].detach().to("cpu").contiguous().numpy().tobytes())
+    else:
+        h.update(repr(value).encode("utf-8", "replace"))
+    return h.hexdigest()
+
+
+class MAIFlowProbe(io.ComfyNode):
+    """Passthrough that records one line per execution, for counting runs."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MAIFlowProbe",
+            display_name="Flow Probe",
+            category=CATEGORY,
+            is_experimental=True,
+            search_aliases=["count", "debug", "instrument", "did this run"],
+            description=("Passes its value through unchanged and appends one line to "
+                         "<output>/flow_probe/<name>.count. Vary salt to defeat the result "
+                         "cache when you want a second execution to be counted."),
+            inputs=[
+                io.AnyType.Input("value"),
+                io.String.Input("name", default="probe"),
+                io.Int.Input("salt", default=0, min=0, max=0xFFFFFFFF),
+                io.Float.Input("delay_s", default=0.0, min=0.0, max=600.0, step=0.01),
+            ],
+            outputs=[io.AnyType.Output(display_name="value")],
+        )
+
+    @classmethod
+    def execute(cls, value=None, name="probe", salt=0, delay_s=0.0) -> io.NodeOutput:
+        safe = "".join(c for c in str(name) if c.isalnum() or c in "-_.") or "probe"
+        directory = os.path.join(folder_paths.get_output_directory(), "flow_probe")
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, f"{safe}.count")
+        digest = _digest(value)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{int(salt)}\t{digest}\n")
+        with open(path, "r", encoding="utf-8") as fh:
+            count = sum(1 for line in fh if line.strip())
+        if delay_s:
+            time.sleep(float(delay_s))
+        ui = {"flow_probe": [{"name": safe, "count": count, "digest": digest}]}
+        return io.NodeOutput(value, ui=ui)
