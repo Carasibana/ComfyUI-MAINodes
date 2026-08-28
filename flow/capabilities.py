@@ -15,7 +15,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .expr import MAX_EXPONENT, ExprError, Ref, kind_of
+from .expr import (MAX_DEPTH, ExprError, Ref, kind_of,
+                   _safe_pow as _guarded_pow)
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,26 @@ def unref(value):
     return value.value if isinstance(value, Ref) else value
 
 
+def unref_deep(value):
+    """unref() through lists and tuples: spec 8.4's fully resolved value.
+
+    unref opens the top-level Ref only, so `return [x, y]` handed the graph a
+    list of interpreter wrappers instead of images. safefn._unresolved already
+    walks containers for the Unknown half of the same rule; this is the Ref
+    half. Containers keep their type, and nesting deeper than an expression
+    can build is returned as it is rather than recursed into.
+    """
+    return _unref_deep(value, 0)
+
+
+def _unref_deep(value, depth: int):
+    value = unref(value)
+    if depth >= MAX_DEPTH or not isinstance(value, (list, tuple)):
+        return value
+    items = [_unref_deep(item, depth + 1) for item in value]
+    return tuple(items) if isinstance(value, tuple) else items
+
+
 def _tensor(value, what):
     t = unref(value)
     if getattr(t, "shape", None) is None:
@@ -93,15 +114,15 @@ def _variadic_sum(*args):
     return sum(args)
 
 
-def _safe_pow(base, exp):
-    if abs(exp) > MAX_EXPONENT:
-        raise ExprError(f"exponent {exp} exceeds the maximum allowed ({MAX_EXPONENT})")
-    return pow(base, exp)
-
-
+# pow() is the OPERATOR's _safe_pow, deliberately: a second implementation
+# here capped the exponent and nothing else, so `(2 ** 4000) ** 4000` was
+# refused while `pow(pow(2, 4000), 4000)` built a 16-million-bit integer and
+# a third nesting demanded 8 GB in one uninterruptible call, from a Gate
+# widget, which has no allocation budget at all. One guard, one function.
 _MATH = {
     "sum": _variadic_sum, "min": min, "max": max, "abs": abs, "round": round,
-    "pow": _safe_pow, "sqrt": math.sqrt, "ceil": math.ceil, "floor": math.floor,
+    "pow": lambda base, exp: _guarded_pow(base, exp, spelling="pow"),
+    "sqrt": math.sqrt, "ceil": math.ceil, "floor": math.floor,
     "log": math.log, "log2": math.log2, "log10": math.log10, "sin": math.sin,
     "cos": math.cos, "tan": math.tan, "int": int, "float": float,
 }

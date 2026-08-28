@@ -605,6 +605,57 @@ def test_a_python_level_failure_is_reported_as_a_safe_function_failure(statement
     assert e.value.line == 2
 
 
+def test_the_same_failure_is_a_policy_error_from_a_gate_expression_too():
+    """The node layer called the same evaluator bare.
+
+    `1 / 0` inside a Safe Function said what happened, and the identical
+    expression in a Gate raised a naked ZeroDivisionError out of
+    check_lazy_status. A capability's own failure was already wrapped, so
+    sqrt(-1) was clean and an operator's failure was not.
+    """
+    from flow.nodes import _evaluate
+    for source, expected in (("a / 0", "ZeroDivisionError: division by zero"),
+                             ("a + 1", "TypeError: can only concatenate str "
+                                       '(not "int") to str'),
+                             ("a ** 3", "OverflowError")):
+        with pytest.raises(ExprError) as e:
+            _evaluate(source, {"a": "x" if "TypeError" in expected else
+                               (1e300 if "Overflow" in expected else 1)})
+        assert expected in str(e.value)
+    # a refusal still reads as a refusal, not as a wrapped Python error
+    with pytest.raises(ExprError) as e:
+        _evaluate("a.__class__", {"a": 1})
+    assert "attribute access on values is not available" in str(e.value)
+
+
+def test_a_returned_container_is_unwrapped_as_well_as_resolved():
+    """Spec 8.4: fully resolved means containers too, for Ref as for Unknown.
+
+    The Unknown half of this rule walks containers; the Ref half opened only
+    the top-level value, so `return [x, y]` handed the graph a list of
+    interpreter wrappers instead of images. The two tests that already return
+    a list pass integers, which are never wrapped, which is why it survived.
+    """
+    image, mask = _FakeTensor((1, 8, 8, 3)), _FakeTensor((1, 4, 4))
+    for source, params, sockets in (
+            ("return [x, y]", "x, y", {"a": image, "b": mask}),
+            ("return (x, y)", "x, y", {"a": image, "b": mask}),
+            ("return [[x], y]", "x, y", {"a": image, "b": mask})):
+        value, _ = compile_it(body(source, params=params)).execute(sockets)
+        resolved = capabilities.unref_deep(value)
+        flat = [resolved] if not isinstance(resolved, (list, tuple)) else list(resolved)
+        while any(isinstance(i, (list, tuple)) for i in flat):
+            flat = [x for i in flat for x in (i if isinstance(i, (list, tuple)) else [i])]
+        assert not any(isinstance(item, Ref) for item in flat), source
+        assert all(isinstance(item, _FakeTensor) for item in flat), source
+    # the container type survives the walk
+    assert isinstance(capabilities.unref_deep(
+        compile_it(body("return (x, y)", params="x, y")).execute(
+            {"a": image, "b": mask})[0]), tuple)
+    # and a plain scalar return is untouched
+    assert compile_it(body("return x")).execute({"a": 3})[0] == 3
+
+
 def test_a_budget_stop_is_not_swallowed_by_the_new_catch_all():
     """SafeFnError and NeedsInput must pass through _guarded untouched."""
     fn = compile_it(body("total = 0", "for i in range(100):", "    total = total + 1",

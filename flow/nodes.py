@@ -73,6 +73,23 @@ def _report(values: dict) -> dict:
     return {k: describe(v) for k, v in values.items()}
 
 
+def _evaluate(expression, names, tree=None):
+    """evaluate(), with a Python-level failure reported the way a refusal is.
+
+    Safe Function wraps these into "failed at line N: ZeroDivisionError: ..."
+    and has a test for it; these four nodes called the same evaluator bare, so
+    `1 / 0` in a Gate raised ZeroDivisionError out of check_lazy_status while
+    the identical expression inside a Safe Function said what happened. A
+    capability's own failure was already wrapped; an operator's was not.
+    """
+    try:
+        return evaluate(expression, names, tree=tree)
+    except ExprError:
+        raise
+    except Exception as e:
+        raise ExprError(f"{type(e).__name__}: {e}") from None
+
+
 def _syntax_check(expression):
     """validate_inputs body: syntax, limits and capability names at queue time.
 
@@ -135,7 +152,7 @@ class MAIFlowGate(io.ComfyNode):
         # validate_inputs as None, and check_lazy_status runs this more than
         # once per node, so a transform here runs several times per queue
         _predicate_check(expression)
-        return bool(evaluate(expression, _bind(values)))
+        return bool(_evaluate(expression, _bind(values)))
 
     @classmethod
     def check_lazy_status(cls, expression, source=None, processed=None, values=None):
@@ -196,7 +213,7 @@ class MAIFlowCondition(io.ComfyNode):
         resolved, _ = _autogrow(values)
         expression = _first(expression)
         _predicate_check(expression)        # see MAIFlowGate._decide
-        result = evaluate(expression, _bind(resolved))
+        result = _evaluate(expression, _bind(resolved))
         try:
             as_float = float(result)
         except (TypeError, ValueError):
@@ -308,7 +325,7 @@ class _ListNode(io.ComfyNode):
         kept, rejected = [], []
         for index, item in enumerate(items):
             names = _bind(resolved, {"item": item, "index": index, "count": len(items)})
-            (kept if evaluate(expression, names, tree=tree) else rejected).append(item)
+            (kept if _evaluate(expression, names, tree=tree) else rejected).append(item)
         return kept, rejected, resolved, expression
 
 
@@ -520,12 +537,14 @@ class MAIFlowSafeFunction(io.ComfyNode):
                                 max_collection, max_tensor_elements)
         value, budget = function.execute(sockets)
         ui = {"flow": [{"node": "Safe Function",
-                        "result": describe(capabilities.unref(value)),
+                        "result": describe(capabilities.unref_deep(value)),
                         "signature": [f"{p.socket}={p.name}:{p.annotation or 'ANY'}"
                                       for p in function.params],
                         "used": dict(budget.used),
                         "sockets": sorted(k for k, v in sockets.items() if v is not None)}]}
-        return io.NodeOutput(capabilities.unref(value), ui=ui)
+        # unref_deep, not unref: `return [x, y]` otherwise hands the graph a
+        # list of interpreter Ref wrappers instead of images (spec 8.4)
+        return io.NodeOutput(capabilities.unref_deep(value), ui=ui)
 
 
 def _predicate_check(source: str) -> None:

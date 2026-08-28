@@ -259,6 +259,13 @@ lambda, comprehensions, generator expressions, walrus, starred, f-strings,
 `__` anywhere in a name, and any name that is neither a bound input nor a
 registered capability.
 
+A Python-level failure inside an evaluated expression (`1 / 0`,
+`'a' + 1`, an overflow) is reported as a policy error naming the exception,
+in every node, not only inside Safe Function. Safe Function wrapped these
+with a line number from the start and the Phase 1 nodes called the same
+evaluator bare, so the identical expression explained itself in one node and
+raised a bare traceback out of `check_lazy_status` in another.
+
 Limits: source 4 KB, 2000 AST nodes, nesting depth 32, 256 calls per
 evaluation. Exceeding a limit is a validation error before execution where
 the limit is statically decidable, and an evaluation error where it is not:
@@ -280,6 +287,14 @@ budget stops it. That is three orders of magnitude below the unguarded case
 and matches how core behaves. A running total threaded through the
 evaluator would close it; if Safe Function's loops make that worth doing,
 do it there, where a loop can repeat an allocation.
+
+A capability that duplicates an operator uses the OPERATOR'S guard
+function, not its own. `core.math.pow` shipped as a second implementation
+that capped the exponent and left the base free, so `(2 ** 4000) ** 4000`
+was refused while `pow(pow(2, 4000), 4000)` built a 16-million-bit integer
+and a third nesting demanded 8 GB in one uninterruptible call, reachable
+from a Gate or Condition widget, which has no allocation budget at all. One
+guard, one function; the spelling is a message argument, never a fork.
 
 A bare capability name is a queue-time error, not a value: `sqrt` alone
 would otherwise evaluate to the function object and silently feed a branch
@@ -484,7 +499,11 @@ Defaults apply when a socket is not connected. Annotations are checked in
 One declared output in v1, typed `AnyType`. The value handed back must be
 fully resolved: an unresolved socket buried inside a returned list, tuple or
 `Ref` is an interpreter sentinel escaping into the graph, so the check that
-ends planning walks containers rather than testing the top-level value.
+ends planning walks containers rather than testing the top-level value. The
+UNWRAPPING walks as well, for the same reason and by the same rule: opening
+only the top-level `Ref` made `return [x, y]` hand the graph a list of
+interpreter wrappers instead of images. Resolved and unwrapped are two halves
+of one sentence, and both walk.
 
 Not yet implemented, owed: the hosting policy below (disable the node
 entirely, allow a subset of packs) has defaults and ceilings in

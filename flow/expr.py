@@ -108,13 +108,20 @@ def _too_many_bits(operator_name: str, bits: int):
         f"MAX_INT_BITS limit of {MAX_INT_BITS}")
 
 
-def _safe_pow(base, exp):
+def _safe_pow(base, exp, *, spelling: str = "**"):
+    """The ONE exponent guard. `spelling` only names the door in the message.
+
+    The pow() capability used to be a second implementation that capped the
+    exponent and left the base free; it now calls this. A keyword default
+    rather than a second function, so there is no way to add a door without
+    the guard.
+    """
     if abs(exp) > MAX_EXPONENT:
         raise ExprError(f"exponent {exp} exceeds the maximum allowed ({MAX_EXPONENT})")
     if _whole(base) and _whole(exp) and exp > 0:
         bits = base.bit_length() * exp
         if bits > MAX_INT_BITS:
-            raise _too_many_bits("**", bits)
+            raise _too_many_bits(spelling, bits)
     return _op.pow(base, exp)
 
 

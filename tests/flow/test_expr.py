@@ -154,6 +154,29 @@ def test_limit_exponent_call_is_caught_at_evaluation():
     assert "exceeds the maximum allowed (4000)" in str(e.value)
 
 
+def test_the_pow_capability_carries_the_operator_s_integer_size_guard():
+    """The exponent cap leaves the BASE free, and pow() is a second door to it.
+
+    `(2 ** 4000) ** 4000` was refused while `pow(pow(2, 4000), 4000)` built a
+    16-million-bit integer, because capabilities.py defined its own _safe_pow
+    that capped the exponent and nothing else. A third nesting demanded 8 GB
+    in one uninterruptible C call, and the reachable surface is a Gate or
+    Condition widget, which has no allocation budget at all. Same guard, same
+    message, whichever door is used.
+    """
+    expected = "would build a 16004000-bit integer, over the MAX_INT_BITS limit of 1000000"
+    with pytest.raises(ExprError) as operator:
+        evaluate("(2 ** 4000) ** 4000")
+    with pytest.raises(ExprError) as capability:
+        evaluate("pow(pow(2, 4000), 4000)")
+    assert str(operator.value) == f"'**' {expected}"
+    # one guard, and it names the door the author actually used
+    assert str(capability.value) == f"'pow' {expected}"
+    # and the legal cases still compute, through both doors
+    assert evaluate("pow(2, 16)") == 65536
+    assert evaluate("2 ** 16") == 65536
+
+
 def test_limit_result_length_string_repeat_bomb():
     # every program-level limit passes: 15 source bytes, five AST nodes. Only
     # the value-size guard stands between this and gigabytes of str.
