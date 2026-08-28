@@ -430,7 +430,9 @@ max capability calls  default 5000
 max collection size   default 10000
 ```
 
-No setting means unlimited. An installation ceiling may lower any of them;
+There is NO setting that means unlimited: zero and negatives are refused at
+queue time, because an unbounded budget is the thing that takes a host down.
+An installation ceiling may lower any of them;
 the effective limit is the minimum. Exceeding a budget stops the function
 with the limit, the line, and the setting to change.
 
@@ -458,12 +460,20 @@ JavaScript. Decision (2026-08-28): the node has lazy `AnyType` sockets
 `a`..`z` (Autogrow, or a fixed set if lazy does not survive Autogrow) and
 the function's parameters bind to them POSITIONALLY: the first parameter
 reads `a`, the second `b`, and so on. Parameter names are for the author;
-API-form JSON always uses `a`..`z`, so the node runs with no frontend at
-all. A later JavaScript pass renames the sockets for display only.
+API-form JSON always uses those socket names, so the node runs with no
+frontend at all. Twelve sockets, `a`..`l`, shipped in Phase 3; the count is
+a constant, not a promise of the alphabet. A later JavaScript pass renames the sockets for display only.
 Defaults apply when a socket is not connected. Annotations are checked in
 `validate_inputs` where the value is known, otherwise at execute.
 
-One declared output in v1, typed `AnyType`.
+One declared output in v1, typed `AnyType`. The value handed back must be
+fully resolved: an unresolved socket buried inside a returned list, tuple or
+`Ref` is an interpreter sentinel escaping into the graph, so the check that
+ends planning walks containers rather than testing the top-level value.
+
+Not yet implemented, owed: the hosting policy below (disable the node
+entirely, allow a subset of packs) has defaults and ceilings in
+`flow/policy.py` but no enable/disable or pack-subset control.
 
 ### 8.5 Security acceptance (Gate E)
 
