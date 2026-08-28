@@ -398,8 +398,11 @@ def main(original: IMAGE, restored: IMAGE, enabled: BOOL = True, strength: FLOAT
 
 ### 8.1 Language
 
-Statements: assignment, `if / elif / else`, `for x in <bounded iterable>`,
-`break`, `continue`, `return`.
+Statements: assignment (plain and augmented, `x = 1` and `x += 1`),
+`if / elif / else`, `for x in <bounded iterable>`, `break`, `continue`,
+`return`. Augmented assignment was absent from the v0.2 list, which predated
+loops; refusing it has no security value and is the first thing a user
+writing a loop reaches for.
 
 Expressions: the section 5 grammar.
 
@@ -415,7 +418,10 @@ it can be revisited with evidence.
 
 ### 8.2 Budgets
 
-Serialized on the node, so editor and API behave identically:
+All four are serialized on the node, so the editor and the API behave
+identically and the same workflow behaves the same on two machines. A budget
+that lives only in installation policy would break that, so policy may lower
+a node's value but never replace it:
 
 ```
 max loop iterations   default 1000      (shared across nested loops)
