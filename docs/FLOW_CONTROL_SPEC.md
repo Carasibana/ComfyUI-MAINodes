@@ -151,22 +151,29 @@ a scalar. Same evaluator and same `ui` report as Gate.
 ### 4.3 Lazy Select
 
 ```
-selector     INT (MultiType INT | STRING when labels are given)
+selector     INT
 labels       STRING  optional, comma-separated case names ("draft,normal,max")
-case_0..     Autogrow (prefix "case_") of MatchType T, lazy
+case_0..case_7   T  MatchType, lazy, optional (eight fixed slots)
 default      T  MatchType, lazy, optional
 ->  result   T
 ```
 
-Only the selected case is requested. Out-of-range selector: `default` if
-connected, otherwise a validation error naming the selector value.
+Only the selected case is requested. An out-of-range selector takes
+`default` if connected, otherwise raises at run time naming the case
+(`validate_inputs` cannot see a selector that arrives on a link).
 
-Unproven mechanism: Autogrow over a `MatchType` template. `_io.py` only
-forbids `DynamicInput` templates and `MatchType.Input` is a plain `Input`,
-so it is not rejected, but no core node does it and the frontend must
-resolve one template across grown slots. Probe first (section 15). If it
-fails, the fallback is eight fixed `MatchType` lazy optional inputs using
-the `MISSING` idiom from `Soft Switch`.
+**Measured 2026-08-28: Autogrow cannot carry laziness, so the cases are
+eight fixed slots.** An Autogrow template of `MatchType` resolves and
+executes (core's own `CreateList` does it, `comfy_extras/nodes_toolkit.py`),
+but `comfy_execution/graph.py:118` calls `get_input_info` against the
+UNEXPANDED `INPUT_TYPES()`, where a grown name such as `cases.case_0` does
+not exist, so `graph.py:159` reads `is_lazy` as False and every grown slot
+becomes a strong link. A three-case Autogrow Select ran all three cases on
+every selector value; the fixed-slot version runs exactly one.
+
+This is a general constraint on this package, not a Select detail: **never
+put a lazy input behind Autogrow.** Autogrow remains correct for eager
+values (Gate and Condition use it for `values`).
 
 ### 4.4 Filter and Partition (lists)
 
@@ -184,8 +191,23 @@ plus the scalar `values`.
 Why Partition is the per-item primitive: `check_lazy_status` is mapped over
 list inputs and its requests are unioned, so laziness is all-or-nothing per
 input, never per item. Partition into `kept` / `rejected` and feed the
-expensive branch only `kept`; a branch fed an empty list maps zero times.
-Probe confirms the empty-list case (section 15).
+expensive branch only `kept`. Filtering five items to two means two
+executions instead of five, and that saving is free and real.
+
+**Measured 2026-08-28: an empty list does NOT map zero times.** The v0.2
+draft claimed it did; it does not, in either of the two shapes core takes:
+
+* a node with any other input (a widget counts) keeps `max_len_input` at 1
+  (`execution.py:250`) and `slice_dict` (`execution.py:254`) indexes the
+  empty list at 0, raising `IndexError` inside the node;
+* a node whose only input is the empty list takes the
+  `elif max_len_input == 0` path (`execution.py:311`) and is called exactly
+  once with no arguments.
+
+So the empty case must be guarded explicitly, never left to core: gate the
+downstream branch on `kept_count > 0`. Filter and Partition therefore emit
+counts as first-class outputs, and FLOW.md teaches the
+`Partition -> Gate(kept_count > 0)` pattern as the batch idiom.
 
 Two distinct batch notions must stay visibly distinct in the UI:
 
@@ -547,12 +569,28 @@ once a browser has produced it; until then the README says which is which.
 
 ---
 
-## 15. Open probes (answer before the design freezes)
+## 15. Probes, answered 2026-08-28 (Phase 1 build, live CPU sandbox)
 
-1. Autogrow over a `MatchType` template (Lazy Select). Pass: grown slots
-   share one resolved type in the frontend and lazy requests work per slot.
-2. Autogrow over an `AnyType` template (Gate / Condition values).
-3. Empty Comfy list into a node maps zero times (Partition per-item
-   avoidance).
-4. `NodeOutput(ui=...)` on a V3 node with a `MatchType` output round-trips
-   to `/history`.
+1. Autogrow over a `MatchType` template (Lazy Select). **PARTIAL FAIL.**
+   The template resolves and executes; per-slot laziness does not work
+   (`comfy_execution/graph.py:118` and `:159` read laziness from the
+   unexpanded `INPUT_TYPES()`). Shipped: eight fixed lazy slots. Standing
+   rule: no lazy input behind Autogrow. See section 4.3.
+2. Autogrow over an `AnyType` template (Gate / Condition `values`).
+   **PASS.** Note the prompt key for a grown input is `values.a`, not `a`.
+3. Empty Comfy list maps zero times. **FAIL**, in both core shapes. See
+   section 4.4; guard with `kept_count`.
+4. `NodeOutput(ui=...)` on a V3 node with a `MatchType` output reaches
+   `/history`. **PASS**, and non-output nodes reach it too
+   (`execution.py:563-576`).
+
+Two further facts the build established, both load-bearing for later
+phases:
+
+* `validate_inputs` must accept the Autogrow argument even when it ignores
+  it: core re-adds the nested dict after filtering by argspec
+  (`execution.py:1082-1091` then `_io.build_nested_inputs`), so a signature
+  without it fails at queue time.
+* The test suite needs `PYTHONPATH=<ComfyUI root>`, and a `conftest.py`
+  shim, because pytest 8 imports the pack root's `__init__.py` as a
+  top-level module. See the Phase 1 report's REVIEW THIS item 4.
