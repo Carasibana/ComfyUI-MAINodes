@@ -178,7 +178,7 @@ class H3ExtensionPlan:
         for name, n in (("length", length), ("handle", handle), ("new", new)):
             if not tb.clock_aligned(n):
                 notes.append(f"{name} = {n} frames is {tb.ticks(n)} audio ticks, not an integer: "
-                             f"up to 12.5 ms of audio-length error per segment, accumulates in a chain. Use frames divisible by 3")
+                             f"exactly 8.333 ms of audio-length error per segment on a legal 17k+5 length (core rounds to the nearest 40 Hz tick; 12.5 ms is the bound for arbitrary lengths), accumulates in a chain. Use frames divisible by 3 (51m+39: 39, 90, 141, 192, 243)")
         if surplus:
             notes.append(f"{surplus} surplus frame(s) generated beyond the requested new material; H3 Trim drops them")
 
