@@ -169,6 +169,19 @@ on (operator's call for that graph); the table with the numbers and what is
 still owed is in LOWVRAM.md. The int8_convrot video VAE now in the example graph is also an
 approximation (60 dB PSNR against the fp16 decoder on the same latent).
 
+
+## Time burst (examples/experimental/time_burst_api.json)
+
+Alpha because: one clip, one seed, one machine, and the effect is a defect
+worn as a feature. The windowed insert with noise-born in-betweens and no
+guide has no clock inside the window, so it rushes the span (about 2.7x the
+source speed on the shipped clip) and invents flares. The graph is the exact
+one that made `assets/time_burst_result.mp4` from `assets/time_burst_plate.mp4`,
+so the first run is a reproduction, not an experiment. What is not built:
+any control over how hard it rushes beyond the hold map and inject; a
+second clip; a null pair. If you want the ordinary insert, start from the
+motion pipeline graphs instead.
+
 ## Where to look next
 
 | | |

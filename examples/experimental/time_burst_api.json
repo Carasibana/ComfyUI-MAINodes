@@ -1,0 +1,370 @@
+{
+ "127": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "minimax_h3/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+   "weight_dtype": "default"
+  },
+  "_meta": {
+   "title": "base model (no turbo LoRA: 25 steps)"
+  }
+ },
+ "128": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "minimax_h3/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+   "type": "minimax",
+   "device": "default"
+  },
+  "_meta": {
+   "title": "text encoder"
+  }
+ },
+ "119": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "minimax_h3/minimax_h3_video_vae_fp16.safetensors"
+  },
+  "_meta": {
+   "title": "video VAE fp16 - the same build T2a measured on"
+  }
+ },
+ "300": {
+  "class_type": "PathchSageAttentionKJ",
+  "inputs": {
+   "model": [
+    "127",
+    0
+   ],
+   "sage_attention": "auto",
+   "allow_compile": false
+  },
+  "_meta": {
+   "title": "sage attention"
+  }
+ },
+ "301": {
+  "class_type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
+  "inputs": {
+   "model": [
+    "300",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "H3 sage patch"
+  }
+ },
+ "302": {
+  "class_type": "MiniMaxChunkFeedForward",
+  "inputs": {
+   "model": [
+    "301",
+    0
+   ],
+   "chunks": 2,
+   "seq_threshold": 65536
+  },
+  "_meta": {
+   "title": "chunked FF"
+  }
+ },
+ "400": {
+  "class_type": "LoadVideo",
+  "inputs": {
+   "file": "time_burst_plate.mp4"
+  },
+  "_meta": {
+   "title": "world clip: 124f, 1152x640, 24fps (the T2a clip)"
+  }
+ },
+ "401": {
+  "class_type": "GetVideoComponents",
+  "inputs": {
+   "video": [
+    "400",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "components"
+  }
+ },
+ "402": {
+  "class_type": "H3VideoFit",
+  "inputs": {
+   "images": [
+    "401",
+    0
+   ],
+   "mode": "trim tail (default)",
+   "max_frames": 0,
+   "fps": [
+    "401",
+    2
+   ],
+   "audio": [
+    "401",
+    1
+   ]
+  },
+  "_meta": {
+   "title": "fit to 17k+5 (124 already legal, no-op)"
+  }
+ },
+ "135": {
+  "class_type": "KSamplerSelect",
+  "inputs": {
+   "sampler_name": "gradient_estimation"
+  },
+  "_meta": {
+   "title": "sampler"
+  }
+ },
+ "522": {
+  "class_type": "H3InjectSchedule",
+  "inputs": {
+   "model": [
+    "302",
+    0
+   ],
+   "scheduler": "beta",
+   "total_steps": 25,
+   "inject": 1.0,
+   "preset": "custom"
+  },
+  "_meta": {
+   "title": "T2c CONSTANT: base model, beta scheduler, 25 steps, inject 0.60"
+  }
+ },
+ "523": {
+  "class_type": "RandomNoise",
+  "inputs": {
+   "noise_seed": 20260817
+  },
+  "_meta": {
+   "title": "T2c CONSTANT: seed 20260817"
+  }
+ },
+ "524": {
+  "class_type": "MiniMaxH3ImageToVideo",
+  "inputs": {
+   "clip": [
+    "128",
+    0
+   ],
+   "vae": [
+    "119",
+    0
+   ],
+   "prompt": "a 15-second hyper-realistic cinematic underground martial arts fight. A skilled Asian female fighter wearing an elegant dark blue and gold dragon cheongsam battles a massive muscular bodyguard dressed entirely in black inside a dark abandoned industrial basement. Start with a tense slow cinematic dolly-in, flickering warm yellow lights, wet reflective floor, hanging cables, smoke and dust in the air. The bodyguard suddenly charges and throws a powerful punch. She narrowly ducks, and his fist smashes into a concrete pillar, producing debris and dust. She counters with a fast spinning kick to his ribs, creating a powerful air shockwave and water splash. He catches her leg and throws her, but she performs an acrobatic mid-air flip and lands gracefully with one hand. She then rushes forward with a rapid three-hit martial arts combination. A subtle golden dragon-shaped energy trail surrounds her final palm strike. The impact creates a massive cinematic shockwave, sparks, flying dust, flickering lights and realistic camera shake. The bodyguard is thrown backward. End with a dramatic close-up of the female fighter as the lights flicker and the screen cuts to black. Realistic human movement, consistent faces and clothing, intense choreography, cinematic lighting, speed ramping, dynamic camera movement, realistic motion blur, no slow or floating movement, no cartoon style",
+   "width": 1152,
+   "height": 640,
+   "length": 90
+  },
+  "_meta": {
+   "title": "conditioning only (the clip's own generation prompt); latent comes from the arm"
+  }
+ },
+ "525": {
+  "class_type": "BasicGuider",
+  "inputs": {
+   "model": [
+    "302",
+    0
+   ],
+   "conditioning": [
+    "524",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "guider"
+  }
+ },
+ "530": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "526",
+    0
+   ],
+   "vae": [
+    "119",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "decode the DILATED 90f segment"
+  }
+ },
+ "540": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "images": [
+    "412",
+    0
+   ],
+   "audio": [
+    "402",
+    2
+   ],
+   "fps": 24,
+   "bit_depth": 8
+  },
+  "_meta": {
+   "title": "world clock 124f + the SOURCE clip's own 124f audio -> in sync (T2c fixes the T2b caveat)"
+  }
+ },
+ "541": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "video": [
+    "540",
+    0
+   ],
+   "format": "auto",
+   "codec": "auto",
+   "filename_prefix": "video/time_burst"
+  },
+  "_meta": {
+   "title": "ARM NOISEINIT-CTRL: pure temporal inpaint, NO guide, no adapter, FULL schedule from sigma 1.0 - what the guide is measured against"
+  }
+ },
+ "403": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "410",
+    0
+   ],
+   "vae": [
+    "119",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "encode the 56f SEGMENT -> [1,24,17,40,72]"
+  }
+ },
+ "404": {
+  "class_type": "H3TemporalInsert",
+  "inputs": {
+   "samples": [
+    "403",
+    0
+   ],
+   "hold_map": "{\"holds\": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1], \"world_len\": 56}",
+   "init_mode": "noise",
+   "length": 0,
+   "noise_seed": 0,
+   "expand_to_end": false
+  },
+  "_meta": {
+   "title": "THE SAMPLER'S INIT: same 17 -> 27 token map, 18 inserted tokens start as NOISE (mask 1), 9 originals frozen"
+  }
+ },
+ "526": {
+  "class_type": "SamplerCustomAdvanced",
+  "inputs": {
+   "noise": [
+    "523",
+    0
+   ],
+   "guider": [
+    "525",
+    0
+   ],
+   "sampler": [
+    "135",
+    0
+   ],
+   "sigmas": [
+    "522",
+    0
+   ],
+   "latent_image": [
+    "404",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "the mask rides IN the latent (H3V2VInit's plumbing): only the 18 inserted token-times are denoised | STOCK CLOCK (no H3TrueClock: T2c charter)"
+  }
+ },
+ "410": {
+  "class_type": "ImageFromBatch",
+  "inputs": {
+   "image": [
+    "402",
+    0
+   ],
+   "batch_index": 68,
+   "length": 56
+  },
+  "_meta": {
+   "title": "SEGMENT CROP world frames 68..123 (68 = 4x17, on-phase; 56 = 17*3+5 legal)"
+  }
+ },
+ "531": {
+  "class_type": "H3ExactRecover",
+  "inputs": {
+   "images": [
+    "530",
+    0
+   ],
+   "hold_map": [
+    "404",
+    2
+   ]
+  },
+  "_meta": {
+   "title": "ARM C recover: 90f -> 56f world-clock segment"
+  }
+ },
+ "411": {
+  "class_type": "ImageFromBatch",
+  "inputs": {
+   "image": [
+    "402",
+    0
+   ],
+   "batch_index": 0,
+   "length": 68
+  },
+  "_meta": {
+   "title": "HEAD: original frames 0..67, untouched pixels (no VAE roundtrip at all)"
+  }
+ },
+ "412": {
+  "class_type": "ImageBatch",
+  "inputs": {
+   "image1": [
+    "411",
+    0
+   ],
+   "image2": [
+    "413",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "SPLICE: 68 original frames + 56 regenerated = 124f. Hard cut at frame 68 (17-phase); 68+56=124 so there is no tail piece"
+  }
+ },
+ "413": {
+  "class_type": "H3TimeSmear",
+  "inputs": {
+   "images": [
+    "531",
+    0
+   ],
+   "dilation": 1,
+   "hold_map": "",
+   "fps": 24
+  },
+  "_meta": {
+   "title": "IDENTITY (dilation 1: holds all 1, 56 already legal so no tail pad -> index by arange). Sole purpose: H3TimeSmear returns images.detach().cpu(), and ImageBatch cannot cat a cuda decode onto the cpu original head"
+  }
+ }
+}

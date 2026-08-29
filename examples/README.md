@@ -183,6 +183,20 @@ In [`experimental/`](experimental/):
   section [The motion adapter (pilot)](../README.md#the-motion-adapter-pilot).
 - `motion_window_pinned_adapter_api.json`: a clip you already have,
   regenerated at denoise 0.70 with first and last frames pinned, adapter on.
+- `time_burst_api.json`: a look, not a repair, and it breaks things on
+  purpose. The windowed insert with the in-between tokens born as pure
+  noise: no crossfade init, no adapter, no guide. Inside the window the
+  model has no clock, so it spends the free slots on motion: the span runs
+  at about 2.7x the source speed, a burst inside an otherwise normal shot,
+  with flares it invents along the way. This is the exact graph (same seed,
+  same hold map) that made [`../assets/time_burst_result.mp4`](../assets/time_burst_result.mp4)
+  from [`../assets/time_burst_plate.mp4`](../assets/time_burst_plate.mp4);
+  copy the plate into `ComfyUI/input/` and you can watch it work before
+  pointing it at your own clip. Dials: the hold map (more holds, longer and
+  wilder burst), `H3InjectSchedule` inject (1.0 is the burst; switch
+  `H3TemporalInsert` to lerp init at 0.4 to 0.6 and it calms toward the
+  ordinary insert), and where you draw the window. One clip, one seed, our
+  card; expect it to be able to make things worse.
 
 In [`wan22/`](wan22/): the de-rope on a model that is not H3. One cell
 measured so far; the dials are not tuned there.
