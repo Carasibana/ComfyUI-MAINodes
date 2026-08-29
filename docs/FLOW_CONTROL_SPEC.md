@@ -108,34 +108,79 @@ Four layers, each usable without the ones above it.
 ## 4. Nodes (Phase 1)
 
 All nodes are V3 (`comfy_api.latest`, the version the rest of the pack
-already imports; revisit the pin at release). Category `MAINodes/Flow`.
-Node ids are prefixed `MAIFlow`.
+already imports; revisit the pin at release). Category `MAINodes/Flow`;
+the LLM nodes of section 9 sit in `MAINodes/AI Decisions`. Node ids are
+prefixed `MAIFlow`.
 
 ### 4.1 Gate ("process if")
 
 ```
 expression   STRING   default "a != 1.0"
-source       T        MatchType, lazy
-processed    T        MatchType (same template), lazy
-values       Autogrow a..z of AnyType (values named in the expression)
+processed    T        MatchType, lazy
+source       T        MatchType (same template), lazy, OPTIONAL
+values       Autogrow a..z of AnyType, optional (values named in the expression)
+hidden       DYNPROMPT, UNIQUE_ID
 ->  result   T
 ```
 
-Semantics: `processed if expression else source`.
+Semantics: `processed if expression else source`; with `source` not
+connected, `processed if expression else BLOCK`.
 
-`check_lazy_status` evaluates the expression over the resolved `values`
-and requests exactly one of `source` / `processed`. Both are lazy so the
-untaken side is never requested. This is the acceptance requirement: with
-the expression false, the producer of `processed` runs zero times.
+Names in the expression resolve in this order: a connected value (`a`..`z`),
+then a widget of the GUARDED NODE by its real name, then a capability. The
+guarded node is the direct producer of `processed`. Its inline inputs are
+read out of the hidden DYNPROMPT through the Gate's own `processed` link, so
+`scale_by != 1.0` guards a Resize whose `scale_by` never leaves the Resize.
+
+* The read is cache-correct with no fingerprint at all: the guarded node is
+  an ancestor of the Gate through `processed`, and core folds every
+  ancestor's literal inputs into the descendant's cache key
+  (`comfy_execution/caching.py`, `get_node_signature` over
+  `get_ordered_ancestry`, which walks lazy links like any other). Measured
+  2026-08-28, probe 5 in section 15: four queues differing only in the
+  resize's inline `scale_by` re-decided every time. `fingerprint_inputs`
+  could NOT have made an arbitrary node's widget safe to read, because
+  `IsChangedCache` computes fingerprints with no dynprompt
+  (`execution.py`, `get_input_data(..., None)`); it is the ancestry that
+  makes this one read safe, which is why the Gate reads the node on
+  `processed` and never any other.
+* A widget that is itself a link is refused by name: "'scale_by' is a
+  widget on ImageScaleBy that arrives on a link; connect that value to the
+  Gate's a, b, ... instead". Nothing is guessed.
+* A name that is nothing is refused naming the node actually found and its
+  widgets. The guarded node is the DIRECT producer: a probe or a reroute
+  between the two is what gets read, and the message says which.
+* `validate_inputs` checks syntax, limits and capability names; the prompt
+  is not visible at queue time, so name binding waits for the execute path,
+  exactly as it already did for `values`.
+
+`check_lazy_status` evaluates the expression and requests exactly one of
+`processed` / `source`; both are lazy so the untaken side is never
+requested. This is the acceptance requirement: with the expression false,
+the producer of `processed` runs zero times. With `source` unconnected and
+the expression false it requests nothing, and `execute` returns core's
+`ExecutionBlocker(None)`: every consumer, output nodes included, is skipped
+silently (`comfy_execution/graph_utils.py:140`, whose docstring names this
+exact use). Measured 2026-08-28, probe 6. That is "Skip when" on a Save or a
+Preview, which passthrough cannot express.
 
 `ui` output on every run:
 
 ```
-{"flow": [{"node": "Gate", "took": "processed" | "source",
-           "expression": "...", "values": {"a": 1.0, "image": "IMAGE[1,512,512,3]"}}]}
+{"flow": [{"node": "Gate", "took": "processed" | "source" | "blocked",
+           "expression": "...", "values": {"a": 1.0},
+           "widgets": {"scale_by": 1.0}, "guarded": "ImageScaleBy"}]}
 ```
 
 Scalars are reported verbatim; tensors and opaque values as `KIND[shape]`.
+`widgets` holds only the guarded node's widgets the expression named.
+
+Input order is `expression, processed` on the required side and `source,
+values` on the optional side. This REORDERED `source` and `processed`
+relative to the first Phase 1 build of the same day (on the unpushed
+branch, before any release): an editor-form workflow saved against that
+build would load with its two same-typed links swapped. The widget-order
+baseline is re-frozen here and the append-only rule binds from this point.
 
 ### 4.2 Condition
 
@@ -354,9 +399,32 @@ them did. Elements is the wrong unit and bytes is owed, since fp16 and fp32 do
 not cost the same and `interpolate` promotes to float; the declared peak is
 deliberately pessimistic in the meantime.
 
+Optional packs (the hosting policy of section 8.5). A capability may name a
+pack from `policy.OPTIONAL_PACKS`, and `register()` refuses any other name.
+A pack is available only when the installation lists it under
+`enable_packs` in `flow_policy.json`, and NOTHING is enabled by default.
+The transforms are the only optional pack, and they are off on purpose:
+every allocation budget in this package (the per-result `max_pixels`, the
+running `max_tensor_elements`, the preflight declarations, the owed bytes
+unit) exists because a transform can run inside workflow-authored text,
+and the original request was for control flow, never for image operations
+in a text box. An installation that never enables the pack has no such
+surface at all. Safe Function refuses a call into a disabled pack at parse
+time, which is queue time, and again at the call, with the key to set in
+the message. The readers that share an id prefix (`image.width`,
+`mask.coverage`, `latent.frames`) are not in the pack and stay available.
+
 ---
 
 ## 6. Frontend sugar: Run when / Skip when (Phase 2)
+
+The frontend already ships the manual version of this feature. Bypass
+(node mode 4) skips a node and routes its inputs through to its outputs by
+type, with one fixed rule in `ExecutableNodeDTO._getBypassSlotIndex`
+(frontend 1.49.6): the same-index input if it is type-compatible, else the
+first input of exactly the output's type, else the first input compatible
+both ways. "Run when" is that gesture decided at run time by data, and the
+UI should say so: a Comfy user reads "Bypass when" instantly.
 
 Right-click on a compatible node:
 
@@ -364,42 +432,67 @@ Right-click on a compatible node:
 Conditional Execution
     Run always
     Run when...
-    Skip when...
+    Skip when...     (reads as: bypass when)
     Edit condition...
     Show compiled flow
     Remove condition
 ```
 
-"Run when" compiles to exactly one Gate node: `processed` from the guarded
-node's output, `source` from the guarded node's matching input, expression
-from the editor, and the referenced widget values converted to links.
+"Run when" compiles to exactly ONE Gate node and nothing else: `processed`
+from the guarded node's output, `source` from the guarded node's input
+chosen by the bypass rule above, the expression from the editor, and the
+guarded node's own widgets referenced BY NAME in the expression (section
+4.1). No Primitive node is created and no widget becomes a link: the
+`scale_by` widget stays on the Resize, and the dialog can offer the guarded
+node's widget names as a list. The Gate takes over the guarded node's
+outgoing links.
 
-That last step is the hidden cost and it is mandatory: the guarded node's
-`scale` widget must become a link shared by the node and the Gate. Two
-inline copies of the value in the API prompt would drift, and the headless
-run would branch differently from the editor. Do not read another node's
-widget through the hidden prompt; it is invisible to the cache signature.
+Reading a widget through the hidden prompt is safe only for the guarded
+node, because it is an ancestor of the Gate and therefore already in the
+Gate's cache key (section 4.1); the Gate reads no other node, and the
+compile creates no Primitive because it does not need one.
 
-Passthrough mapping is inferred only when unambiguous (one input and one
-output of the same type). Otherwise the author picks, and the choice is
-workflow data.
+Two cases take the `values` sockets instead of the widget read, and the
+frontend links the SAME existing source into `values.a` rather than
+creating anything:
+
+* a referenced widget that is already a link on the guarded node;
+* a region, meaning "Run when" on a subgraph node, whose promoted widgets
+  live on inner nodes after flattening.
+
+Passthrough mapping uses the bypass rule verbatim. Only where bypass would
+also fail (no compatible input) does the author pick, and the choice is
+stored as the Gate's `source` link, which is workflow data.
+
+"Skip when" on a node with no passthrough (a Save, a Preview, any sink)
+compiles to a Gate with `source` unconnected, which blocks (section 4.1).
 
 The generated Gate is a real node. The frontend may collapse it; "Show
-compiled flow" reveals it. Removing the condition removes the node and
-restores links.
+compiled flow" reveals it. Removing the condition removes the Gate and
+restores the links. A badge on the guarded node (`Run when scale_by != 1.0`)
+is a display property only; deleting it changes nothing, by the section 2
+rule that no correctness-critical behaviour lives in frontend state.
 
 Regions: select nodes, convert to a subgraph, apply "Run when" to the
 subgraph node. Subgraph I/O types are fixed at creation and the frontend
 flattens at queue time, so nothing here depends on dynamic type propagation
 across a boundary.
 
+The one shape rejected, in a sentence: letting the frontend set real Bypass
+at queue time when the condition names only widgets. It breaks API parity
+(a headless client editing `scale_by` gets no skip) and cannot serve a
+computed value. Runtime Gate, always.
+
 ---
 
 ## 7. Observability
 
-After execution, a Gate shows `took: processed` / `took: source` with the
-expression and the values it saw, from the `ui` payload. Skipped producers
-are dimmed by the frontend for the most recent run.
+After execution, a Gate shows `took: processed` / `took: source` /
+`took: blocked` with the expression, the values and the guarded widgets it
+saw, from the `ui` payload. Skipped producers are dimmed by the frontend for
+the most recent run, in the vocabulary users already have: a guarded node
+whose Gate took `source` or `blocked` is tinted the bypass colour until the
+next queue.
 
 The documented trap: attaching a preview or any second consumer to a lazy
 branch makes that branch required, and it will run. The FLOW.md user doc
@@ -536,9 +629,8 @@ only the top-level `Ref` made `return [x, y]` hand the graph a list of
 interpreter wrappers instead of images. Resolved and unwrapped are two halves
 of one sentence, and both walk.
 
-Not yet implemented, owed: the hosting policy below (disable the node
-entirely, allow a subset of packs) has defaults and ceilings in
-`flow/policy.py` but no enable/disable or pack-subset control.
+The hosting policy of section 8.5 (disable the node entirely, allow a
+subset of packs) is built as of 2026-08-28; see there.
 
 ### 8.5 Security acceptance (Gate E)
 
@@ -558,9 +650,14 @@ socket.socket(...)
 [i for i in range(10)]
 ```
 
-Hosting policy: administrators can disable Safe Function entirely, allow a
-subset of packs, and lower the budgets. Disabling it never disables
-Condition, Gate, Select, Filter or Partition.
+Hosting policy, all of it in `flow_policy.json` and all of it fail-closed
+(section 8.2): `"safe_function": false` turns the node off at queue time,
+at planning and at execution, because all three paths compile through one
+place; `"enable_packs": ["transforms"]` allows an optional pack (section
+5.3), and nothing is enabled without it; the ceilings lower the budgets. A
+quoted `"false"` or an unknown pack name is an error, not a default. None
+of it touches Condition, Gate, Select, Filter, Partition or Flow Probe,
+which never read the file.
 
 ---
 
@@ -571,6 +668,13 @@ It is never inside the safe runtime, and it can only choose among branches
 the author enumerated and fill arguments a schema validates. Prompt
 injection riding in on an image or caption can pick the wrong branch; it
 cannot acquire a capability. The section 2 boundary holds unchanged.
+
+These nodes ship under their own category, `MAINodes/AI Decisions`, with
+their own user document (`AI_DECISIONS.md`), outside the Flow v1 release
+boundary. Flow's security sentence is that workflow JSON stays data, and
+these are the only nodes in the package with a network path, so they carry
+that argument separately rather than inside Flow's. Node ids keep the
+`MAIFlow` prefix, because saved graphs are data.
 
 ### 9.1 LLM Judge
 
@@ -638,7 +742,8 @@ never holds the only copy of execution semantics.
 
 Cache identity includes expression or function source, signature, budgets and
 scalar inputs, all of which are ordinary inputs and therefore already in
-core's signature. Runtime and pack versions are NOT in it; see the owed note
+core's signature. A Gate's identity also includes its guarded node's widgets,
+through the `processed` link (section 4.1), with nothing added. Runtime and pack versions are NOT in it; see the owed note
 in section 5.3. Unselected lazy branches
 never run for fingerprinting; core guarantees this.
 
@@ -683,7 +788,11 @@ from Flow Probe files. Never a production port, never the live checkout.
 1. Expressions, registry, Gate, Condition, Lazy Select, Filter, Partition,
    Flow Probe, tests A-H, two example graphs (core-only logic tour; resize
    gate). **In progress.**
-2. Run when / Skip when, passthrough mapping, compiled-flow reveal, dimming.
+2. Run when / Skip when compiled as section 6 (one Gate, widget read, the
+   bypass passthrough rule), bypass-tint dimming, compiled-flow reveal.
+   **Next.** Its acceptance is the section 6 round trip (create in the UI,
+   save, reload, export, run headless), which needs a browser; Gate D is
+   already the headless half.
 3. Safe Function: parser, validator, interpreter, planner, signature UI,
    transform capabilities, security tests.
 4. LLM Judge, LLM Choose, then the bounded loop.
@@ -736,3 +845,28 @@ phases:
 * The test suite needs `PYTHONPATH=<ComfyUI root>`, and a `conftest.py`
   shim, because pytest 8 imports the pack root's `__init__.py` as a
   top-level module. See the Phase 1 report's REVIEW THIS item 4.
+
+Answered 2026-08-28 (evening, post-build), same sandbox:
+
+5. **A Gate that reads its guarded node's inline widgets out of DYNPROMPT is
+   cache-correct and lazy.** PASS. Hidden `dynprompt` and `unique_id` reach
+   `check_lazy_status`. Four queues of one graph differing only in the
+   resize's inline `scale_by` (1.0, 0.5, 1.0, 0.75) produced resize run
+   counts 0, 1, 1, 2 in the standalone probe: the second queue re-decided
+   on a sibling's widget with the Gate's own inputs byte-identical, which a
+   key that ignored the sibling could not have done. (In the suite the
+   fourth queue's upstream probe can itself be cache-served, so the test
+   asserts the decision and that neither the Gate nor the resize was
+   cached, rather than a count.) A widget converted to a link is refused by
+   name. See section 4.1 for why the ancestry, not a fingerprint, is what
+   makes it safe. `tests/flow/test_gates.py` carries all four queues as
+   `test_gate_reads_the_guarded_nodes_widgets_and_the_cache_sees_them`, and
+   a dotted data predicate on the same Gate as
+   `test_a_data_predicate_still_works_on_a_gate_that_reads_widgets`.
+6. **A V3 node returning `ExecutionBlocker(None)` skips a downstream
+   SaveImage silently.** PASS: status success, zero files, the sink absent
+   from `/history` outputs; enabled, one file. A blocker WITH a message
+   also completes as success and only raises an `execution_error` event on
+   the socket, so the silent form is the one "Skip when" uses. Carried as
+   `test_a_gate_with_no_source_blocks_the_sink`.
+

@@ -7,11 +7,13 @@ resize, so a headless run branches exactly as the editor does. Read it
 first; if core already covers your case, use core.
 
 `resize_gate_api.json` is the one node version: `Gate (process if)` with
-`source` from the original image and `processed` from the resize. The
-`Flow Probe` in front of the gate is what proves the resize did not run:
-each execution appends a line to `<output>/flow_probe/resize_gate.count`.
-Queue it with `scale` at 1.0 and the file does not grow; set 0.5 and it
-gains one line.
+`processed` from the resize and `source` from the original image. The
+expression is `scale_by != 1.0` and `scale_by` is the resize's OWN widget,
+still inline on the resize: the Gate reads the widgets of the node feeding
+`processed`, so nothing has to become a link. The `Flow Probe` on the
+resize's input is what proves the resize did not run: each execution
+appends a line to `<output>/flow_probe/resize_gate.count`. Queue it with
+`scale_by` at 1.0 and the file does not grow; set 0.5 and it gains one line.
 
 `safe_function_api.json` is the section 8 example of the spec: one
 `Safe Function` whose parameters bind to sockets `a`, `b` and `c`

@@ -15,6 +15,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable
 
+from . import policy
 from .expr import (MAX_DEPTH, ExprError, Ref, kind_of,
                    _safe_pow as _guarded_pow)
 
@@ -33,6 +34,9 @@ class Capability:
     # is a construction error rather than a runtime hole. `version` is recorded
     # and not yet consumed; see the owed note in spec 5.3.
     preflight: Callable | None = None
+    # None: always available. A name from policy.OPTIONAL_PACKS: available
+    # only when the installation lists it under enable_packs (spec 5.3, 8.5).
+    pack: str | None = None
 
 
 REGISTRY: dict[str, Capability] = {}
@@ -49,6 +53,10 @@ def register(cap: Capability) -> Capability:
             f"capability '{cap.id}' allocates and declares no preflight. A "
             f"transform states its peak in elements before it runs; the guard "
             f"is not something each one remembers on its own")
+    if cap.pack is not None and cap.pack not in policy.OPTIONAL_PACKS:
+        raise ValueError(
+            f"capability '{cap.id}' names pack '{cap.pack}', which policy.OPTIONAL_PACKS "
+            f"does not list, so no installation could ever enable it")
     REGISTRY[cap.id] = cap
     pack, _, bare = cap.id.rpartition(".")
     if pack in _BARE_PACKS:
@@ -68,9 +76,23 @@ def resolve(name: str | None) -> Capability | None:
 
 
 def _add(cid, fn, *, return_type="ANY", predicate_safe=True, cost=0.0, version=1,
-         preflight=None):
+         preflight=None, pack=None):
     return register(Capability(cid, version, fn, (), return_type, predicate_safe,
-                               cost, preflight))
+                               cost, preflight, pack))
+
+
+def unavailable(cap: Capability, path: str | None = None) -> str | None:
+    """The refusal for a capability whose pack is not enabled here, or None.
+
+    Checked in one place at parse time and again at the call, so the answer
+    cannot differ between queue time and execution. Reading the policy can
+    raise PolicyError; that propagates, because a policy file that cannot be
+    honoured turns Safe Function off rather than opening it.
+    """
+    if cap.pack is None or cap.pack in policy.enabled_packs(path):
+        return None
+    return (f"{cap.id} is in the '{cap.pack}' pack, which this installation has not "
+            f"enabled; add {{\"enable_packs\": [\"{cap.pack}\"]}} to flow_policy.json")
 
 
 def unref(value):
@@ -217,8 +239,6 @@ def ids() -> list[str]:
 # in elements, which check_peak() enforces against the installation's
 # max_pixels before the call. register() refuses a transform without one.
 import torch
-
-from . import policy
 
 
 def check_peak(cap: Capability, args, path: str | None = None) -> int:
@@ -391,4 +411,4 @@ TRANSFORMS = {
 }
 for _cid, (_transform, _peak) in TRANSFORMS.items():
     _add(_cid, _transform, return_type="ANY", predicate_safe=False, cost=1.0,
-         preflight=_peak)
+         preflight=_peak, pack="transforms")

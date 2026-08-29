@@ -40,7 +40,13 @@ from PIL import Image
 from comfy_api.latest import io
 
 from . import policy
-from .nodes import CATEGORY, MAIFlowSelect
+from .nodes import MAIFlowSelect
+
+# Their own category, not MAINodes/Flow. Flow v1's security sentence is
+# "workflow JSON stays data"; these are the only nodes in the package with a
+# network path, so they sit outside that sentence and carry their own doc
+# (AI_DECISIONS.md). Node ids keep the MAIFlow prefix: saved graphs are data.
+CATEGORY = "MAINodes/AI Decisions"
 
 MAXIMUM_CASES = MAIFlowSelect.MAX_CASES   # one case per Lazy Select slot
 MAX_IMAGES = 8                            # frames SENT, not frames given

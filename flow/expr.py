@@ -226,6 +226,14 @@ def _resolve(name: str):
     return capabilities.resolve(name)
 
 
+def _unavailable(cap):
+    """The optional-pack refusal (spec 5.3), asked here as well as in Safe
+    Function, so a pack member that is also predicate-safe would still be
+    refused by a Gate on an installation that never enabled the pack."""
+    from . import capabilities
+    return capabilities.unavailable(cap)
+
+
 class _Validator:
     """Structural allowlist walk. Runs without any values."""
 
@@ -433,6 +441,9 @@ class _Eval:
             cap = _resolve(name)
             if cap is None:
                 raise ExprError(f"'{name}' is not a registered capability")
+            problem = _unavailable(cap)
+            if problem:
+                raise ExprError(problem)
             args = [self.run(a) for a in node.args]
             try:
                 return cap.fn(*args)

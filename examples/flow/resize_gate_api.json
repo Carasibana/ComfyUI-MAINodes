@@ -1,36 +1,69 @@
 {
-  "scale": {
-    "class_type": "PrimitiveFloat",
-    "_meta": {"title": "scale (the one copy of the value)"},
-    "inputs": {"value": 0.5}
-  },
   "source_image": {
     "class_type": "EmptyImage",
-    "_meta": {"title": "the image to process"},
-    "inputs": {"width": 64, "height": 64, "batch_size": 1, "color": 0}
-  },
-  "resize": {
-    "class_type": "ImageScaleBy",
-    "_meta": {"title": "the expensive branch"},
-    "inputs": {"image": ["source_image", 0], "upscale_method": "bilinear", "scale_by": ["scale", 0]}
+    "_meta": {
+      "title": "the image to process"
+    },
+    "inputs": {
+      "width": 64,
+      "height": 64,
+      "batch_size": 1,
+      "color": 0
+    }
   },
   "probe": {
     "class_type": "MAIFlowProbe",
-    "_meta": {"title": "counts how often the resize actually ran"},
-    "inputs": {"value": ["resize", 0], "name": "resize_gate", "salt": 0, "delay_s": 0.0}
+    "_meta": {
+      "title": "counts how often the resize branch actually ran"
+    },
+    "inputs": {
+      "value": [
+        "source_image",
+        0
+      ],
+      "name": "resize_gate",
+      "salt": 0,
+      "delay_s": 0.0
+    }
+  },
+  "resize": {
+    "class_type": "ImageScaleBy",
+    "_meta": {
+      "title": "the expensive branch; scale_by stays here"
+    },
+    "inputs": {
+      "image": [
+        "probe",
+        0
+      ],
+      "upscale_method": "bilinear",
+      "scale_by": 0.5
+    }
   },
   "gate": {
     "class_type": "MAIFlowGate",
-    "_meta": {"title": "Gate: resize only when scale is not 1.0"},
+    "_meta": {
+      "title": "Gate: resize only when its scale_by is not 1.0"
+    },
     "inputs": {
-      "expression": "a != 1.0",
-      "source": ["source_image", 0],
-      "processed": ["probe", 0],
-      "values.a": ["scale", 0]
+      "expression": "scale_by != 1.0",
+      "processed": [
+        "resize",
+        0
+      ],
+      "source": [
+        "source_image",
+        0
+      ]
     }
   },
   "preview": {
     "class_type": "PreviewAny",
-    "inputs": {"source": ["gate", 0]}
+    "inputs": {
+      "source": [
+        "gate",
+        0
+      ]
+    }
   }
 }

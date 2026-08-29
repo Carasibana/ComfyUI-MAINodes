@@ -34,6 +34,14 @@ restriction the administrator believes is in force.
 Only Safe Function and the LLM nodes read this file, so a broken policy
 disables exactly those and leaves Gate, Condition, Lazy Select, Filter,
 Partition and Flow Probe running, which is what spec 8.5 asks for.
+
+Two more keys are the hosting policy spec 8.5 asks for. ``safe_function``
+(true or false) turns the node off entirely. ``enable_packs`` is the list of
+OPTIONAL capability packs this installation allows; nothing is enabled unless
+the file says so. The transforms are the only optional pack, and they are off
+by default on purpose: every allocation budget in this package exists because
+a transform can run inside workflow-authored text, and an installation that
+never enables them has no such surface at all.
 """
 from __future__ import annotations
 
@@ -77,6 +85,10 @@ LLM_PROVIDERS = {
 # and no effective() semantics: the node ships its own default and this is the
 # only ceiling over it
 LLM_MAX_TOKENS_CEILING = 32768           # above the node default of 512
+# Optional capability packs (spec 5.3, 8.5). A capability in a pack that is
+# not enabled is refused by Safe Function at queue time and again at the call,
+# with the key to set. register() refuses a pack name that is not listed here.
+OPTIONAL_PACKS = ("transforms",)
 
 _CACHE: dict = {}
 
@@ -85,9 +97,13 @@ class PolicyError(ValueError):
     """The policy file exists but cannot be honoured. Never silently ignored."""
 
 
-# llm_providers is an object; every other key is a positive number
+# llm_providers is an object, enable_packs a list of pack names, safe_function
+# a bool; every other key is a positive number
 _KNOWN_OBJECTS = ("llm_providers",)
-_KNOWN = set(CEILINGS) | set(_KNOWN_OBJECTS) | {"llm_max_tokens"}
+_KNOWN_LISTS = ("enable_packs",)
+_KNOWN_BOOLS = ("safe_function",)
+_KNOWN = (set(CEILINGS) | set(_KNOWN_OBJECTS) | set(_KNOWN_LISTS) | set(_KNOWN_BOOLS)
+          | {"llm_max_tokens"})
 
 
 def _validated(loaded, path: str) -> dict:
@@ -104,6 +120,21 @@ def _validated(loaded, path: str) -> dict:
             if not isinstance(value, dict):
                 raise PolicyError(f"{path}: '{key}' is a JSON object, got "
                                   f"{type(value).__name__}")
+            continue
+        if key in _KNOWN_LISTS:
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise PolicyError(f"{path}: '{key}' is a JSON list of pack names, got "
+                                  f"{value!r}")
+            unknown = sorted(set(value) - set(OPTIONAL_PACKS))
+            if unknown:
+                raise PolicyError(
+                    f"{path}: '{key}' names {unknown}, which is not an optional pack, "
+                    f"so it enables nothing. Optional packs: {', '.join(OPTIONAL_PACKS)}")
+            continue
+        if key in _KNOWN_BOOLS:
+            if not isinstance(value, bool):
+                raise PolicyError(f"{path}: '{key}' is true or false, got {value!r}; "
+                                  f"a quoted \"false\" would otherwise read as on")
             continue
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
             raise PolicyError(
@@ -167,6 +198,16 @@ def llm_providers(path: str | None = None) -> dict:
         if isinstance(spec, dict):
             providers[str(name)] = dict(spec)
     return providers
+
+
+def enabled_packs(path: str | None = None) -> frozenset:
+    """The optional packs this installation turned on. None unless the file says so."""
+    return frozenset(_loaded(policy_path(path)).get("enable_packs", ()))
+
+
+def safe_function_enabled(path: str | None = None) -> bool:
+    """Spec 8.5: an administrator can turn the node off entirely."""
+    return bool(_loaded(policy_path(path)).get("safe_function", True))
 
 
 def llm_max_tokens(requested, path: str | None = None) -> int:

@@ -21,6 +21,25 @@ def body(*lines, params="x"):
     return f"def main({params}):\n" + "".join(f"    {line}\n" for line in lines)
 
 
+@pytest.fixture(autouse=True, scope="module")
+def transforms_enabled(tmp_path_factory):
+    """The transform pack is OFF by default (spec 5.3, 8.5).
+
+    These tests turn it on the way an installation would, with a policy file,
+    so the interpreter under test is the one a user who enabled the pack gets.
+    test_a_transform_is_refused_until_its_pack_is_enabled covers the default.
+    """
+    path = tmp_path_factory.mktemp("policy") / "flow_policy.json"
+    path.write_text(json.dumps({"enable_packs": ["transforms"]}))
+    old = os.environ.get(policy.POLICY_ENV)
+    os.environ[policy.POLICY_ENV] = str(path)
+    yield
+    if old is None:
+        os.environ.pop(policy.POLICY_ENV, None)
+    else:
+        os.environ[policy.POLICY_ENV] = old
+
+
 def compile_it(source, **budgets):
     return Function(source, safefn.limits(**budgets) if budgets else safefn.limits())
 
@@ -553,6 +572,36 @@ def test_transforms_are_functional_and_capped():
                    b=Ref({"samples": torch.ones(1, 4, 8, 8)}, "LATENT"))
     assert float(blended["samples"].mean()) == 0.25
     assert float(latent["samples"].mean()) == 0.0, "the input latent was mutated"
+
+
+def test_a_transform_is_refused_until_its_pack_is_enabled(tmp_path, monkeypatch):
+    """No policy file means no optional pack: the default installation has no
+    transform surface at all, and the message names the key that opens it."""
+    monkeypatch.setenv(policy.POLICY_ENV, str(tmp_path / "absent.json"))
+    with pytest.raises(SafeFnError) as e:
+        compile_it(body("return image.flip(x, True)"))
+    assert str(e.value).startswith("Safe Function rejected at line 2: "), str(e.value)
+    assert "image.flip is in the 'transforms' pack" in str(e.value)
+    assert '{"enable_packs": ["transforms"]}' in str(e.value)
+    # and the reader capabilities in the same id prefixes stay available
+    assert compile_it(body("return image.width(x)")).execute(
+        {"a": Ref(pytest.importorskip("torch").zeros(1, 2, 3, 3), "IMAGE")})[0] == 3
+
+
+def test_safe_function_can_be_switched_off_by_policy(tmp_path, monkeypatch):
+    """Spec 8.5: the off switch, at queue time, and only for this node."""
+    from flow import nodes
+    path = tmp_path / "flow_policy.json"
+    path.write_text(json.dumps({"safe_function": False}))
+    monkeypatch.setenv(policy.POLICY_ENV, str(path))
+    verdict = nodes.MAIFlowSafeFunction.validate_inputs(source=safefn.DEFAULT_SOURCE)
+    assert verdict == 'Safe Function is disabled by flow_policy.json ("safe_function": false)'
+    with pytest.raises(SafeFnError):
+        nodes.MAIFlowSafeFunction.check_lazy_status(safefn.DEFAULT_SOURCE)
+    assert nodes.MAIFlowGate.validate_inputs("a != 1.0") is True, "Gate never reads it"
+    path.write_text(json.dumps({"safe_function": "false"}))
+    assert "true or false" in nodes.MAIFlowSafeFunction.validate_inputs(
+        source=safefn.DEFAULT_SOURCE), "a quoted bool must not read as on"
 
 
 def test_a_transform_over_the_pixel_ceiling_is_refused():

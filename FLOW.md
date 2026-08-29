@@ -40,9 +40,16 @@ Filter and Partition, and the probe.
 
 **Gate (process if)**. `processed if expression else source`. Both inputs
 are lazy and exactly one of them is requested, so the untaken side never
-runs. Connect the original to `source`, the expensive chain to `processed`,
-and the values the expression names to `a`, `b`, ... The node reports which
-side it took, the expression, and the values it saw.
+runs. Connect the expensive chain to `processed` and the original to
+`source`. The expression can name the widgets of the node feeding
+`processed` by their real names, so a Resize is guarded by
+`scale_by != 1.0` with `scale_by` still on the Resize; anything else the
+expression needs goes to `a`, `b`, ... A widget that is already a link
+cannot be read that way, and the node says so by name: connect the same
+source to `a`. Leave `source` unconnected and a false expression BLOCKS
+instead of passing through: everything downstream, a Save included, is
+skipped silently, which is how you skip a sink. The node reports which side
+it took, the expression, and the values and widgets it saw.
 
 **Condition**. The same expression, out as BOOL, FLOAT, INT and STRING, for
 feeding `If/Else Switch`, `Lazy Select`, or anything else scalar.
@@ -106,6 +113,9 @@ Measured on core 0.33.0, both of them things a graph can hit.
   input is the empty list is called once with default arguments. Guard an
   empty `kept` with a Gate on `kept_count` rather than relying on the list
   being empty.
+* A Gate reads the widgets of the node DIRECTLY feeding `processed`. Put a
+  probe or a reroute in between and that is the node it reads; the error
+  names it and lists what it found.
 
 ## Safe Function
 
@@ -145,9 +155,17 @@ restore chain when `enabled` is false.
 | the expression language above, plus transforms | recursion, attribute access, dynamic code of any kind |
 
 Transforms (`image.resize`, `image.crop`, `image.flip`, `image.select`,
-`mask.invert`, `mask.threshold`, `latent.blend`, `seq.concat`) are available
-here and refused inside a Gate, Condition, Filter or Partition expression,
-because those nodes decide a branch and a decision has to be cheap to plan.
+`mask.invert`, `mask.threshold`, `latent.blend`, `seq.concat`) are an
+OPTIONAL pack, and it is off by default: a default installation has no way
+to build a tensor from workflow text at all. An administrator enables it
+with `{"enable_packs": ["transforms"]}` in `flow_policy.json`; until then a
+function that calls one is refused at queue time with that key in the
+message. Enabled or not, transforms are refused inside a Gate, Condition,
+Filter or Partition expression, because those nodes decide a branch and a
+decision has to be cheap to plan. The readers with the same prefixes
+(`image.width`, `mask.coverage`, `latent.frames`) are always available.
+`{"safe_function": false}` in the same file turns this node off entirely
+and touches nothing else in this document.
 
 Five budgets stop a runaway body, all five on the node so the editor and the
 API behave the same: `max_iterations` (shared across nested loops),
@@ -185,71 +203,11 @@ untouched and a bigint multiply is one uninterruptible call.
 
 ## LLM decisions
 
-**The provider is a name, never an endpoint.** `LLM Judge` and `LLM Choose`
-take a `provider` input that is the NAME of an entry in `flow_policy.json`
-at the pack root, and a workflow file carries nothing else: no url, no
-hostname, no key. That is the whole point. A workflow you downloaded cannot
-decide where your images are sent, because it can only ask for a provider
-this installation already configured, and the key is read from the
-environment variable that entry names.
-
-```json
-{"llm_providers": {
-  "local": {"kind": "openai_compatible",
-            "base_url": "http://127.0.0.1:8080/v1",
-            "api_key_env": "MAINODES_LLM_KEY_LOCAL",
-            "default_model": "your-model-id"}}}
-```
-
-The shipped default has one entry, `local`, pointing at a loopback OpenAI
-compatible server (llama.cpp, vLLM, Ollama and the rest all speak it). An
-unknown name is refused with the path of the file to add it to, both at
-queue time and again when the node runs, because an input that arrives on a
-link is invisible to queue-time validation. `kind` is `openai_compatible` in
-this release and any other value is refused rather than guessed at. The pack
-gitignores `flow_policy.json`, because it is the one file here that holds an
-endpoint and the name of a key, and the pack root is a git checkout.
-
-**The transport is part of that boundary too.** A redirect is refused rather
-than followed: urllib's default opener copies the `Authorization` header onto
-the redirect target, so a gateway answering a single 302 would hand your key
-to whatever host it names and then supply the selector that picks your
-branch. The proxy environment is ignored for the same reason, so an
-`http_proxy` variable cannot re-point even the loopback default.
-
-**LLM Judge** asks for one typed answer: `output_type` BOOL, INT, FLOAT,
-STRING or JSON. The request always carries a strict `response_format`
-json_schema, so a well behaved server can only answer in the shape asked
-for; if one answers with prose anyway, the first JSON object in the text is
-used, and an answer with no JSON object in it is an error rather than a
-guess. All four scalar outputs are populated from the one decided value, so
-the same node feeds a Gate and a title: a number coerces the way you expect,
-and a word with no number in it falls back to the truth of the decision
-(`yes` is `true`, `1`, `1.0`, `"yes"`). `raw` is the model text, unparsed.
-
-**LLM Choose** turns the cases you write, one `name: description` per line,
-into one strict function tool each, forces a call with
-`tool_choice: "required"`, and reports the index of the case that was called
-for `Lazy Select` alongside its label and its arguments. A tool name that is
-not one of the cases is an error, never a silent default. `args_schema` is a
-JSON schema `properties` object shared by every case, and the arguments come
-back parsed from JSON rather than string matched. `raw` is the message text,
-which is usually empty when the model answered with a tool call: the parsed
-arguments are on `args`.
-
-`seed` is a node input, so changing it re-runs the node, and it is sent in
-the request for servers that honour it. `temperature` defaults to 0.
-`max_tokens` is a budget like the Safe Function ones: it is on the node, it
-has no unlimited value, and an installation ceiling can only lower it. Up to
-eight image frames are sent per request, each downscaled to a long side of
-1024 first, and the log line says so when a longer batch is cut, and the
-per-frame pixel cap is the installation's `max_pixels`. Each attempt gets 120
-seconds for the WHOLE exchange, connect to last byte, rather than per socket
-operation: a server sending one byte before each timeout expires otherwise
-holds the node open forever, and ComfyUI's interrupt does not reach a
-blocking socket read. Only a connect or send failure is retried, once, so two
-attempts bound the node; an answer the server already produced is never asked
-for twice.
+`LLM Judge` and `LLM Choose` feed a Gate or a Lazy Select with a model's
+decision. They live in their own category, `MAINodes/AI Decisions`, and
+their own document, `AI_DECISIONS.md`, because they are the only nodes in
+this package that talk to a network and Flow's promise is that a workflow
+file is data. They share `flow_policy.json`; nothing above depends on them.
 
 ## Examples
 

@@ -184,7 +184,7 @@ def load_example(name):
 def test_gate_d_example_graph_branches_the_same_way(lab):
     for scale, expected in ((1.0, 0), (0.5, 1)):
         prompt = load_example("resize_gate_api.json")
-        prompt["scale"]["inputs"]["value"] = scale
+        prompt["resize"]["inputs"]["scale_by"] = scale
         prompt["probe"]["inputs"]["salt"] = next(_salt)
         entry = lab.run(prompt)
         took = entry["outputs"]["gate"]["flow"][0]["took"]
@@ -263,6 +263,122 @@ def test_gate_g_empty_kept_list_measured_behaviour(lab):
         "a node fed only an empty list is called once with defaults"
 
 
+# --- widget read and the sink block (spec 4.1, probes 5 and 6) -------------
+
+def widget_gate_prompt(scale, salt, linked=False, through_probe=False):
+    """The resize's scale_by stays INLINE on the resize; the Gate reads it.
+
+    The probe sits on the resize's INPUT, so it is exclusive to the processed
+    branch and counts exactly the runs in which the resize was produced.
+    """
+    prompt = {
+        "src": {"class_type": "EmptyImage",
+                "inputs": {"width": 32, "height": 32, "batch_size": 1, "color": 0}},
+        "in_probe": probe(["src", 0], "widget_gate", salt),
+        "resize": {"class_type": "ImageScaleBy",
+                   "inputs": {"image": ["in_probe", 0], "upscale_method": "bilinear",
+                              "scale_by": scale}},
+        "gate": {"class_type": "MAIFlowGate",
+                 "inputs": {"expression": "scale_by != 1.0", "source": ["src", 0],
+                            "processed": ["resize", 0]}},
+        "out": {"class_type": "PreviewAny", "inputs": {"source": ["gate", 0]}},
+    }
+    if linked:
+        prompt["scale"] = {"class_type": "PrimitiveFloat", "inputs": {"value": scale}}
+        prompt["resize"]["inputs"]["scale_by"] = ["scale", 0]
+    if through_probe:
+        prompt["between"] = probe(["resize", 0], "between", salt)
+        prompt["gate"]["inputs"]["processed"] = ["between", 0]
+    return prompt
+
+
+def test_gate_reads_the_guarded_nodes_widgets_and_the_cache_sees_them(lab):
+    """One salt for every queue, deliberately: the ONLY difference between the
+    first two runs is the resize's own inline widget. A Gate whose cache key
+    ignored it would be served from the first run's result on the second and
+    the resize would never run."""
+    salt = next(_salt)
+    before = lab.probe_count("widget_gate")
+    entry = lab.run(widget_gate_prompt(1.0, salt))
+    report = entry["outputs"]["gate"]["flow"][0]
+    assert report["took"] == "source" and report["guarded"] == "ImageScaleBy"
+    assert report["widgets"] == {"scale_by": 1.0} and report["values"] == {}
+    assert lab.probe_count("widget_gate") == before
+
+    entry = lab.run(widget_gate_prompt(0.5, salt))
+    assert entry["outputs"]["gate"]["flow"][0]["took"] == "processed"
+    assert lab.probe_count("widget_gate") == before + 1, "cache served a stale decision"
+
+    entry = lab.run(widget_gate_prompt(1.0, salt))
+    assert entry["outputs"]["gate"]["flow"][0]["took"] == "source"
+    assert lab.probe_count("widget_gate") == before + 1
+
+    # a fourth value: the decision flips again and the Gate is not served from
+    # the cache. The probe upstream of the resize CAN be, since its own key has
+    # not changed since the second queue, so the count is not asserted here.
+    entry = lab.run(widget_gate_prompt(0.75, salt))
+    assert entry["outputs"]["gate"]["flow"][0]["took"] == "processed"
+    cached = [m[1]["nodes"] for m in entry["status"]["messages"] if m[0] == "execution_cached"]
+    assert "gate" not in sum(cached, []) and "resize" not in sum(cached, [])
+
+
+def test_a_data_predicate_still_works_on_a_gate_that_reads_widgets(lab):
+    """`image.width(a)` names `image`, a registry prefix, not a value; the
+    widget read must not mistake a callee for a widget it cannot find."""
+    salt = next(_salt)
+    prompt = widget_gate_prompt(0.5, salt)
+    prompt["a"] = {"class_type": "EmptyImage",
+                   "inputs": {"width": 8, "height": 8, "batch_size": 1, "color": 1}}
+    prompt["gate"]["inputs"]["expression"] = "image.width(a) < 16 and scale_by != 1.0"
+    prompt["gate"]["inputs"]["values.a"] = ["a", 0]
+    entry = lab.run(prompt)
+    report = entry["outputs"]["gate"]["flow"][0]
+    assert report["took"] == "processed"
+    assert report["widgets"] == {"scale_by": 0.5} and report["values"] == {"a": "IMAGE[1,8,8,3]"}
+
+
+def test_a_linked_widget_is_refused_by_name(lab):
+    entry = lab.run(widget_gate_prompt(0.5, next(_salt), linked=True), expect="error")
+    messages = json.dumps(entry["status"]["messages"])
+    assert "'scale_by' is a widget on ImageScaleBy that arrives on a link" in messages, messages
+
+
+def test_the_guarded_node_is_the_direct_producer_of_processed(lab):
+    entry = lab.run(widget_gate_prompt(0.5, next(_salt), through_probe=True), expect="error")
+    messages = json.dumps(entry["status"]["messages"])
+    assert "neither a connected value nor a widget on MAIFlowProbe" in messages, messages
+    assert lab.probe_count("between") == 0
+
+
+def saved_files(lab, prefix):
+    return sorted(f for f in os.listdir(lab.output) if f.startswith(prefix))
+
+
+def test_a_gate_with_no_source_blocks_the_sink(lab):
+    """Skip when, on a Save: a false expression with source unconnected emits
+    core's ExecutionBlocker, and SaveImage neither runs nor errors."""
+    def prompt(a_value, salt):
+        return {
+            "src": {"class_type": "EmptyImage",
+                    "inputs": {"width": 16, "height": 16, "batch_size": 1, "color": 0}},
+            "probe": probe(["src", 0], "sink", salt),
+            "a": {"class_type": "PrimitiveFloat", "inputs": {"value": a_value}},
+            "gate": {"class_type": "MAIFlowGate",
+                     "inputs": {"expression": "a != 1.0", "processed": ["probe", 0],
+                                "values.a": ["a", 0]}},
+            "save": {"class_type": "SaveImage",
+                     "inputs": {"images": ["gate", 0], "filename_prefix": "sink_block"}},
+        }
+    assert saved_files(lab, "sink_block") == []
+    entry = lab.run(prompt(1.0, next(_salt)))
+    assert entry["outputs"]["gate"]["flow"][0]["took"] == "blocked"
+    assert "save" not in entry["outputs"] and saved_files(lab, "sink_block") == []
+    assert lab.probe_count("sink") == 0
+    entry = lab.run(prompt(0.5, next(_salt)))
+    assert entry["outputs"]["gate"]["flow"][0]["took"] == "processed"
+    assert len(saved_files(lab, "sink_block")) == 1 and lab.probe_count("sink") == 1
+
+
 # --- Gate H / the widget-order baseline ------------------------------------
 
 def test_no_javascript_ships_in_phase_1():
@@ -279,7 +395,7 @@ def test_no_javascript_ships_in_phase_1():
 WIDGET_ORDER = {
     "MAIFlowCondition": (["expression", "values"], []),
     "MAIFlowFilter": (["items", "expression"], ["values"]),
-    "MAIFlowGate": (["expression", "source", "processed", "values"], []),
+    "MAIFlowGate": (["expression", "processed"], ["source", "values"]),
     "MAIFlowLLMChoose": (["cases", "prompt", "provider", "model", "seed",
                           "temperature", "max_tokens"], ["images", "args_schema"]),
     "MAIFlowLLMJudge": (["prompt", "provider", "model", "output_type", "json_schema",

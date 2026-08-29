@@ -360,6 +360,23 @@ class Function:
         self.tree = self._parse(source)
         self.params = self._signature(self.tree)
         _Body(p.name for p in self.params).block(self.tree.body)
+        self._check_packs()
+
+    def _check_packs(self):
+        """A call into a pack this installation has not enabled fails at parse time.
+
+        Parse time is queue time (validate_inputs compiles), so a shared
+        workflow that needs the transforms says so before anything runs.
+        _Interp._call asks the same question again at the call.
+        """
+        for node in ast.walk(self.tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = node.func.id if isinstance(node.func, ast.Name) else dotted_name(node.func)
+            cap = capabilities.resolve(name)
+            problem = capabilities.unavailable(cap) if cap is not None else None
+            if problem:
+                raise _rejected(getattr(node, "lineno", 0), problem)
 
     @staticmethod
     def _parse(source) -> ast.FunctionDef:
@@ -597,6 +614,9 @@ class _Interp(_Eval):
         cap = capabilities.resolve(name)
         if cap is None:
             raise ExprError(f"'{name}' is not a registered capability")
+        problem = capabilities.unavailable(cap)
+        if problem:
+            raise ExprError(problem)
         args = [self.run(a) for a in node.args]
         unknown = _unknown_in(args)
         if unknown is not None:

@@ -24,6 +24,7 @@ import torch
 
 import folder_paths
 from comfy_api.latest import io
+from comfy_execution.graph_utils import ExecutionBlocker, is_link
 
 from . import capabilities  # noqa: F401  (registers the v1 capability packs)
 from . import policy, safefn
@@ -44,7 +45,13 @@ def _autogrow(values, *, tuples=False, unlist=False) -> tuple[dict, dict]:
     """
     out: dict = {}
     keys: dict = {}
-    for name, value in (values or {}).items():
+    # an OPTIONAL Autogrow with nothing grown reaches check_lazy_status as the
+    # dynamic tuple itself, (None, "values"), not as a dict of them
+    if tuples and isinstance(values, tuple) and len(values) == 2 and isinstance(values[1], str):
+        values = values[0]
+    if not isinstance(values, dict):
+        values = {}
+    for name, value in values.items():
         key = name
         if tuples and isinstance(value, tuple) and len(value) == 2 and isinstance(value[1], str):
             value, key = value
@@ -114,8 +121,52 @@ def _any_values_template(minimum: int = 1) -> io.Autogrow.TemplateNames:
         input=io.AnyType.Input("value"), names=list(string.ascii_lowercase), min=minimum)
 
 
+def _is_link(value) -> bool:
+    """Core's own test: [node_id, output_index]. A two-string list is a widget."""
+    return is_link(value)
+
+
+def _value_names(tree) -> set:
+    """Names an expression reads as VALUES: never the callee of a call.
+
+    ast.walk would collect `image` out of `image.width(a)`, and `image` is a
+    registry prefix, not a value; the evaluator resolves callees against the
+    registry and never against the bound names (expr._check_call walks only
+    node.args for the same reason).
+    """
+    names = set()
+    def walk(node):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+            return
+        if isinstance(node, ast.Call):
+            for arg in node.args:
+                walk(arg)
+            return
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+    walk(tree.body)
+    return names
+
+
 class MAIFlowGate(io.ComfyNode):
-    """processed if expression else source, with the untaken side never run."""
+    """processed if expression else source, with the untaken side never run.
+
+    The expression may name the guarded node's own widgets. The guarded node
+    is whatever produces `processed`; its inline inputs are read out of the
+    prompt by their real names (`scale_by != 1.0`), so "run Resize when scale
+    is not 1" is one node and no widget has to become a link. The read is
+    cache-correct with no fingerprint at all: the guarded node is an ancestor
+    of this one through `processed`, and core folds every ancestor's literal
+    inputs into the descendant's cache key (comfy_execution/caching.py,
+    get_node_signature), walking lazy links like any other. Measured on core
+    0.33.0, spec 15 probe 5.
+
+    `source` left unconnected turns a false expression into a block: the node
+    emits core's ExecutionBlocker and everything downstream, output nodes
+    included, is skipped silently (execution.py, graph_utils.py:140). That is
+    "Skip when" on a Save. Spec 15 probe 6.
+    """
 
     @classmethod
     def define_schema(cls):
@@ -125,54 +176,124 @@ class MAIFlowGate(io.ComfyNode):
             display_name="Gate (process if)",
             category=CATEGORY,
             is_experimental=True,
-            search_aliases=["if", "conditional", "process if", "skip", "branch"],
+            search_aliases=["if", "conditional", "process if", "skip", "branch",
+                            "bypass when", "run when"],
             description=("Runs the processed branch only when the expression is true, "
-                         "otherwise passes source through. Both branches are lazy, so the "
-                         "untaken one and its exclusive producers never execute."),
+                         "otherwise passes source through, or blocks everything "
+                         "downstream if source is not connected. Both branches are "
+                         "lazy, so the untaken one never executes. The expression can "
+                         "name the widgets of the node feeding processed, and any "
+                         "value connected to a, b, ..."),
             inputs=[
                 io.String.Input("expression", default="a != 1.0", multiline=True),
-                io.MatchType.Input("source", template=t, lazy=True),
                 io.MatchType.Input("processed", template=t, lazy=True),
-                io.Autogrow.Input("values", template=_any_values_template()),
+                io.MatchType.Input("source", template=t, lazy=True, optional=True,
+                                   tooltip="passed through when the expression is false; "
+                                           "leave it unconnected to block everything "
+                                           "downstream instead"),
+                io.Autogrow.Input("values", template=_any_values_template(minimum=0),
+                                  optional=True),
             ],
             outputs=[io.MatchType.Output(template=t, display_name="result")],
+            hidden=[io.Hidden.dynprompt, io.Hidden.unique_id],
         )
 
     @classmethod
     def validate_inputs(cls, expression=None, values=None):
         # `values` must be in the signature even though it is unused: core
         # rebuilds the Autogrow dict for any node whose validate_inputs is
-        # called, and an unexpected keyword is a validation exception.
+        # called, and an unexpected keyword is a validation exception. The
+        # guarded node's widgets are not visible here (no dynprompt at queue
+        # time), so name binding waits for the execute path like values do.
         return _syntax_check(expression)
 
     @classmethod
-    def _decide(cls, expression, values) -> bool:
+    def _guarded(cls):
+        """(class_type, inline inputs, linked input names) of the node on `processed`.
+
+        None when there is no prompt to read (a direct call outside a run).
+        DYNPROMPT rather than PROMPT so a Gate inside an expanded subgraph
+        still finds its neighbour.
+        """
+        hidden = getattr(cls, "hidden", None)
+        dynprompt = getattr(hidden, "dynprompt", None)
+        me = getattr(hidden, "unique_id", None)
+        if dynprompt is None or me is None or not dynprompt.has_node(me):
+            return None
+        link = dynprompt.get_node(me).get("inputs", {}).get("processed")
+        if not _is_link(link) or not dynprompt.has_node(link[0]):
+            return None
+        guarded = dynprompt.get_node(link[0])
+        inputs = guarded.get("inputs", {}) or {}
+        inline = {k: v for k, v in inputs.items() if not _is_link(v)}
+        linked = sorted(k for k, v in inputs.items() if _is_link(v))
+        return guarded.get("class_type", "?"), inline, linked
+
+    @classmethod
+    def _names(cls, expression, values: dict):
+        """Bind: connected values first, then the guarded node's inline widgets.
+
+        A widget that is itself a link cannot be read from the prompt, and
+        saying so by name beats a bare "not bound": the fix is to connect the
+        same source to the Gate. The guarded node is the DIRECT producer of
+        `processed`; a probe or a reroute in between is what gets read, so
+        the message names what it found.
+        """
+        wanted = _value_names(validate(expression))
+        names, widgets = dict(values), {}
+        guarded = cls._guarded()
+        if guarded is None:
+            return names, widgets, None
+        class_type, inline, linked = guarded
+        for name in sorted(wanted - set(names)):
+            if name in inline:
+                widgets[name] = inline[name]
+            elif name in linked:
+                raise ExprError(
+                    f"'{name}' is a widget on {class_type} that arrives on a link; connect "
+                    f"that value to the Gate's a, b, ... instead")
+            elif capabilities.resolve(name) is None:
+                raise ExprError(
+                    f"name '{name}' is neither a connected value nor a widget on "
+                    f"{class_type}, the node feeding processed; its widgets are "
+                    f"{sorted(inline)}")
+        names.update(widgets)
+        return names, widgets, class_type
+
+    @classmethod
+    def _decide(cls, expression, values):
         expression = _first(expression)
         # not validate-only: an expression that arrives on a LINK reaches
         # validate_inputs as None, and check_lazy_status runs this more than
         # once per node, so a transform here runs several times per queue
         _predicate_check(expression)
-        return bool(_evaluate(expression, _bind(values)))
+        names, widgets, class_type = cls._names(expression, values)
+        return bool(_evaluate(expression, _bind(names))), widgets, class_type
 
     @classmethod
-    def check_lazy_status(cls, expression, source=None, processed=None, values=None):
+    def check_lazy_status(cls, expression, processed=None, source=MISSING, values=None):
         resolved, _ = _autogrow(values, tuples=True)
-        if cls._decide(expression, resolved):
-            if processed is None:
-                return ["processed"]
-        elif source is None:
+        took, _, _ = cls._decide(expression, resolved)
+        if took:
+            return ["processed"] if processed is None else []
+        if source is None:                 # connected and not produced yet
             return ["source"]
-        return []
+        return []                          # produced, or not connected at all
 
     @classmethod
-    def execute(cls, expression, source=None, processed=None, values=None) -> io.NodeOutput:
+    def execute(cls, expression, processed=None, source=MISSING, values=None) -> io.NodeOutput:
         resolved, _ = _autogrow(values)
-        took_processed = cls._decide(expression, resolved)
-        ui = {"flow": [{"node": "Gate",
-                        "took": "processed" if took_processed else "source",
-                        "expression": expression,
-                        "values": _report(resolved)}]}
-        return io.NodeOutput(processed if took_processed else source, ui=ui)
+        took, widgets, class_type = cls._decide(expression, resolved)
+        if took:
+            outcome, value = "processed", processed
+        elif source is MISSING:
+            outcome, value = "blocked", ExecutionBlocker(None)
+        else:
+            outcome, value = "source", source
+        ui = {"flow": [{"node": "Gate", "took": outcome, "expression": expression,
+                        "values": _report(resolved), "widgets": _report(widgets),
+                        "guarded": class_type}]}
+        return io.NodeOutput(value, ui=ui)
 
 
 class MAIFlowCondition(io.ComfyNode):
@@ -491,6 +612,11 @@ class MAIFlowSafeFunction(io.ComfyNode):
     @classmethod
     def _compile(cls, source, max_iterations, max_ops, max_calls,
                  max_collection, max_tensor_elements) -> safefn.Function:
+        # the hosting off switch (spec 8.5) lives where validate_inputs,
+        # check_lazy_status and execute all pass, so no path is exempt
+        if not policy.safe_function_enabled():
+            raise safefn.SafeFnError(
+                'Safe Function is disabled by flow_policy.json ("safe_function": false)')
         return safefn.Function(source, safefn.limits(max_iterations, max_ops,
                                                      max_calls, max_collection,
                                                      max_tensor_elements))

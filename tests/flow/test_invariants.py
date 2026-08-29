@@ -88,6 +88,63 @@ def test_an_operator_and_its_capability_spelling_refuse_the_same_thing(operator,
         str(by_capability.value).replace("'pow'", "")
 
 
+OPTIONAL = sorted(c.id for c in capabilities.REGISTRY.values() if c.pack)
+
+
+@pytest.mark.parametrize("cap_id", OPTIONAL)
+def test_every_optional_pack_member_is_refused_until_its_pack_is_enabled(
+        cap_id, tmp_path, monkeypatch):
+    """Stated over the registry: a capability that names a pack is refused by
+    Safe Function at parse time while that pack is off, whatever its arity."""
+    from flow import safefn
+    monkeypatch.setenv(policy.POLICY_ENV, str(tmp_path / "absent.json"))
+    with pytest.raises(safefn.SafeFnError) as e:
+        safefn.Function(f"def main(x):\n    return {cap_id}(x)\n")
+    assert f"{cap_id} is in the '{capabilities.resolve(cap_id).pack}' pack" in str(e.value)
+    assert "enable_packs" in str(e.value)
+
+
+def test_every_transform_is_in_an_optional_pack():
+    """Nothing that allocates is on by default."""
+    for cap in capabilities.REGISTRY.values():
+        if not cap.predicate_safe:
+            assert cap.pack in policy.OPTIONAL_PACKS, cap.id
+
+
+@pytest.mark.parametrize("cap_id", OPTIONAL)
+def test_the_expression_evaluator_refuses_a_disabled_pack_too(cap_id, tmp_path, monkeypatch):
+    """Not only Safe Function: a pack member that happened to be predicate-safe
+    would otherwise be callable from a Gate on an installation that never
+    enabled the pack, and the FLOW.md sentence about that would go false with
+    no test failing."""
+    monkeypatch.setenv(policy.POLICY_ENV, str(tmp_path / "absent.json"))
+    with pytest.raises(ExprError) as e:
+        evaluate(f"{cap_id}(a)", {"a": 1})
+    assert "enable_packs" in str(e.value)
+
+
+def test_a_pack_name_must_be_one_an_installation_can_enable():
+    with pytest.raises(ValueError) as e:
+        capabilities.register(capabilities.Capability(
+            "test.orphan", 1, lambda x: x, (), "ANY", pack="nope"))
+    assert "OPTIONAL_PACKS does not list" in str(e.value)
+    assert "test.orphan" not in capabilities.REGISTRY
+
+
+def test_the_hosting_keys_fail_closed_like_the_budgets(tmp_path):
+    path = tmp_path / "flow_policy.json"
+    for bad in ('{"enable_packs": "transforms"}', '{"enable_packs": ["nope"]}',
+                '{"safe_function": "false"}', '{"safe_function": 0}'):
+        path.write_text(bad)
+        with pytest.raises(policy.PolicyError):
+            policy.enabled_packs(str(path))
+    path.write_text('{"enable_packs": ["transforms"], "safe_function": false}')
+    assert policy.enabled_packs(str(path)) == {"transforms"}
+    assert policy.safe_function_enabled(str(path)) is False
+    assert policy.enabled_packs(str(tmp_path / "absent.json")) == frozenset()
+    assert policy.safe_function_enabled(str(tmp_path / "absent.json")) is True
+
+
 def test_every_bare_name_is_the_same_capability_as_its_full_id():
     for bare, full in capabilities.BARE_NAMES.items():
         assert capabilities.resolve(bare) is capabilities.resolve(full), bare
