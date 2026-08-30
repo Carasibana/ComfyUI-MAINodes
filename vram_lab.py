@@ -173,12 +173,35 @@ def _balanced_ranges(n, size, min_size):
     return out
 
 
+def _mod_row_range(vec, row, a, lo, hi):
+    """vec[row] for rows [lo, hi) of a segment starting at a.
+
+    Mirrors comfy/ldm/minimax/model.py::_mod_row. Since ComfyUI #15375 a segment's
+    row is either a scalar mod-row index or a per-token LongTensor holding one index
+    per row of that segment; the tensor form appears whenever the latent carries a
+    video or audio noise mask whose rows are not all equal. A whole-segment tensor
+    cannot broadcast against a chunk, so it is sliced to the chunk as well.
+    """
+    return vec[row[lo - a:hi - a]] if torch.is_tensor(row) else vec[row]
+
+
+def _mod_seg_kind(row):
+    """The modality tag of a segment, whichever row form it carries.
+
+    rows_to_mod_index adds the same tag to every element of a segment, so any one
+    element answers for the whole of it.
+    """
+    return int(row.reshape(-1)[0]) if torch.is_tensor(row) else int(row)
+
+
 def _mod_scale_shift_range(h, shift, scale, segments, c0, c1):
     """h is norm(x[c0:c1]); apply the per-segment affine restricted to [c0, c1)."""
     for a, b, row in segments:
         lo, hi = max(a, c0), min(b, c1)
         if lo < hi:
-            h[lo - c0:hi - c0].mul_(1.0 + scale[row].to(h.dtype)).add_(shift[row].to(h.dtype))
+            h[lo - c0:hi - c0].mul_(
+                1.0 + _mod_row_range(scale, row, a, lo, hi).to(h.dtype)
+            ).add_(_mod_row_range(shift, row, a, lo, hi).to(h.dtype))
     return h
 
 
@@ -187,7 +210,8 @@ def _mod_gate_range(x, gate, other, segments, c0, c1):
     for a, b, row in segments:
         lo, hi = max(a, c0), min(b, c1)
         if lo < hi:
-            x[lo:hi].addcmul_(other[lo - c0:hi - c0], gate[row].to(x.dtype))
+            x[lo:hi].addcmul_(other[lo - c0:hi - c0],
+                              _mod_row_range(gate, row, a, lo, hi).to(x.dtype))
     return x
 
 
@@ -528,7 +552,7 @@ def _exact_av_rows(o, qc, st, segments, c0, c1, out_dtype):
     global _EXACT_AV_LOGGED
     n = 0
     for sa, sb, row in segments:
-        if row % 3 == 0:                       # video rides the fp4 store
+        if _mod_seg_kind(row) % 3 == 0:       # video rides the fp4 store
             continue
         lo, hi = max(sa, c0), min(sb, c1)
         if lo >= hi:
@@ -820,7 +844,7 @@ def _exact_av_rows_mixed(o, qc, st, segments, c0, c1, out_dtype):
     global _EXACT_AV_LOGGED
     n = 0
     for sa, sb, row in segments:
-        if row % 3 == 0:                       # video rides the quantised stores
+        if _mod_seg_kind(row) % 3 == 0:       # video rides the quantised stores
             continue
         lo, hi = max(sa, c0), min(sb, c1)
         if lo >= hi:
@@ -1037,7 +1061,8 @@ class _PrecProbe:
 
     @staticmethod
     def _seg_kind(row):
-        return ("cond_" if row >= 3 else "") + ("video", "text", "audio")[row % 3]
+        r = _mod_seg_kind(row)
+        return ("cond_" if r >= 3 else "") + ("video", "text", "audio")[r % 3]
 
     def _fq_nvfp4(self, x2d):
         from comfy_kitchen.tensor.nvfp4 import TensorCoreNVFP4Layout
@@ -1459,6 +1484,11 @@ def streamed_final_layer_forward(fl, x, t_emb, video_seg, audio_seg, chunk=16384
     shift, scale = fl.adaln_proj(t_emb)
 
     def head(a, b, row, out_mod):
+        # Since ComfyUI #15375 row may be a per-token LongTensor over this segment;
+        # c0/c1 below are segment-relative, so it slices to the chunk directly.
+        def _r(c0, c1):
+            return row[c0:c1] if torch.is_tensor(row) else row
+
         n = b - a
         if exact_gemm:
             # exact tier: chunk only the norm/mod/fp32 promotion into ONE fp32 buffer,
@@ -1466,7 +1496,7 @@ def streamed_final_layer_forward(fl, x, t_emb, video_seg, audio_seg, chunk=16384
             # Transient: one [n, hidden] fp32 (4.28 GiB at 213k rows) instead of ~10.7.
             hbuf = torch.empty((n, x.shape[1]), dtype=torch.float32, device=x.device)
             for c0, c1 in _ranges(n, chunk):
-                hbuf[c0:c1] = fl.norm(x[a + c0:a + c1]) * (1.0 + scale[row]) + shift[row]
+                hbuf[c0:c1] = fl.norm(x[a + c0:a + c1]) * (1.0 + scale[_r(c0, c1)]) + shift[_r(c0, c1)]
             out = out_mod(hbuf)
             del hbuf
             return out
@@ -1474,7 +1504,7 @@ def streamed_final_layer_forward(fl, x, t_emb, video_seg, audio_seg, chunk=16384
         # measured max |d| ~5e-6 vs stock on random weights). Transient ~chunk-sized.
         parts = []
         for c0, c1 in _ranges(n, chunk):
-            h = (fl.norm(x[a + c0:a + c1]) * (1.0 + scale[row]) + shift[row]).to(torch.float32)
+            h = (fl.norm(x[a + c0:a + c1]) * (1.0 + scale[_r(c0, c1)]) + shift[_r(c0, c1)]).to(torch.float32)
             parts.append(out_mod(h))
             del h
         return parts[0] if len(parts) == 1 else torch.cat(parts, dim=0)
